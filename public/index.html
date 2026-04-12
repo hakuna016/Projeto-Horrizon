@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HORIZON | Gestao que constroi resultados</title>
+    <meta name="theme-color" content="#b10f16" />
+    <link id="site-favicon" rel="icon" type="image/jpeg" href="/assets/horizon-logo-light.jpeg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="toast-root" class="toast-root"></div>
+    <div class="theme-switcher" role="group" aria-label="Tema do site">
+      <button id="theme-light-button" class="theme-toggle-button" type="button">Light</button>
+      <button id="theme-dark-button" class="theme-toggle-button" type="button">Dark</button>
+    </div>
+
+    <section id="auth-screen" class="auth-screen">
+      <div class="auth-brand">
+        <div class="brand-mark">
+            <img
+            data-theme-logo
+            class="brand-logo-image"
+            src="/assets/horizon-logo-light.jpeg"
+            alt="HORIZON - Gestao que constroi resultados"
+          />
+        </div>
+        <span class="eyebrow">HORIZON</span>
+        <h1>Painel operacional HORIZON</h1>
+        <p>
+          Gestão centralizada para notas fiscais, estoque, abastecimento,
+          escala, multas, checklist e central inteligente de emails.
+        </p>
+        <p class="brand-signature">Gestão que constrói resultados.</p>
+        <div class="brand-badges">
+          <span>Operacao integrada</span>
+          <span>NF + estoque + campo</span>
+          <span>Mobile + desktop</span>
+        </div>
+      </div>
+
+      <div class="auth-grid">
+        <form id="login-form" class="panel form-card">
+          <div class="card-title">
+            <span class="eyebrow">Acesso</span>
+            <h2>Entrar</h2>
+          </div>
+          <label>
+            <span>Email</span>
+            <input type="email" name="email" placeholder="admin@frigorifico.local" required />
+          </label>
+          <label>
+            <span>Senha</span>
+            <input type="password" name="password" placeholder="••••••••" required />
+          </label>
+          <button type="submit" class="primary-button">Entrar na HORIZON</button>
+          <p class="muted">
+            Acesso inicial: <strong>admin@frigorifico.local</strong> / <strong>admin123</strong>
+          </p>
+        </form>
+
+        <form id="register-form" class="panel form-card">
+          <div class="card-title">
+            <span class="eyebrow">Convite</span>
+            <h2>Criar acesso</h2>
+          </div>
+          <label>
+            <span>Nome</span>
+            <input type="text" name="name" placeholder="Nome do colaborador" required />
+          </label>
+          <label>
+            <span>Email</span>
+            <input type="email" name="email" placeholder="usuario@empresa.com" required />
+          </label>
+          <label>
+            <span>Senha</span>
+            <input type="password" name="password" minlength="6" required />
+          </label>
+          <label>
+            <span>Código de convite</span>
+            <input type="text" name="inviteCode" placeholder="OPE-LOG-2026" required />
+          </label>
+          <button type="submit" class="secondary-button">Cadastrar na HORIZON</button>
+          <p class="muted">Convites iniciais: `ADM-LOG-2026`, `GER-LOG-2026`, `OPE-LOG-2026`</p>
+        </form>
+      </div>
+    </section>
+
+    <div id="app-shell" class="app-shell hidden">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <img data-theme-logo class="sidebar-logo" src="/assets/horizon-logo-light.jpeg" alt="HORIZON" />
+          <span class="eyebrow">Painel operacional</span>
+          <h2>HORIZON</h2>
+          <p>Gestão que constrói resultados.</p>
+        </div>
+
+        <nav class="nav-menu">
+          <button class="nav-item active" data-section="dashboard">Dashboard</button>
+          <button class="nav-item" data-section="notes">Notas fiscais</button>
+          <button class="nav-item" data-section="inventory">Estoque</button>
+          <button class="nav-item" data-section="fuel">Abastecimento</button>
+          <button class="nav-item" data-section="schedules">Escala</button>
+          <button class="nav-item" data-section="fines">Multas</button>
+          <button class="nav-item" data-section="checklists">Checklists</button>
+          <button class="nav-item" data-section="emails">Central de Emails</button>
+          <button class="nav-item hidden" id="admin-nav-button" data-section="admin">Gestão</button>
+        </nav>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="topbar-brand">
+            <img data-theme-logo class="topbar-logo" src="/assets/horizon-logo-light.jpeg" alt="HORIZON" />
+            <div>
+              <span class="eyebrow">Usuário conectado</span>
+              <h1 id="topbar-user-name">-</h1>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <span id="topbar-user-role" class="role-chip">-</span>
+            <button id="refresh-all-button" class="ghost-button" type="button">Atualizar</button>
+            <button id="logout-button" class="ghost-button" type="button">Sair</button>
+          </div>
+        </header>
+
+        <section id="dashboard-section" class="content-section active">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Visão rápida</span>
+              <h2>Dashboard</h2>
+            </div>
+            <div class="header-actions dashboard-filter-bar">
+              <select id="dashboard-period-filter">
+                <option value="7">Ultimos 7 dias</option>
+                <option value="15">Ultimos 15 dias</option>
+                <option value="30" selected>Ultimos 30 dias</option>
+                <option value="60">Ultimos 60 dias</option>
+                <option value="90">Ultimos 90 dias</option>
+              </select>
+              <select id="dashboard-plate-filter">
+                <option value="">Todas as placas</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="dashboard-summary" class="dashboard-summary-grid"></div>
+          <div id="dashboard-metrics" class="metric-grid"></div>
+
+          <div class="dashboard-grid dashboard-analytics-grid">
+            <article class="panel dashboard-panel dashboard-panel-wide">
+              <div class="card-title">
+                <span class="eyebrow">Combustivel</span>
+                <h3>Consumo no periodo</h3>
+              </div>
+              <div id="dashboard-consumption-chart"></div>
+            </article>
+
+            <article class="panel dashboard-panel">
+              <div class="card-title">
+                <span class="eyebrow">Eficiência</span>
+                <h3>KM/L por placa</h3>
+              </div>
+              <div id="dashboard-efficiency-spotlight"></div>
+            </article>
+
+            <article class="panel dashboard-panel">
+              <div class="card-title">
+                <span class="eyebrow">Frota</span>
+                <h3>Ranking de eficiencia</h3>
+              </div>
+              <div id="dashboard-ranking"></div>
+            </article>
+
+            <article class="panel dashboard-panel">
+              <div class="card-title">
+                <span class="eyebrow">Consumo</span>
+                <h3>Veiculos que mais abasteceram</h3>
+              </div>
+              <div id="dashboard-top-consumers"></div>
+            </article>
+
+            <article class="panel dashboard-panel">
+              <div class="card-title">
+                <span class="eyebrow">Notas</span>
+                <h3>Fluxo operacional</h3>
+              </div>
+              <div id="dashboard-note-flow"></div>
+            </article>
+            <article class="panel">
+              <div class="card-title">
+                <span class="eyebrow">Alertas</span>
+                <h3>Prioridades do dia</h3>
+              </div>
+              <div id="dashboard-alerts" class="stack-list"></div>
+            </article>
+
+            <article class="panel">
+              <div class="card-title">
+                <span class="eyebrow">Operação</span>
+                <h3>Escala do dia</h3>
+              </div>
+              <div id="dashboard-schedules" class="stack-list"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="notes-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Financeiro e rastreabilidade</span>
+              <h2>Notas fiscais</h2>
+            </div>
+            <div class="header-actions">
+              <input id="notes-search" type="search" placeholder="Buscar fornecedor ou DANFE" />
+              <select id="notes-status-filter">
+                <option value="">Todos os status</option>
+                <option value="NEW">Nova</option>
+                <option value="PENDING_ACK">Aguardando reconhecimento</option>
+                <option value="ACKNOWLEDGED">Reconhecida</option>
+                <option value="SENT_FINANCE">Enviada ao financeiro</option>
+                <option value="FINALIZED">Finalizada</option>
+              </select>
+              <select id="notes-category-filter">
+                <option value="">Todas as categorias</option>
+                <option value="LOGISTICS">Logística</option>
+                <option value="OTHER">Outros</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="two-column-grid">
+            <form id="note-form" class="panel form-card">
+              <input type="hidden" name="id" />
+              <div class="card-title">
+                <span class="eyebrow">Cadastro manual</span>
+                <h3>Nova nota</h3>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>Fornecedor</span>
+                  <input type="text" name="supplierName" required />
+                </label>
+                <label>
+                  <span>Valor</span>
+                  <input type="number" name="totalValue" min="0" step="0.01" required />
+                </label>
+                <label>
+                  <span>DANFE</span>
+                  <input type="text" name="danfe" />
+                </label>
+                <label>
+                  <span>Data de emissão</span>
+                  <input type="datetime-local" name="issueDate" />
+                </label>
+                <label>
+                  <span>Categoria</span>
+                  <select name="category">
+                    <option value="LOGISTICS">Logística</option>
+                    <option value="OTHER">Outros</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Status</span>
+                  <select name="status">
+                    <option value="NEW">Nova</option>
+                    <option value="PENDING_ACK">Aguardando reconhecimento</option>
+                    <option value="ACKNOWLEDGED">Reconhecida</option>
+                    <option value="SENT_FINANCE">Enviada ao financeiro</option>
+                    <option value="FINALIZED">Finalizada</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Data de envio ao financeiro</span>
+                  <input type="datetime-local" name="sentToFinanceAt" />
+                </label>
+                <label class="full-width">
+                  <span>Observações financeiras</span>
+                  <textarea name="financeNotes" rows="3"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Salvar nota</button>
+                <button type="button" id="note-reset-button" class="ghost-button">Limpar</button>
+              </div>
+            </form>
+
+            <article class="panel form-card">
+              <div class="card-title">
+                <span class="eyebrow">Importação</span>
+                <h3>XML e Excel</h3>
+              </div>
+              <label>
+                <span>Importar XML</span>
+                <input id="xml-import-input" type="file" accept=".xml,text/xml" multiple />
+              </label>
+              <button id="xml-import-button" type="button" class="secondary-button">Processar XMLs</button>
+              <label>
+                <span>Importar Excel/planilha</span>
+                <input id="spreadsheet-import-input" type="file" accept=".xlsx,.xls,.csv" />
+              </label>
+              <button id="spreadsheet-import-button" type="button" class="secondary-button">
+                Processar planilha
+              </button>
+              <p class="muted">
+                O sistema extrai fornecedor, valor e DANFE automaticamente e aprende a categoria por fornecedor.
+              </p>
+            </article>
+          </div>
+
+          <div class="panel table-panel">
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Fornecedor</th>
+                    <th>DANFE</th>
+                    <th>Valor</th>
+                    <th>Categoria</th>
+                    <th>Status</th>
+                    <th>Origem</th>
+                    <th>Financeiro</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="notes-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="inventory-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Entradas e saídas</span>
+              <h2>Estoque</h2>
+            </div>
+          </div>
+
+          <div class="two-column-grid">
+            <form id="product-form" class="panel form-card">
+              <input type="hidden" name="id" />
+              <div class="card-title">
+                <span class="eyebrow">Produto</span>
+                <h3>Cadastro</h3>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>Produto</span>
+                  <input type="text" name="name" required />
+                </label>
+                <label>
+                  <span>Unidade</span>
+                  <input type="text" name="unit" value="UN" />
+                </label>
+                <label>
+                  <span>Código de barras</span>
+                  <div class="inline-input">
+                    <input id="product-barcode-input" type="text" name="barcode" />
+                    <button type="button" class="ghost-button compact-button" data-scan-target="product-barcode-input">
+                      Câmera
+                    </button>
+                  </div>
+                </label>
+                <label>
+                  <span>Estoque mínimo</span>
+                  <input type="number" name="minStock" min="0" step="0.01" value="0" />
+                </label>
+                <label>
+                  <span>Saldo inicial</span>
+                  <input type="number" name="initialStock" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Salvar produto</button>
+                <button type="button" id="product-reset-button" class="ghost-button">Limpar</button>
+              </div>
+            </form>
+
+            <form id="inventory-movement-form" class="panel form-card">
+              <div class="card-title">
+                <span class="eyebrow">Movimentação</span>
+                <h3>Entrada e saída</h3>
+              </div>
+              <div class="form-grid">
+                <label class="full-width">
+                  <span>Buscar por código de barras</span>
+                  <div class="inline-input">
+                    <input id="movement-barcode-input" type="text" placeholder="Leitura rápida" />
+                    <button type="button" class="ghost-button compact-button" data-scan-target="movement-barcode-input">
+                      Câmera
+                    </button>
+                    <button id="lookup-barcode-button" type="button" class="ghost-button compact-button">Buscar</button>
+                  </div>
+                </label>
+                <label>
+                  <span>Produto</span>
+                  <select id="movement-product-select" name="productId"></select>
+                </label>
+                <label>
+                  <span>Tipo</span>
+                  <select name="type">
+                    <option value="IN">Entrada</option>
+                    <option value="OUT">Saída</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Quantidade</span>
+                  <input type="number" name="quantity" min="0" step="0.01" required />
+                </label>
+                <label>
+                  <span>Hodometro (km)</span>
+                  <input
+                    type="number"
+                    name="odometerKm"
+                    min="0"
+                    step="1"
+                    placeholder="Opcional, recomendado para saida"
+                  />
+                </label>
+                <label>
+                  <span>Data e hora</span>
+                  <input type="datetime-local" name="occurredAt" />
+                </label>
+                <label class="full-width">
+                  <span>Observações</span>
+                  <textarea name="notes" rows="3"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Registrar movimentação</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="two-column-grid">
+            <div class="panel table-panel">
+              <div class="card-title">
+                <span class="eyebrow">Produtos</span>
+                <h3>Cadastro e alertas</h3>
+              </div>
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Produto</th>
+                      <th>Saldo</th>
+                      <th>Mínimo</th>
+                      <th>Barras</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody id="products-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel table-panel">
+              <div class="card-title">
+                <span class="eyebrow">Histórico</span>
+                <h3>Movimentações</h3>
+              </div>
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Produto</th>
+                      <th>Tipo</th>
+                      <th>Quantidade</th>
+                      <th>Saldo após</th>
+                      <th>Usuário</th>
+                      <th>#</th>
+                    </tr>
+                  </thead>
+                  <tbody id="inventory-movements-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="fuel-section" class="content-section module-section module-section--fuel">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Controle crítico</span>
+              <h2>Abastecimento</h2>
+              <p class="section-description">Controle e registro dos abastecimentos da frota.</p>
+            </div>
+            <div class="header-actions">
+              <select id="fuel-filter-storage">
+                <option value="">Todos os combustíveis</option>
+              </select>
+              <input id="fuel-filter-from" type="datetime-local" />
+              <input id="fuel-filter-to" type="datetime-local" />
+              <select id="fuel-filter-plate">
+                <option value="">Todos os veiculos</option>
+              </select>
+            </div>
+          </div>
+          <div id="fuel-kpi-grid" class="operations-kpi-grid"></div>
+          <div class="two-column-grid operations-main-grid">
+            <form id="fuel-form" class="panel form-card operations-form-card">
+              <div class="card-title">
+                <span class="eyebrow">Registro</span>
+                <h3>Entrada e saída por combustível</h3>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>Combustível</span>
+                  <select id="fuel-storage-select" name="storageId"></select>
+                </label>
+                <label>
+                  <span>Tipo</span>
+                  <select name="type">
+                    <option value="ENTRY">Entrada</option>
+                    <option value="EXIT">Saída</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Placa</span>
+                  <input type="text" name="plate" required />
+                </label>
+                <label>
+                  <span>Quantidade</span>
+                  <input type="number" name="quantity" min="0" step="0.01" required />
+                </label>
+                <label>
+                  <span>Hodometro (km)</span>
+                  <input type="number" name="odometerKm" min="0" step="1" placeholder="Opcional, recomendado para saida" />
+                </label>
+                <label>
+                  <span>Data e hora</span>
+                  <input type="datetime-local" name="occurredAt" />
+                </label>
+                <label class="full-width">
+                  <span>Observações</span>
+                  <textarea name="notes" rows="3"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Registrar abastecimento</button>
+              </div>
+            </form>
+
+            <div class="panel operations-side-panel">
+              <div class="card-title">
+                <span class="eyebrow">Estoques principais</span>
+                <h3>Saldos atuais</h3>
+              </div>
+              <div id="fuel-stocks-grid" class="metric-grid"></div>
+            </div>
+          </div>
+
+          <div class="panel table-panel operations-table-panel">
+            <div class="card-title">
+              <span class="eyebrow">Histórico completo</span>
+              <h3>Saldo fixo por lançamento</h3>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Estoque</th>
+                    <th>Combustível</th>
+                    <th>Tipo</th>
+                    <th>Placa</th>
+                    <th>Quantidade</th>
+                    <th>Hodometro</th>
+                    <th>Saldo antes</th>
+                    <th>Saldo após</th>
+                    <th>Usuário</th>
+                    <th>Data</th>
+                  </tr>
+                </thead>
+                <tbody id="fuel-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="operations-chart-grid">
+            <article class="panel">
+              <div class="card-title">
+                <span class="eyebrow">Consumo</span>
+                <h3>Consumo de combustivel</h3>
+              </div>
+              <div id="fuel-consumption-chart"></div>
+            </article>
+
+            <article class="panel">
+              <div class="card-title">
+                <span class="eyebrow">Frota</span>
+                <h3>Top veiculos por consumo</h3>
+              </div>
+              <div id="fuel-top-vehicles"></div>
+            </article>
+          </div>
+
+          <div class="operations-chart-grid">
+            <article class="panel action-stack-panel">
+              <div class="card-title">
+                <span class="eyebrow">Acoes rapidas</span>
+                <h3>Atalhos do modulo</h3>
+              </div>
+              <div class="action-stack">
+                <button type="button" class="ghost-button" data-fuel-shortcut="new">Novo abastecimento</button>
+                <button type="button" class="ghost-button" data-fuel-shortcut="last7">Ultimos 7 dias</button>
+                <button type="button" class="ghost-button" data-fuel-shortcut="today">Hoje</button>
+                <button type="button" class="ghost-button" data-fuel-shortcut="clear">Limpar filtros</button>
+              </div>
+            </article>
+
+            <article class="panel">
+              <div class="card-title">
+                <span class="eyebrow">Leitura operacional</span>
+                <h3>Pontos de atencao</h3>
+              </div>
+              <div id="fuel-side-insights" class="stack-list"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="schedules-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Planejamento</span>
+              <h2>Escala</h2>
+              <p class="section-description">Controle diario de veiculos, motoristas e ajudantes.</p>
+            </div>
+          </div>
+          <div class="two-column-grid">
+            <form id="schedule-form" class="panel form-card operations-form-card">
+              <input type="hidden" name="id" />
+              <div class="form-grid">
+                <label>
+                  <span>Data</span>
+                  <input id="schedule-date-filter" type="date" name="scheduledDate" required />
+                </label>
+                <label>
+                  <span>Responsavel</span>
+                  <input type="text" name="responsibleName" />
+                </label>
+                <label>
+                  <span>Veículo</span>
+                  <input type="text" name="vehicle" required />
+                </label>
+                <label>
+                  <span>Local / rota</span>
+                  <input type="text" name="location" />
+                </label>
+                <label>
+                  <span>Motorista</span>
+                  <input type="text" name="driver" required />
+                </label>
+                <label>
+                  <span>Ajudante</span>
+                  <input type="text" name="assistant" />
+                </label>
+                <label class="full-width">
+                  <span>Observações</span>
+                  <textarea name="notes" rows="3"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Salvar escala</button>
+                <button type="button" id="schedule-reset-button" class="ghost-button">Limpar</button>
+              </div>
+            </form>
+
+            <div class="panel table-panel">
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Data</th>
+                      <th>Veículo</th>
+                      <th>Motorista</th>
+                      <th>Ajudante</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody id="schedules-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="operations-chart-grid">
+            <article class="panel">
+              <div class="card-title">
+                <span class="eyebrow">Resumo do dia</span>
+                <h3>Capacidade operacional</h3>
+              </div>
+              <div id="schedule-summary-cards" class="operations-kpi-grid operations-kpi-grid--compact"></div>
+            </article>
+
+            <article class="panel">
+              <div class="card-title">
+                <span class="eyebrow">Observacoes gerais</span>
+                <h3>Notas da escala</h3>
+              </div>
+              <div id="schedule-notes-feed" class="stack-list"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="fines-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Controle de ocorrências</span>
+              <h2>Multas</h2>
+            </div>
+          </div>
+          <div class="two-column-grid">
+            <form id="fine-form" class="panel form-card">
+              <input type="hidden" name="id" />
+              <div class="form-grid">
+                <label>
+                  <span>Data</span>
+                  <input type="date" name="fineDate" required />
+                </label>
+                <label>
+                  <span>Placa</span>
+                  <input type="text" name="plate" required />
+                </label>
+                <label>
+                  <span>Condutor</span>
+                  <input type="text" name="driver" required />
+                </label>
+                <label>
+                  <span>Status</span>
+                  <select name="status">
+                    <option value="OPEN">Aberta</option>
+                    <option value="CONTESTING">Contestando</option>
+                    <option value="PAID">Paga</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Valor</span>
+                  <input type="number" name="amount" min="0" step="0.01" />
+                </label>
+                <label class="full-width">
+                  <span>Observações</span>
+                  <textarea name="notes" rows="3"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Salvar multa</button>
+                <button type="button" id="fine-reset-button" class="ghost-button">Limpar</button>
+              </div>
+            </form>
+
+            <div class="panel table-panel">
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Data</th>
+                      <th>Placa</th>
+                      <th>Condutor</th>
+                      <th>Status</th>
+                      <th>Valor</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody id="fines-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="checklists-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Inspeção operacional</span>
+              <h2>Checklists</h2>
+              <p class="section-description">Registre a verificacao diaria do veiculo antes da saida.</p>
+            </div>
+          </div>
+          <div class="two-column-grid">
+            <form id="checklist-form" class="panel form-card operations-form-card">
+              <input type="hidden" name="id" />
+              <div class="form-grid">
+                <label>
+                  <span>Veículo</span>
+                  <input type="text" name="vehicle" required />
+                </label>
+                <label>
+                  <span>Data</span>
+                  <input type="datetime-local" name="checklistDate" required />
+                </label>
+                <label>
+                  <span>Tipo</span>
+                  <select name="checklistType">
+                    <option value="PRE_USE">Saida (Pre-uso)</option>
+                    <option value="RETURN">Retorno</option>
+                    <option value="MAINTENANCE">Manutencao</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Motorista</span>
+                  <input type="text" name="driverName" />
+                </label>
+                <label>
+                  <span>Km atual</span>
+                  <input type="number" name="odometerKm" min="0" step="1" />
+                </label>
+                <label>
+                  <span>Assinatura</span>
+                  <input type="text" name="signatureName" />
+                </label>
+                <label>
+                  <span>Status</span>
+                  <select name="status">
+                    <option value="OPEN">Aberto</option>
+                    <option value="OK">OK</option>
+                    <option value="ISSUES">Com problemas</option>
+                  </select>
+                </label>
+                <label class="full-width">
+                  <span>Itens</span>
+                  <textarea name="items" class="hidden" rows="6" placeholder="Um item por linha" required></textarea>
+                </label>
+                <div id="checklist-items-builder" class="checklist-builder-grid full-width"></div>
+                <label class="full-width">
+                  <span>Problemas encontrados</span>
+                  <textarea name="problems" rows="4"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Salvar checklist</button>
+                <button type="button" id="checklist-reset-button" class="ghost-button">Limpar</button>
+              </div>
+            </form>
+
+            <div class="panel table-panel">
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Data</th>
+                      <th>Veículo</th>
+                      <th>Status</th>
+                      <th>Itens</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody id="checklists-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="operations-chart-grid">
+            <article class="panel">
+              <div class="card-title">
+                <span class="eyebrow">Resumo do checklist</span>
+                <h3>Status por item</h3>
+              </div>
+              <div id="checklist-summary-cards" class="operations-kpi-grid operations-kpi-grid--compact"></div>
+            </article>
+
+            <article class="panel">
+              <div class="card-title">
+                <span class="eyebrow">Ocorrencias</span>
+                <h3>Leitura rapida</h3>
+              </div>
+              <div id="checklist-history-feed" class="stack-list"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="emails-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Processamento automático</span>
+              <h2>Central de Emails</h2>
+            </div>
+          </div>
+          <div class="two-column-grid">
+            <form id="email-form" class="panel form-card">
+              <div class="card-title">
+                <span class="eyebrow">Leitura inteligente</span>
+                <h3>Processar email</h3>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>Remetente</span>
+                  <input type="email" name="sender" />
+                </label>
+                <label>
+                  <span>Assunto</span>
+                  <input type="text" name="subject" />
+                </label>
+                <label>
+                  <span>Recebido em</span>
+                  <input type="datetime-local" name="receivedAt" />
+                </label>
+                <label class="full-width">
+                  <span>Corpo do email</span>
+                  <textarea name="body" rows="5"></textarea>
+                </label>
+                <label class="full-width">
+                  <span>Conteúdo XML anexado</span>
+                  <textarea name="xmlContent" rows="5" placeholder="Cole o XML da NFe aqui"></textarea>
+                </label>
+                <label class="full-width">
+                  <span>Email bruto (.eml opcional)</span>
+                  <textarea name="rawEml" rows="5" placeholder="Cole aqui o email exportado"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Processar email</button>
+              </div>
+            </form>
+
+            <div class="panel table-panel">
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Recebido</th>
+                      <th>Remetente</th>
+                      <th>Assunto</th>
+                      <th>XML</th>
+                      <th>Classificação</th>
+                      <th>Nota gerada</th>
+                    </tr>
+                  </thead>
+                  <tbody id="emails-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="admin-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Perfis, convites e auditoria</span>
+              <h2>Gestão</h2>
+            </div>
+          </div>
+          <div class="two-column-grid">
+            <form id="invite-form" class="panel form-card">
+              <div class="card-title">
+                <span class="eyebrow">Acesso</span>
+                <h3>Gerar convite</h3>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>Perfil</span>
+                  <select name="role">
+                    <option value="OPERATIONAL">Operacional</option>
+                    <option value="MANAGER">Gerente</option>
+                    <option value="ADMIN">Administrador</option>
+                  </select>
+                </label>
+                <label class="full-width">
+                  <span>Observações</span>
+                  <textarea name="notes" rows="3"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Criar convite</button>
+              </div>
+            </form>
+
+            <div class="panel table-panel">
+              <div class="card-title">
+                <span class="eyebrow">Convites</span>
+                <h3>Códigos emitidos</h3>
+              </div>
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Código</th>
+                      <th>Perfil</th>
+                      <th>Criado por</th>
+                      <th>Usado por</th>
+                      <th>Data</th>
+                    </tr>
+                  </thead>
+                  <tbody id="invites-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel table-panel">
+            <div class="card-title">
+              <span class="eyebrow">Auditoria</span>
+              <h3>Log de ações</h3>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Quando</th>
+                    <th>Usuário</th>
+                    <th>Ação</th>
+                    <th>Entidade</th>
+                    <th>Detalhes</th>
+                  </tr>
+                </thead>
+                <tbody id="logs-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="scanner-modal" class="scanner-modal hidden">
+      <div class="scanner-card">
+        <div class="card-title">
+          <span class="eyebrow">Leitura por câmera</span>
+          <h3>Scanner de código de barras</h3>
+        </div>
+        <video id="scanner-video" autoplay playsinline muted></video>
+        <p id="scanner-status" class="muted">Aguardando câmera...</p>
+        <div class="form-actions">
+          <button id="scanner-close-button" type="button" class="ghost-button">Fechar</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
