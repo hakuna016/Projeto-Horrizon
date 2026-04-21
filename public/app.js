@@ -1,13 +1,19 @@
 const $ = (id) => document.getElementById(id);
 const THEME_STORAGE_KEY = "horizon-theme";
 const THEME_LOGOS = {
-  light: "/assets/horizon-logo-light.jpeg",
-  dark: "/assets/horizon-logo-dark.jpeg",
+  light: "./assets/horizon-logo-light.jpeg",
+  dark: "./assets/horizon-logo-dark.jpeg",
+};
+const BROWSER_MODE_NOTICE_KEY = "horizon-browser-mode-notice-v1";
+const runtimeState = {
+  apiMode: null,
+  apiProbe: null,
 };
 
 const state = {
   user: null,
   section: "dashboard",
+  authMode: "login",
   notes: [],
   products: [],
   inventoryMovements: [],
@@ -18,7 +24,7 @@ const state = {
   checklists: [],
   checklistDraftItems: [],
   emails: [],
-  invites: [],
+  adminUsers: [],
   logs: [],
   dashboard: {
     metrics: {
@@ -84,6 +90,9 @@ const statusMeta = {
   SPAM: { label: "Spam", className: "status-red" },
   RECEIVED: { label: "Recebido", className: "status-gray" },
   XML_IDENTIFIED: { label: "XML identificado", className: "status-green" },
+  PENDING: { label: "Pendente", className: "status-yellow" },
+  ACTIVE: { label: "Ativo", className: "status-green" },
+  BLOCKED: { label: "Bloqueado", className: "status-red" },
 };
 
 const roleLabels = {
@@ -144,8 +153,12 @@ const DEFAULT_CHECKLIST_TEMPLATE = [
 const refs = {
   authScreen: $("auth-screen"),
   appShell: $("app-shell"),
+  loginCard: $("login-form"),
+  activationCard: $("activation-form"),
   loginForm: $("login-form"),
-  registerForm: $("register-form"),
+  activationForm: $("activation-form"),
+  showActivationButton: $("show-activation-button"),
+  showLoginButton: $("show-login-button"),
   logoutButton: $("logout-button"),
   refreshAllButton: $("refresh-all-button"),
   topbarUserName: $("topbar-user-name"),
@@ -208,8 +221,9 @@ const refs = {
   checklistHistoryFeed: $("checklist-history-feed"),
   emailForm: $("email-form"),
   emailsTableBody: $("emails-table-body"),
-  inviteForm: $("invite-form"),
-  invitesTableBody: $("invites-table-body"),
+  adminUserForm: $("admin-user-form"),
+  adminUserResetButton: $("admin-user-reset-button"),
+  adminUsersTableBody: $("admin-users-table-body"),
   logsTableBody: $("logs-table-body"),
   scannerModal: $("scanner-modal"),
   scannerVideo: $("scanner-video"),
@@ -226,7 +240,9 @@ document.addEventListener("DOMContentLoaded", initialize);
 async function initialize() {
   applyTheme(resolveInitialTheme());
   bindEvents();
+  switchAuthMode("login");
   applyDefaultFormValues();
+  await maybeShowBrowserModeNotice();
 
   try {
     const response = await api("/api/auth/me", { suppressAuthRedirect: true });
@@ -240,9 +256,75 @@ async function initialize() {
   }
 }
 
+function switchAuthMode(mode) {
+  const nextMode = mode === "activation" ? "activation" : "login";
+  state.authMode = nextMode;
+  refs.loginCard?.classList.toggle("hidden", nextMode !== "login");
+  refs.activationCard?.classList.toggle("hidden", nextMode !== "activation");
+}
+
+async function maybeShowBrowserModeNotice() {
+  const alreadyShown = window.localStorage.getItem(BROWSER_MODE_NOTICE_KEY) === "1";
+  if (alreadyShown) {
+    return;
+  }
+
+  const mode = await resolveApiMode();
+  if (mode !== "browser") {
+    return;
+  }
+
+  window.localStorage.setItem(BROWSER_MODE_NOTICE_KEY, "1");
+  showToast("Modo site ativo: dados salvos neste navegador.");
+}
+
+async function resolveApiMode() {
+  if (runtimeState.apiMode) {
+    return runtimeState.apiMode;
+  }
+
+  const localApi = window.HorizonLocalApi;
+  if (!localApi) {
+    runtimeState.apiMode = "server";
+    return runtimeState.apiMode;
+  }
+
+  if (localApi.preferredMode === "browser") {
+    runtimeState.apiMode = "browser";
+    return runtimeState.apiMode;
+  }
+
+  if (localApi.preferredMode === "server") {
+    runtimeState.apiMode = "server";
+    return runtimeState.apiMode;
+  }
+
+  if (!runtimeState.apiProbe) {
+    runtimeState.apiProbe = (async () => {
+      try {
+        const healthUrl = new URL("api/health", window.location.href);
+        const response = await fetch(healthUrl, {
+          method: "GET",
+          headers: { Accept: "application/json" },
+        });
+        return response.ok ? "server" : "browser";
+      } catch (error) {
+        return "browser";
+      }
+    })().then((mode) => {
+      runtimeState.apiMode = mode;
+      return mode;
+    });
+  }
+
+  return runtimeState.apiProbe;
+}
+
 function bindEvents() {
   refs.loginForm.addEventListener("submit", handleLoginSubmit);
-  refs.registerForm.addEventListener("submit", handleRegisterSubmit);
+  refs.activationForm.addEventListener("submit", handleActivationSubmit);
+  refs.showActivationButton?.addEventListener("click", () => switchAuthMode("activation"));
+  refs.showLoginButton?.addEventListener("click", () => switchAuthMode("login"));
   refs.logoutButton.addEventListener("click", handleLogout);
   refs.refreshAllButton.addEventListener("click", refreshAll);
   refs.dashboardPlateFilter.addEventListener("change", refreshDashboard);
@@ -271,7 +353,8 @@ function bindEvents() {
   refs.checklistForm.addEventListener("submit", handleChecklistSubmit);
   refs.checklistResetButton.addEventListener("click", resetChecklistForm);
   refs.emailForm.addEventListener("submit", handleEmailSubmit);
-  refs.inviteForm.addEventListener("submit", handleInviteSubmit);
+  refs.adminUserForm.addEventListener("submit", handleAdminUserSubmit);
+  refs.adminUserResetButton?.addEventListener("click", resetAdminUserForm);
   refs.scannerCloseButton.addEventListener("click", closeScanner);
   refs.themeLightButton.addEventListener("click", () => applyTheme("light"));
   refs.themeDarkButton.addEventListener("click", () => applyTheme("dark"));
@@ -326,6 +409,23 @@ function applyTheme(theme) {
 
 async function api(url, options = {}) {
   const { body, suppressAuthRedirect = false, ...fetchOptions } = options;
+  const mode = await resolveApiMode();
+
+  if (mode === "browser" && window.HorizonLocalApi?.request) {
+    try {
+      return await window.HorizonLocalApi.request(url, {
+        ...fetchOptions,
+        method: fetchOptions.method || "GET",
+        body,
+      });
+    } catch (error) {
+      if (error.status === 401 && !suppressAuthRedirect) {
+        setUser(null);
+      }
+      throw new Error(error.message || "Falha no modo navegador.");
+    }
+  }
+
   const request = {
     method: fetchOptions.method || "GET",
     headers: {
@@ -713,19 +813,41 @@ function emptyRow(message, columns) {
   return `<tr><td colspan="${columns}" class="muted">${escapeHtml(message)}</td></tr>`;
 }
 
+function buildRowActionButton(action, id, label, iconHtml, extraClass = "") {
+  const className = extraClass ? `row-button ${extraClass}` : "row-button";
+  return `
+    <button
+      class="${className}"
+      type="button"
+      data-action="${action}"
+      data-id="${id}"
+      title="${escapeHtml(label)}"
+      aria-label="${escapeHtml(label)}"
+    >
+      ${iconHtml}
+    </button>
+  `;
+}
+
 function setUser(user) {
   state.user = user;
-  const canSeeAdmin = user && (user.role === "ADMIN" || user.role === "MANAGER");
-  const canManageInvites = user && user.role === "ADMIN";
+  const canAccessAdmin = user && user.role === "ADMIN";
 
   refs.authScreen.classList.toggle("hidden", Boolean(user));
   refs.appShell.classList.toggle("hidden", !user);
-  refs.adminNavButton.classList.toggle("hidden", !canSeeAdmin);
-  refs.inviteForm.classList.toggle("hidden", !canManageInvites);
-  refs.invitesTableBody.closest(".panel")?.classList.toggle("hidden", !canManageInvites);
+  refs.adminNavButton.classList.toggle("hidden", !canAccessAdmin);
+
+  if (!canAccessAdmin) {
+    state.adminUsers = [];
+    state.logs = [];
+    renderAdmin();
+  }
 
   if (!user) {
     state.section = "dashboard";
+    switchAuthMode("login");
+    refs.loginForm.reset();
+    refs.activationForm.reset();
     refs.topbarUserName.textContent = "-";
     refs.topbarUserRole.textContent = "-";
     setSection("dashboard");
@@ -735,19 +857,20 @@ function setUser(user) {
   refs.topbarUserName.textContent = user.name;
   refs.topbarUserRole.textContent = roleLabels[user.role] || user.role;
 
-  if (!canSeeAdmin && state.section === "admin") {
+  if (!canAccessAdmin && state.section === "admin") {
     setSection("dashboard");
   }
 }
 
 function setSection(section) {
-  state.section = section;
+  const nextSection = section === "admin" && state.user?.role !== "ADMIN" ? "dashboard" : section;
+  state.section = nextSection;
   document.querySelectorAll(".nav-item").forEach((button) => {
-    button.classList.toggle("active", button.dataset.section === section);
+    button.classList.toggle("active", button.dataset.section === nextSection);
   });
 
   document.querySelectorAll(".content-section").forEach((panel) => {
-    panel.classList.toggle("active", panel.id === `${section}-section`);
+    panel.classList.toggle("active", panel.id === `${nextSection}-section`);
   });
 }
 
@@ -763,6 +886,7 @@ function applyDefaultFormValues() {
   refs.checklistForm.elements.checklistDate.value = currentLocalDateTime();
   refs.checklistForm.elements.checklistType.value = "PRE_USE";
   refs.emailForm.elements.receivedAt.value = currentLocalDateTime();
+  resetAdminUserForm();
   state.checklistDraftItems = cloneChecklistTemplate();
   renderChecklistComposer();
 }
@@ -783,7 +907,7 @@ async function refreshAll() {
     refreshEmails(),
   ];
 
-  if (state.user.role === "ADMIN" || state.user.role === "MANAGER") {
+  if (state.user.role === "ADMIN") {
     tasks.push(refreshAdmin());
   }
 
@@ -877,21 +1001,24 @@ async function refreshEmails() {
 }
 
 async function refreshAdmin() {
-  const tasks = [api("/api/admin/logs?limit=120")];
-  const shouldLoadInvites = state.user?.role === "ADMIN";
-
-  if (shouldLoadInvites) {
-    tasks.push(api("/api/admin/invites"));
+  if (state.user?.role !== "ADMIN") {
+    state.adminUsers = [];
+    state.logs = [];
+    renderAdmin();
+    return;
   }
 
-  const [logsResponse, invitesResponse] = await Promise.all(tasks);
+  const [logsResponse, usersResponse] = await Promise.all([
+    api("/api/admin/logs?limit=120"),
+    api("/api/admin/users"),
+  ]);
   state.logs = logsResponse.items || [];
-  state.invites = invitesResponse?.items || [];
+  state.adminUsers = usersResponse?.items || [];
   renderAdmin();
 }
 
 async function maybeRefreshAdmin() {
-  if (state.user?.role === "ADMIN" || state.user?.role === "MANAGER") {
+  if (state.user?.role === "ADMIN") {
     await refreshAdmin();
   }
 }
@@ -1246,10 +1373,10 @@ function renderNotes() {
               </td>
               <td>
                 <div class="row-actions">
-                  <button class="row-button" data-action="edit-note" data-id="${note.id}">Editar</button>
+                  ${buildRowActionButton("edit-note", note.id, "Editar nota", "&#9998;")}
                   ${
                     state.user?.role === "ADMIN"
-                      ? `<button class="row-button danger" data-action="delete-note" data-id="${note.id}">Excluir</button>`
+                      ? buildRowActionButton("delete-note", note.id, "Excluir nota", "&#10005;", "danger")
                       : ""
                   }
                 </div>
@@ -1276,7 +1403,7 @@ function renderProducts() {
               <td>${escapeHtml(product.barcode || "-")}</td>
               <td>
                 <div class="row-actions">
-                  <button class="row-button" data-action="edit-product" data-id="${product.id}">Editar</button>
+                  ${buildRowActionButton("edit-product", product.id, "Editar produto", "&#9998;")}
                 </div>
               </td>
             </tr>
@@ -1407,7 +1534,7 @@ function renderSchedules() {
               <td>${escapeHtml(item.assistant || "-")}</td>
               <td>
                 <div class="row-actions">
-                  <button class="row-button" data-action="edit-schedule" data-id="${item.id}">Editar</button>
+                  ${buildRowActionButton("edit-schedule", item.id, "Editar escala", "&#9998;")}
                 </div>
               </td>
             </tr>
@@ -1430,7 +1557,7 @@ function renderFines() {
               <td>${escapeHtml(formatCurrency(item.amount))}</td>
               <td>
                 <div class="row-actions">
-                  <button class="row-button" data-action="edit-fine" data-id="${item.id}">Editar</button>
+                  ${buildRowActionButton("edit-fine", item.id, "Editar multa", "&#9998;")}
                 </div>
               </td>
             </tr>
@@ -1452,7 +1579,7 @@ function renderChecklists() {
               <td>${escapeHtml(item.items.join(", "))}</td>
               <td>
                 <div class="row-actions">
-                  <button class="row-button" data-action="edit-checklist" data-id="${item.id}">Editar</button>
+                  ${buildRowActionButton("edit-checklist", item.id, "Editar checklist", "&#9998;")}
                 </div>
               </td>
             </tr>
@@ -1488,21 +1615,35 @@ function renderEmails() {
 }
 
 function renderAdmin() {
-  refs.invitesTableBody.innerHTML = state.invites.length
-    ? state.invites
+  if (state.user?.role !== "ADMIN") {
+    refs.adminUsersTableBody.innerHTML = emptyRow("Acesso restrito aos administradores.", 6);
+    refs.logsTableBody.innerHTML = emptyRow("Acesso restrito aos administradores.", 5);
+    return;
+  }
+
+  refs.adminUsersTableBody.innerHTML = state.adminUsers.length
+    ? state.adminUsers
         .map(
           (item) => `
             <tr>
-              <td><strong>${escapeHtml(item.code)}</strong></td>
+              <td>
+                <strong>${escapeHtml(item.name)}</strong>
+                <div class="muted">${escapeHtml(formatDateTime(item.createdAt))}</div>
+              </td>
+              <td>${escapeHtml(item.email)}</td>
               <td>${escapeHtml(roleLabels[item.role] || item.role)}</td>
-              <td>${escapeHtml(item.createdByName || "-")}</td>
-              <td>${escapeHtml(item.usedByName || "-")}</td>
-              <td>${escapeHtml(formatDateTime(item.createdAt))}</td>
+              <td>${statusBadge(item.status)}</td>
+              <td class="muted">${escapeHtml(renderAdminUserCodeState(item))}</td>
+              <td>
+                <div class="row-actions">
+                  ${renderAdminUserActions(item)}
+                </div>
+              </td>
             </tr>
           `
         )
         .join("")
-    : emptyRow("Nenhum convite gerado.", 5);
+    : emptyRow("Nenhum usuario administravel cadastrado.", 6);
 
   refs.logsTableBody.innerHTML = state.logs.length
     ? state.logs
@@ -1513,12 +1654,52 @@ function renderAdmin() {
               <td>${escapeHtml(item.userName)}</td>
               <td>${escapeHtml(item.action)}</td>
               <td>${escapeHtml(item.entityType)} ${escapeHtml(item.entityId || "")}</td>
-              <td>${escapeHtml(typeof item.details === "object" ? JSON.stringify(item.details) : item.details || "-")}</td>
+              <td>${escapeHtml(formatAdminLogDetails(item.details))}</td>
             </tr>
           `
         )
         .join("")
     : emptyRow("Nenhum log disponível.", 5);
+}
+
+function renderAdminUserActions(item) {
+  const actions = [buildRowActionButton("edit-user", item.id, "Editar usuario", "&#9998;")];
+
+  if (item.status === "BLOCKED") {
+    actions.push(buildRowActionButton("unblock-user", item.id, "Desbloquear usuario", "&#10003;"));
+  } else {
+    actions.push(
+      buildRowActionButton(
+        item.status === "ACTIVE" ? "reset-user-password" : "issue-user-code",
+        item.id,
+        item.status === "ACTIVE" ? "Redefinir senha por codigo" : "Emitir codigo de ativacao",
+        "&#35;"
+      )
+    );
+    actions.push(buildRowActionButton("block-user", item.id, "Bloquear usuario", "&#10005;", "danger"));
+  }
+
+  return actions.join("");
+}
+
+function renderAdminUserCodeState(item) {
+  if (item.hasActiveActivationCode && item.activationCodeExpiresAt) {
+    return `Codigo ativo ate ${formatDateTime(item.activationCodeExpiresAt)}`;
+  }
+  if (item.status === "PENDING") {
+    return "Aguardando emissao de codigo";
+  }
+  if (item.status === "BLOCKED") {
+    return "Usuario bloqueado";
+  }
+  return "Sem codigo pendente";
+}
+
+function formatAdminLogDetails(details) {
+  if (!details) {
+    return "-";
+  }
+  return typeof details === "object" ? JSON.stringify(details) : String(details);
 }
 
 function updateMovementProductSelect() {
@@ -1553,6 +1734,11 @@ function handleRowActions(event) {
   if (action === "edit-schedule") editSchedule(id);
   if (action === "edit-fine") editFine(id);
   if (action === "edit-checklist") editChecklist(id);
+  if (action === "edit-user") editAdminUser(id);
+  if (action === "issue-user-code") issueAdminUserCode(id, "ACTIVATION");
+  if (action === "reset-user-password") issueAdminUserCode(id, "RESET_PASSWORD");
+  if (action === "block-user") updateAdminUserStatus(id, "BLOCKED");
+  if (action === "unblock-user") updateAdminUserStatus(id, "ACTIVE");
 }
 
 function editNote(id) {
@@ -1625,6 +1811,17 @@ function editChecklist(id) {
   setSection("checklists");
 }
 
+function editAdminUser(id) {
+  const item = findById(state.adminUsers, id);
+  if (!item) return;
+
+  refs.adminUserForm.elements.id.value = item.id;
+  refs.adminUserForm.elements.name.value = item.name;
+  refs.adminUserForm.elements.email.value = item.email;
+  refs.adminUserForm.elements.role.value = item.role;
+  setSection("admin");
+}
+
 async function handleLoginSubmit(event) {
   event.preventDefault();
 
@@ -1641,17 +1838,99 @@ async function handleLoginSubmit(event) {
   }
 }
 
-async function handleRegisterSubmit(event) {
+async function handleActivationSubmit(event) {
   event.preventDefault();
 
   try {
-    const payload = Object.fromEntries(new FormData(refs.registerForm).entries());
-    const response = await api("/api/auth/register", { method: "POST", body: payload });
-    refs.registerForm.reset();
-    setUser(response.user);
-    applyDefaultFormValues();
-    await refreshAll();
-    showToast("Cadastro concluído e sessão iniciada.");
+    const payload = Object.fromEntries(new FormData(refs.activationForm).entries());
+    await api("/api/auth/activate", { method: "POST", body: payload });
+    refs.activationForm.reset();
+    switchAuthMode("login");
+    showToast("Conta ativada. Entre com seu email e nova senha.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleAdminUserSubmit(event) {
+  event.preventDefault();
+  const id = refs.adminUserForm.elements.id.value;
+  const payload = {
+    name: refs.adminUserForm.elements.name.value,
+    email: refs.adminUserForm.elements.email.value,
+    role: refs.adminUserForm.elements.role.value,
+  };
+
+  try {
+    await api(id ? `/api/admin/users/${id}` : "/api/admin/users", {
+      method: id ? "PUT" : "POST",
+      body: payload,
+    });
+    resetAdminUserForm();
+    await refreshAdmin();
+    showToast(id ? "Usuario atualizado." : "Usuario criado com sucesso.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function copyTextToClipboard(value) {
+  if (!value) {
+    return false;
+  }
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch (error) {
+    // segue para o fallback
+  }
+
+  const hiddenInput = document.createElement("textarea");
+  hiddenInput.value = value;
+  hiddenInput.setAttribute("readonly", "true");
+  hiddenInput.style.position = "fixed";
+  hiddenInput.style.opacity = "0";
+  document.body.appendChild(hiddenInput);
+  hiddenInput.select();
+  hiddenInput.setSelectionRange(0, hiddenInput.value.length);
+  const copied = document.execCommand("copy");
+  hiddenInput.remove();
+  return copied;
+}
+
+async function issueAdminUserCode(id, purpose) {
+  try {
+    const response = await api(`/api/admin/users/${id}/activation-code`, {
+      method: "POST",
+      body: { purpose },
+    });
+    const copied = await copyTextToClipboard(response.code);
+    await refreshAdmin();
+    if (!copied) {
+      showToast("Nao foi possivel copiar o codigo. Gere um novo codigo apos liberar a area de transferencia.", "error");
+      return;
+    }
+    showToast(
+      purpose === "RESET_PASSWORD"
+        ? "Codigo de redefinicao copiado para a area de transferencia."
+        : "Codigo de ativacao copiado para a area de transferencia."
+    );
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function updateAdminUserStatus(id, status) {
+  try {
+    await api(`/api/admin/users/${id}/status`, {
+      method: "POST",
+      body: { status },
+    });
+    await refreshAdmin();
+    showToast(status === "BLOCKED" ? "Usuario bloqueado." : "Usuario desbloqueado.");
   } catch (error) {
     showToast(error.message, "error");
   }
@@ -1963,27 +2242,10 @@ async function handleEmailSubmit(event) {
   }
 }
 
-async function handleInviteSubmit(event) {
-  event.preventDefault();
-
-  if (state.user?.role !== "ADMIN") {
-    showToast("Apenas administradores podem criar convites.", "error");
-    return;
-  }
-
-  const payload = {
-    role: refs.inviteForm.elements.role.value,
-    notes: refs.inviteForm.elements.notes.value,
-  };
-
-  try {
-    const response = await api("/api/admin/invites", { method: "POST", body: payload });
-    refs.inviteForm.reset();
-    await refreshAdmin();
-    showToast(`Convite criado: ${response.item.code}`);
-  } catch (error) {
-    showToast(error.message, "error");
-  }
+function resetAdminUserForm() {
+  refs.adminUserForm.reset();
+  refs.adminUserForm.elements.id.value = "";
+  refs.adminUserForm.elements.role.value = "OPERATIONAL";
 }
 
 function resetNoteForm() {
@@ -2520,7 +2782,7 @@ function renderSchedules() {
               <td>${escapeHtml(item.notes || "-")}</td>
               <td>
                 <div class="row-actions">
-                  <button class="row-button" data-action="edit-schedule" data-id="${item.id}">Editar</button>
+                  ${buildRowActionButton("edit-schedule", item.id, "Editar escala", "&#9998;")}
                 </div>
               </td>
             </tr>
@@ -2549,7 +2811,7 @@ function renderChecklists() {
               )}</td>
               <td>
                 <div class="row-actions">
-                  <button class="row-button" data-action="edit-checklist" data-id="${item.id}">Editar</button>
+                  ${buildRowActionButton("edit-checklist", item.id, "Editar checklist", "&#9998;")}
                 </div>
               </td>
             </tr>

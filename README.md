@@ -1,71 +1,136 @@
-# Sistema Web de Logística para Frigorífico
+# Projeto Horizon
 
-MVP web completo para operação logística diária, com backend em Node.js, persistência em SQLite local e frontend responsivo para desktop e celular.
+Sistema web de logistica com dois modos de uso:
 
-## O que o sistema entrega
+- `server`: Node.js + Express + SQLite
+- `browser`: site estatico com dados salvos no navegador
 
-- Login com usuário e senha
-- Cadastro por código de convite
-- Perfis: `ADMIN`, `MANAGER`, `OPERATIONAL`
-- Dashboard com métricas, alertas, combustível e escala do dia
-- Notas fiscais com cadastro manual, importação XML e importação de planilha
-- Aprendizado de categoria por fornecedor
-- Estoque com produtos, entradas, saídas, histórico e estoque mínimo
-- Leitura por câmera para código de barras via navegador compatível
-- Abastecimento com saldo após cada operação
-- Escala, multas e checklists
-- Central de Emails com filtro simples de spam, detecção de XML e criação automática de nota
-- Log de ações persistido no banco
+## Rodar localmente
 
-## Stack
-
-- Frontend: HTML, CSS e JavaScript puro
-- Backend: Node.js + Express
-- Banco: SQLite em arquivo local usando `sql.js`
-
-## Estrutura
-
-- `server.js`: servidor HTTP e APIs
-- `src/database.js`: inicialização do banco, schema e seed inicial
-- `src/security.js`: hash de senha, sessão e cookies
-- `src/parsers.js`: importação XML, planilha e leitura de email
-- `public/`: interface web responsiva
-- `data/logistica.db`: banco SQLite criado automaticamente ao iniciar
-
-## Como rodar localmente
-
-1. Instale o Node.js 18 ou superior.
-2. No diretório do projeto, execute:
+1. Instale Node.js 18 ou superior.
+2. No diretorio do projeto, execute:
 
 ```bash
 npm install
 npm start
 ```
 
-3. Acesse no navegador:
+3. Abra:
 
 ```text
 http://localhost:3000
 ```
 
-## Acesso inicial
+## Deploy mais simples com SQLite: Railway
 
-- Email: `admin@frigorifico.local`
-- Senha: `admin123`
+Se voce quer hospedar com SQLite e gastar o minimo possivel, este e o caminho principal do projeto.
 
-## Convites iniciais
+Arquivos ja preparados:
 
-- Administrador: `ADM-LOG-2026`
-- Gerente: `GER-LOG-2026`
-- Operacional: `OPE-LOG-2026`
+- `railway.json`: start e healthcheck
+- `server.js`: loga a URL publica
+- `src/database.js`: usa automaticamente o volume do Railway quando ele estiver conectado
 
-## Observações do MVP
+### Passo a passo
 
-- O banco é persistido em arquivo local `.db`, sem depender de `localStorage`.
-- As tabelas são criadas automaticamente na primeira inicialização.
-- O scanner por câmera usa `BarcodeDetector`, disponível em navegadores compatíveis.
-- A central de emails foi desenhada para processamento local de conteúdo colado/exportado, sem depender de credenciais IMAP no MVP.
+1. Suba este projeto para o GitHub.
+2. Na Railway, clique em `New Project`.
+3. Escolha `Deploy from GitHub Repo`.
+4. Selecione este repositorio.
+5. Espere o primeiro deploy terminar.
+6. Abra o servico e va em `Settings > Networking > Public Networking`.
+7. Clique em `Generate Domain`.
+8. No projeto, adicione um volume ao servico.
+9. No volume, use como mount path:
 
-## Observação desta entrega
+```text
+/data
+```
 
-O ambiente atual não possui Node.js instalado em `PATH`, então o projeto foi estruturado completo, mas não pôde ser executado nem testado nesta máquina durante esta sessão. Assim que o Node estiver instalado, os comandos acima devem permitir a inicialização local.
+10. Em `Variables`, defina:
+
+```env
+COOKIE_SECURE=true
+APP_URL=https://seu-dominio.up.railway.app
+MASTER_ADMIN_EMAIL=master@horizon.internal
+MASTER_ADMIN_PASSWORD=defina-uma-senha-forte
+```
+
+11. Faca um `Redeploy`.
+12. Abra a URL publica e use apenas credenciais internas configuradas pelo ambiente.
+
+### Como o banco funciona na Railway
+
+- se existir `DB_PATH`, o sistema usa esse valor
+- se nao existir `DB_PATH`, mas houver volume Railway, o sistema salva automaticamente em `<mount-path>/logistica.db`
+- com o mount path `/data`, o arquivo final fica em:
+
+```text
+/data/logistica.db
+```
+
+### Se voce ja tem um banco local
+
+Se quiser levar seus dados atuais para a nuvem, copie o arquivo:
+
+```text
+data/logistica.db
+```
+
+para o volume da plataforma antes de usar em producao.
+
+## Render com SQLite
+
+O projeto tambem esta preparado para Render com o arquivo `render.yaml`, mas aqui existe uma limitacao importante:
+
+- SQLite persistente no Render exige `persistent disk`
+- `persistent disk` no Render e recurso de servico pago
+
+Ou seja: para SQLite persistente, use Railway se quiser tentar ficar no plano gratuito, e use Render apenas se aceitar um plano pago.
+
+### Passo rapido no Render
+
+1. Crie um novo `Web Service` a partir do GitHub.
+2. Use o arquivo `render.yaml` da raiz.
+3. Mantenha o disk em `/data`.
+4. O projeto ja define:
+
+```env
+DB_PATH=/data/logistica.db
+COOKIE_SECURE=true
+```
+
+5. Conclua o deploy.
+
+## Site estatico sem backend
+
+Se voce quiser publicar sem servidor, o projeto tambem funciona em modo navegador:
+
+- GitHub Pages
+- Netlify
+- qualquer hospedagem estatica
+
+Nesse modo:
+
+- nao usa `server.js`
+- nao usa SQLite real
+- salva tudo no `localStorage` do navegador
+
+## Variaveis uteis
+
+Arquivo de exemplo: `.env.example`
+
+Variaveis principais:
+
+```env
+PORT=3000
+DB_PATH=./data/logistica.db
+COOKIE_SECURE=false
+APP_URL=https://seu-dominio-publico.aqui
+```
+
+## Observacoes importantes
+
+- SQLite e adequado para uma unica instancia do app
+- nao escale este projeto para varias instancias usando o mesmo arquivo SQLite
+- para varios usuarios com alta concorrencia, o melhor caminho futuro e PostgreSQL

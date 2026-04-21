@@ -1,7 +1,7 @@
 const path = require("path");
 const express = require("express");
 const crypto = require("crypto");
-const { DB_PATH, initDatabase, get, all, write, insert, transaction } = require("./src/database");
+const { DB_PATH, DB_PATH_SOURCE, initDatabase, get, all, write, insert, transaction } = require("./src/database");
 const {
   SESSION_COOKIE,
   hashPassword,
@@ -25,6 +25,12 @@ const { parseInvoiceXml, parseSpreadsheet, parseEml, analyzeEmailPayload } = req
 
 const PORT = Number(process.env.PORT || 3000);
 const DASHBOARD_PERIODS = [7, 15, 30, 60, 90];
+const USER_STATUSES = {
+  PENDING: "PENDING",
+  ACTIVE: "ACTIVE",
+  BLOCKED: "BLOCKED",
+};
+const ACTIVATION_CODE_TTL_HOURS = Math.max(Number(process.env.ACTIVATION_CODE_TTL_HOURS || 24), 1);
 
 const ROLE_ALIASES = {
   admin: "ADMIN",
@@ -96,6 +102,46 @@ const CHECKLIST_ITEM_STATUS_ALIASES = {
   critico: "CRITICAL",
   critical: "CRITICAL",
 };
+
+function resolvePublicAppInfo(port) {
+  const appUrl = normalizeText(process.env.APP_URL).replace(/\/+$/, "");
+  if (appUrl) {
+    return {
+      url: appUrl,
+      source: "APP_URL",
+    };
+  }
+
+  const railwayDomain = normalizeText(process.env.RAILWAY_PUBLIC_DOMAIN);
+  if (railwayDomain) {
+    return {
+      url: `https://${railwayDomain}`,
+      source: "RAILWAY_PUBLIC_DOMAIN",
+    };
+  }
+
+  const fallbackUrl = normalizeText(
+    process.env.PUBLIC_URL || process.env.SITE_URL || process.env.URL || process.env.RENDER_EXTERNAL_URL
+  ).replace(/\/+$/, "");
+  if (fallbackUrl) {
+    return {
+      url: fallbackUrl,
+      source: "fallback",
+    };
+  }
+
+  if (String(process.env.NODE_ENV || "").trim().toLowerCase() === "production") {
+    return {
+      url: "",
+      source: "",
+    };
+  }
+
+  return {
+    url: `http://localhost:${port}`,
+    source: "local",
+  };
+}
 
 function normalizeEnum(value, aliases, fallback) {
   const normalized = normalizeKey(value);
@@ -239,6 +285,43 @@ function normalizeChecklistStatus(value, fallback = "OPEN") {
   return normalizeEnum(value, CHECKLIST_STATUS_ALIASES, fallback);
 }
 
+function resolveUserStatus(row) {
+  const rawStatus = normalizeText(row?.status).toUpperCase();
+  if (rawStatus === USER_STATUSES.PENDING || rawStatus === USER_STATUSES.ACTIVE || rawStatus === USER_STATUSES.BLOCKED) {
+    return rawStatus;
+  }
+  return Number(row?.active) ? USER_STATUSES.ACTIVE : USER_STATUSES.BLOCKED;
+}
+
+function isSystemUser(row) {
+  return Boolean(Number(row?.is_system || 0));
+}
+
+function redactSensitiveDetails(details, keyName = "") {
+  const normalizedKey = normalizeKey(keyName);
+  const shouldRedact =
+    normalizedKey.includes("code") ||
+    normalizedKey.includes("password") ||
+    normalizedKey.includes("secret") ||
+    normalizedKey.includes("token");
+
+  if (shouldRedact) {
+    return "[redacted]";
+  }
+
+  if (Array.isArray(details)) {
+    return details.map((item) => redactSensitiveDetails(item, keyName));
+  }
+
+  if (details && typeof details === "object") {
+    return Object.fromEntries(
+      Object.entries(details).map(([entryKey, entryValue]) => [entryKey, redactSensitiveDetails(entryValue, entryKey)])
+    );
+  }
+
+  return details;
+}
+
 function formatUser(row) {
   if (!row) {
     return null;
@@ -249,6 +332,7 @@ function formatUser(row) {
     name: row.name,
     email: row.email,
     role: row.role,
+    status: resolveUserStatus(row),
   };
 }
 
@@ -268,7 +352,7 @@ function logAction(user, action, entityType, entityId, details = null) {
       action,
       entityType,
       entityId ? String(entityId) : null,
-      details ? JSON.stringify(details) : null,
+      details ? JSON.stringify(redactSensitiveDetails(details)) : null,
       nowIso(),
     ]
   );
@@ -1088,16 +1172,96 @@ function queryEmails() {
     linkedNoteId: row.linked_note_id ? Number(row.linked_note_id) : null,
     linkedNoteDanfe: row.note_danfe || "",
     linkedNoteStatus: row.note_status || "",
-    linkedNoteCategory: row.note_category || "",
+      linkedNoteCategory: row.note_category || "",
   }));
 }
 
-function createInviteCode(role) {
-  const prefix = role === "ADMIN" ? "ADM" : role === "MANAGER" ? "GER" : "OPE";
-  return `${prefix}-${new Date().getFullYear()}-${crypto
-    .randomBytes(3)
-    .toString("hex")
-    .toUpperCase()}`;
+function createActivationCode() {
+  return `ATV-${new Date().getFullYear()}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+}
+
+function buildActivationExpiry() {
+  return new Date(Date.now() + ACTIVATION_CODE_TTL_HOURS * 60 * 60 * 1000).toISOString();
+}
+
+function createProvisioningPasswordHash() {
+  return hashPassword(createSessionToken());
+}
+
+function mapAdminUserRow(row) {
+  return {
+    id: Number(row.id),
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    status: resolveUserStatus(row),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at,
+    hasActiveActivationCode: Boolean(row.activation_code_id),
+    activationCodeCreatedAt: row.activation_code_created_at || null,
+    activationCodeExpiresAt: row.activation_code_expires_at || null,
+    activationCodePurpose: row.activation_code_purpose || null,
+  };
+}
+
+function queryAdminUsers() {
+  return all(
+    `
+      SELECT
+        u.*,
+        ac.id AS activation_code_id,
+        ac.created_at AS activation_code_created_at,
+        ac.expires_at AS activation_code_expires_at,
+        ac.purpose AS activation_code_purpose
+      FROM users u
+      LEFT JOIN activation_codes ac ON ac.id = (
+        SELECT inner_ac.id
+        FROM activation_codes inner_ac
+        WHERE inner_ac.user_id = u.id
+          AND inner_ac.active = 1
+          AND inner_ac.used_at IS NULL
+          AND inner_ac.expires_at > ?
+        ORDER BY inner_ac.created_at DESC, inner_ac.id DESC
+        LIMIT 1
+      )
+      WHERE coalesce(u.is_system, 0) = 0
+      ORDER BY lower(u.name) ASC, u.id ASC
+    `,
+    [nowIso()]
+  ).map(mapAdminUserRow);
+}
+
+function getManagedUser(userId) {
+  return get("SELECT * FROM users WHERE id = ? AND coalesce(is_system, 0) = 0", [userId]);
+}
+
+function invalidateActivationCodes(userId) {
+  write("UPDATE activation_codes SET active = 0 WHERE user_id = ? AND active = 1", [userId]);
+}
+
+function deleteUserSessions(userId) {
+  write("DELETE FROM sessions WHERE user_id = ?", [userId]);
+}
+
+function issueActivationCode(userId, createdByUserId, purpose = "ACTIVATION") {
+  const timestamp = nowIso();
+  const expiresAt = buildActivationExpiry();
+  const code = createActivationCode();
+  const codeId = insert(
+    `
+      INSERT INTO activation_codes (user_id, code, purpose, active, created_by, created_at, expires_at)
+      VALUES (?, ?, ?, 1, ?, ?, ?)
+    `,
+    [userId, code, purpose, createdByUserId || null, timestamp, expiresAt]
+  );
+
+  return {
+    id: codeId,
+    code,
+    purpose,
+    createdAt: timestamp,
+    expiresAt,
+  };
 }
 
 function requireAuth(req, res, next) {
@@ -1143,7 +1307,7 @@ async function start() {
 
     const session = get(
       `
-        SELECT s.*, u.id AS user_id, u.name, u.email, u.role, u.active
+        SELECT s.*, u.id AS user_id, u.name, u.email, u.role, u.active, u.status, u.is_system
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = ?
@@ -1151,7 +1315,7 @@ async function start() {
       [hashToken(sessionToken)]
     );
 
-    if (!session || !Number(session.active) || new Date(session.expires_at) <= new Date()) {
+    if (!session || resolveUserStatus(session) !== USER_STATUSES.ACTIVE || new Date(session.expires_at) <= new Date()) {
       res.setHeader("Set-Cookie", buildClearedSessionCookie());
       return next();
     }
@@ -1161,6 +1325,8 @@ async function start() {
       name: session.name,
       email: session.email,
       role: session.role,
+      status: resolveUserStatus(session),
+      system: isSystemUser(session),
     };
 
     if (
@@ -1194,9 +1360,20 @@ async function start() {
       return sendError(res, 400, "Informe email e senha.");
     }
 
-    const user = get("SELECT * FROM users WHERE lower(email) = lower(?) AND active = 1", [email]);
+    const user = get("SELECT * FROM users WHERE lower(email) = lower(?)", [email]);
+    if (!user) {
+      return sendError(res, 401, "Usuario ou senha invalidos.");
+    }
 
-    if (!user || !verifyPassword(password, user.password_hash)) {
+    const status = resolveUserStatus(user);
+    if (status === USER_STATUSES.PENDING) {
+      return sendError(res, 403, "Conta pendente de ativacao. Use o codigo fornecido pelo administrador.");
+    }
+    if (status === USER_STATUSES.BLOCKED) {
+      return sendError(res, 403, "Conta bloqueada. Procure o administrador.");
+    }
+
+    if (!verifyPassword(password, user.password_hash)) {
       return sendError(res, 401, "Usuario ou senha invalidos.");
     }
 
@@ -1218,85 +1395,93 @@ async function start() {
     return res.json({ user: formatUser(user) });
   });
 
-  app.post("/api/auth/register", (req, res) => {
-    const name = normalizeText(req.body.name);
+  app.post("/api/auth/activate", (req, res) => {
     const email = normalizeText(req.body.email).toLowerCase();
     const password = String(req.body.password || "");
-    const inviteCode = normalizeText(req.body.inviteCode).toUpperCase();
+    const confirmPassword = String(req.body.confirmPassword || "");
+    const activationCode = normalizeText(req.body.activationCode || req.body.code).toUpperCase();
 
-    if (!name || !email || !password || !inviteCode) {
-      return sendError(res, 400, "Preencha nome, email, senha e codigo de convite.");
+    if (!email || !activationCode || !password || !confirmPassword) {
+      return sendError(res, 400, "Preencha email, codigo, nova senha e confirmacao.");
     }
 
-    if (password.length < 6) {
-      return sendError(res, 400, "A senha precisa ter pelo menos 6 caracteres.");
+    if (password !== confirmPassword) {
+      return sendError(res, 400, "A confirmacao de senha nao confere.");
     }
 
-    const existingUser = get("SELECT id FROM users WHERE lower(email) = lower(?)", [email]);
-    if (existingUser) {
-      return sendError(res, 409, "Ja existe um usuario cadastrado com este email.");
+    if (password.length < 8) {
+      return sendError(res, 400, "A nova senha precisa ter pelo menos 8 caracteres.");
     }
 
-    const invite = get(
-      "SELECT * FROM invite_codes WHERE code = ? AND active = 1 AND used_by IS NULL",
-      [inviteCode]
+    const user = get("SELECT * FROM users WHERE lower(email) = lower(?)", [email]);
+    if (!user || isSystemUser(user)) {
+      return sendError(res, 400, "Codigo de ativacao invalido ou expirado.");
+    }
+
+    if (resolveUserStatus(user) === USER_STATUSES.BLOCKED) {
+      return sendError(res, 403, "Conta bloqueada. Procure o administrador.");
+    }
+
+    const activation = get(
+      `
+        SELECT *
+        FROM activation_codes
+        WHERE user_id = ?
+          AND code = ?
+          AND active = 1
+          AND used_at IS NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `,
+      [user.id, activationCode]
     );
 
-    if (!invite) {
-      return sendError(res, 400, "Codigo de convite invalido ou ja utilizado.");
+    if (!activation) {
+      return sendError(res, 400, "Codigo de ativacao invalido ou expirado.");
     }
 
-    const createdAt = nowIso();
-    let userId = 0;
+    if (new Date(activation.expires_at) <= new Date()) {
+      write("UPDATE activation_codes SET active = 0 WHERE id = ?", [activation.id]);
+      return sendError(res, 400, "Codigo de ativacao expirado. Solicite um novo codigo ao administrador.");
+    }
 
     transaction(() => {
-      userId = insert(
+      write(
         `
-          INSERT INTO users (name, email, password_hash, role, invite_code_used, active, created_at)
-          VALUES (?, ?, ?, ?, ?, 1, ?)
+          UPDATE users
+          SET password_hash = ?, status = ?, active = 1, updated_at = ?
+          WHERE id = ?
         `,
-        [name, email, hashPassword(password), invite.role, inviteCode, createdAt]
+        [hashPassword(password), USER_STATUSES.ACTIVE, nowIso(), user.id]
       );
 
       write(
         `
-          UPDATE invite_codes
-          SET used_by = ?, used_at = ?
-          WHERE id = ?
+          UPDATE activation_codes
+          SET active = 0,
+              used_at = CASE WHEN id = ? THEN ? ELSE used_at END
+          WHERE user_id = ?
+            AND active = 1
         `,
-        [userId, createdAt, invite.id]
+        [activation.id, nowIso(), user.id]
       );
+
+      deleteUserSessions(user.id);
 
       logAction(
-        { id: userId, name, email, role: invite.role },
-        "REGISTER_USER",
+        { ...formatUser(user), name: user.name },
+        "ACTIVATE_ACCOUNT",
         "USER",
-        userId,
-        { role: invite.role, inviteCode }
+        user.id,
+        { purpose: activation.purpose }
       );
     });
 
-    const token = createSessionToken();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    return res.json({ ok: true });
+  });
 
-    insert(
-      `
-        INSERT INTO sessions (user_id, token_hash, created_at, expires_at, last_seen_at)
-        VALUES (?, ?, ?, ?, ?)
-      `,
-      [userId, hashToken(token), createdAt, expiresAt, createdAt]
-    );
-
-    res.setHeader("Set-Cookie", buildSessionCookie(token, expiresAt));
-
-    return res.json({
-      user: {
-        id: userId,
-        name,
-        email,
-        role: invite.role,
-      },
-    });
+  app.post("/api/auth/register", (req, res) => {
+    return sendError(res, 403, "Cadastro publico desativado. Solicite a criacao da conta ao administrador.");
   });
 
   app.post("/api/auth/logout", requireAuth, (req, res) => {
@@ -2119,80 +2304,226 @@ async function start() {
     }
   });
 
-  app.get("/api/admin/invites", requireRoles(["ADMIN"]), (req, res) => {
-    const items = all(
-      `
-        SELECT i.*, creator.name AS created_by_name, used.name AS used_by_name
-        FROM invite_codes i
-        LEFT JOIN users creator ON creator.id = i.created_by
-        LEFT JOIN users used ON used.id = i.used_by
-        ORDER BY i.created_at DESC, i.id DESC
-      `
-    ).map((row) => ({
-      id: Number(row.id),
-      code: row.code,
-      role: row.role,
-      notes: row.notes,
-      active: Boolean(row.active),
-      createdByName: row.created_by_name || "",
-      usedByName: row.used_by_name || "",
-      createdAt: row.created_at,
-      usedAt: row.used_at,
-    }));
-
-    return res.json({ items });
+  app.get("/api/admin/users", requireRoles(["ADMIN"]), (req, res) => {
+    return res.json({ items: queryAdminUsers() });
   });
 
-  app.post("/api/admin/invites", requireRoles(["ADMIN"]), (req, res) => {
+  app.post("/api/admin/users", requireRoles(["ADMIN"]), (req, res) => {
+    const name = normalizeText(req.body.name);
+    const email = normalizeText(req.body.email).toLowerCase();
     const role = normalizeRole(req.body.role, "OPERATIONAL");
-    const notes = normalizeText(req.body.notes);
-    const code = createInviteCode(role);
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!name || !email) {
+      return sendError(res, 400, "Informe nome, email e perfil.");
+    }
+
+    if (!emailPattern.test(email)) {
+      return sendError(res, 400, "Informe um email valido.");
+    }
+
+    const existingUser = get("SELECT id FROM users WHERE lower(email) = lower(?)", [email]);
+    if (existingUser) {
+      return sendError(res, 409, "Ja existe um usuario cadastrado com este email.");
+    }
+
+    let userId = 0;
     const timestamp = nowIso();
 
-    const inviteId = insert(
-      `
-        INSERT INTO invite_codes (code, role, notes, active, created_by, created_at)
-        VALUES (?, ?, ?, 1, ?, ?)
-      `,
-      [code, role, notes, req.user.id, timestamp]
-    );
+    transaction(() => {
+      userId = insert(
+        `
+          INSERT INTO users (
+            name, email, password_hash, role, invite_code_used, active, status, is_system, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?, ?)
+        `,
+        [name, email, createProvisioningPasswordHash(), role, "ADMIN-PROVISIONED", USER_STATUSES.PENDING, timestamp, timestamp]
+      );
 
-    logAction(req.user, "CREATE_INVITE", "INVITE", inviteId, { code, role });
-    return res.status(201).json({
-      item: {
-        id: inviteId,
-        code,
+      logAction(req.user, "CREATE_USER", "USER", userId, {
+        email,
         role,
-        notes,
-        active: true,
-        createdByName: req.user.name,
-        usedByName: "",
-        createdAt: timestamp,
-        usedAt: null,
-      },
+        status: USER_STATUSES.PENDING,
+      });
+    });
+
+    return res.status(201).json({
+      item: queryAdminUsers().find((item) => item.id === userId) || null,
     });
   });
 
-  app.get("/api/admin/logs", requireRoles(["ADMIN", "MANAGER"]), (req, res) => {
+  app.put("/api/admin/users/:id", requireRoles(["ADMIN"]), (req, res) => {
+    const userId = Number(req.params.id);
+    const existing = getManagedUser(userId);
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!existing) {
+      return sendError(res, 404, "Usuario nao encontrado.");
+    }
+
+    const name = normalizeText(req.body.name || existing.name);
+    const email = normalizeText(req.body.email || existing.email).toLowerCase();
+    const role = normalizeRole(req.body.role || existing.role, existing.role);
+
+    if (!name || !email) {
+      return sendError(res, 400, "Informe nome, email e perfil.");
+    }
+
+    if (!emailPattern.test(email)) {
+      return sendError(res, 400, "Informe um email valido.");
+    }
+
+    const emailInUse = get("SELECT id FROM users WHERE lower(email) = lower(?) AND id <> ?", [email, userId]);
+    if (emailInUse) {
+      return sendError(res, 409, "Ja existe um usuario cadastrado com este email.");
+    }
+
+    write(
+      `
+        UPDATE users
+        SET name = ?, email = ?, role = ?, updated_at = ?
+        WHERE id = ?
+      `,
+      [name, email, role, nowIso(), userId]
+    );
+
+    logAction(req.user, "UPDATE_USER", "USER", userId, {
+      email,
+      role,
+      status: resolveUserStatus(existing),
+    });
+
+    return res.json({
+      item: queryAdminUsers().find((item) => item.id === userId) || null,
+    });
+  });
+
+  app.post("/api/admin/users/:id/activation-code", requireRoles(["ADMIN"]), (req, res) => {
+    const userId = Number(req.params.id);
+    const existing = getManagedUser(userId);
+    const purpose = normalizeText(req.body.purpose).toUpperCase() === "RESET_PASSWORD" ? "RESET_PASSWORD" : "ACTIVATION";
+
+    if (!existing) {
+      return sendError(res, 404, "Usuario nao encontrado.");
+    }
+
+    if (resolveUserStatus(existing) === USER_STATUSES.BLOCKED) {
+      return sendError(res, 400, "Desbloqueie o usuario antes de emitir um novo codigo.");
+    }
+
+    let issuedCode = null;
+
+    transaction(() => {
+      invalidateActivationCodes(userId);
+      deleteUserSessions(userId);
+      write(
+        `
+          UPDATE users
+          SET password_hash = ?, status = ?, active = 0, updated_at = ?
+          WHERE id = ?
+        `,
+        [createProvisioningPasswordHash(), USER_STATUSES.PENDING, nowIso(), userId]
+      );
+      issuedCode = issueActivationCode(userId, req.user.id, purpose);
+      logAction(
+        req.user,
+        purpose === "RESET_PASSWORD" ? "ISSUE_PASSWORD_RESET_CODE" : "ISSUE_ACTIVATION_CODE",
+        "USER",
+        userId,
+        {
+          purpose,
+          expiresAt: issuedCode.expiresAt,
+        }
+      );
+    });
+
+    return res.json({
+      item: queryAdminUsers().find((item) => item.id === userId) || null,
+      code: issuedCode.code,
+      purpose,
+      expiresAt: issuedCode.expiresAt,
+    });
+  });
+
+  app.post("/api/admin/users/:id/status", requireRoles(["ADMIN"]), (req, res) => {
+    const userId = Number(req.params.id);
+    const existing = getManagedUser(userId);
+    const nextStatus = normalizeText(req.body.status).toUpperCase();
+
+    if (!existing) {
+      return sendError(res, 404, "Usuario nao encontrado.");
+    }
+
+    if (nextStatus !== USER_STATUSES.ACTIVE && nextStatus !== USER_STATUSES.BLOCKED) {
+      return sendError(res, 400, "Status invalido.");
+    }
+
+    if (nextStatus === USER_STATUSES.ACTIVE && resolveUserStatus(existing) === USER_STATUSES.PENDING) {
+      return sendError(res, 400, "Para liberar este usuario, gere um codigo e conclua a ativacao.");
+    }
+
+    transaction(() => {
+      write(
+        `
+          UPDATE users
+          SET status = ?, active = ?, updated_at = ?
+          WHERE id = ?
+        `,
+        [nextStatus, nextStatus === USER_STATUSES.ACTIVE ? 1 : 0, nowIso(), userId]
+      );
+
+      if (nextStatus === USER_STATUSES.BLOCKED) {
+        invalidateActivationCodes(userId);
+        deleteUserSessions(userId);
+      }
+
+      logAction(
+        req.user,
+        nextStatus === USER_STATUSES.BLOCKED ? "BLOCK_USER" : "UNBLOCK_USER",
+        "USER",
+        userId,
+        { status: nextStatus }
+      );
+    });
+
+    return res.json({
+      item: queryAdminUsers().find((item) => item.id === userId) || null,
+    });
+  });
+
+  app.get("/api/admin/invites", requireRoles(["ADMIN"]), (req, res) => {
+    return sendError(res, 410, "Convites publicos foram desativados.");
+  });
+
+  app.post("/api/admin/invites", requireRoles(["ADMIN"]), (req, res) => {
+    return sendError(res, 410, "Convites publicos foram desativados.");
+  });
+
+  app.get("/api/admin/logs", requireRoles(["ADMIN"]), (req, res) => {
     const limit = Math.min(Number(req.query.limit || 100), 300);
     const items = all(
       `
         SELECT *
         FROM action_logs
-        ORDER BY created_at DESC, id DESC
-        LIMIT ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
       `,
       [limit]
-    ).map((row) => ({
-      id: Number(row.id),
-      userId: row.user_id ? Number(row.user_id) : null,
-      userName: row.user_name,
-      action: row.action,
-      entityType: row.entity_type,
-      entityId: row.entity_id,
-      details: safeJsonParse(row.details, row.details),
-      createdAt: row.created_at,
-    }));
+    ).map((row) => {
+      const relatedUser = row.user_id ? get("SELECT name, is_system FROM users WHERE id = ?", [row.user_id]) : null;
+      const relatedUserIsSystem = isSystemUser(relatedUser);
+      return {
+        id: Number(row.id),
+        userId: row.user_id && !relatedUserIsSystem ? Number(row.user_id) : null,
+        userName: relatedUserIsSystem ? "Conta interna" : row.user_name,
+        action: row.action,
+        entityType: row.entity_type,
+        entityId: row.entity_id,
+        details: redactSensitiveDetails(safeJsonParse(row.details, row.details)),
+        createdAt: row.created_at,
+      };
+    });
 
     return res.json({ items });
   });
@@ -2209,8 +2540,26 @@ async function start() {
   });
 
   app.listen(PORT, () => {
-    console.log(`Sistema logistica disponivel em http://localhost:${PORT}`);
-    console.log(`SQLite em ${DB_PATH}`);
+    const publicAppInfo = resolvePublicAppInfo(PORT);
+    if (publicAppInfo.url) {
+      if (publicAppInfo.source === "APP_URL") {
+        console.log(`Dominio publico configurado: ${publicAppInfo.url}`);
+      } else if (publicAppInfo.source === "RAILWAY_PUBLIC_DOMAIN") {
+        console.log(`Dominio publico detectado pela Railway: ${publicAppInfo.url}`);
+      } else {
+        console.log(`Sistema logistica disponivel em ${publicAppInfo.url}`);
+      }
+    } else {
+      console.log(`Sistema logistica iniciado na porta ${PORT}`);
+      console.log("Dominio publico nao configurado. Defina APP_URL no deploy para deixar a URL explicita.");
+    }
+    if (DB_PATH_SOURCE === "RAILWAY_VOLUME_MOUNT_PATH") {
+      console.log(`SQLite persistido automaticamente no volume Railway em ${DB_PATH}`);
+    } else if (DB_PATH_SOURCE === "DB_PATH") {
+      console.log(`SQLite em ${DB_PATH} (definido por DB_PATH)`);
+    } else {
+      console.log(`SQLite em ${DB_PATH}`);
+    }
   });
 }
 

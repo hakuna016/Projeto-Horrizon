@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 
 const SESSION_COOKIE = "session_token";
+const SECURE_COOKIE_VALUES = new Set(["1", "true", "yes", "on"]);
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
@@ -42,15 +43,21 @@ function parseCookies(cookieHeader) {
     }, {});
 }
 
+function shouldUseSecureCookie() {
+  return SECURE_COOKIE_VALUES.has(String(process.env.COOKIE_SECURE || "").trim().toLowerCase());
+}
+
 function buildSessionCookie(token, expiresAt) {
   const expires = new Date(expiresAt).toUTCString();
+  const secure = shouldUseSecureCookie() ? "; Secure" : "";
   return `${SESSION_COOKIE}=${encodeURIComponent(
     token
-  )}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}`;
+  )}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}${secure}`;
 }
 
 function buildClearedSessionCookie() {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  const secure = shouldUseSecureCookie() ? "; Secure" : "";
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
 }
 
 module.exports = {

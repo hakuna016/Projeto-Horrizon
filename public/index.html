@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HORIZON | Gestao que constroi resultados</title>
     <meta name="theme-color" content="#b10f16" />
-    <link id="site-favicon" rel="icon" type="image/jpeg" href="/assets/horizon-logo-light.jpeg" />
-    <link rel="stylesheet" href="/styles.css" />
+    <link id="site-favicon" rel="icon" type="image/jpeg" href="./assets/horizon-logo-light.jpeg" />
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div id="toast-root" class="toast-root"></div>
@@ -21,7 +21,7 @@
             <img
             data-theme-logo
             class="brand-logo-image"
-            src="/assets/horizon-logo-light.jpeg"
+            src="./assets/horizon-logo-light.jpeg"
             alt="HORIZON - Gestao que constroi resultados"
           />
         </div>
@@ -40,48 +40,51 @@
       </div>
 
       <div class="auth-grid">
-        <form id="login-form" class="panel form-card">
+        <form id="login-form" class="panel form-card" autocomplete="on">
           <div class="card-title">
             <span class="eyebrow">Acesso</span>
             <h2>Entrar</h2>
           </div>
           <label>
             <span>Email</span>
-            <input type="email" name="email" placeholder="admin@frigorifico.local" required />
+            <input type="email" name="email" placeholder="seu.email@empresa.com" required />
           </label>
           <label>
             <span>Senha</span>
             <input type="password" name="password" placeholder="••••••••" required />
           </label>
           <button type="submit" class="primary-button">Entrar na HORIZON</button>
-          <p class="muted">
-            Acesso inicial: <strong>admin@frigorifico.local</strong> / <strong>admin123</strong>
+          <p class="muted auth-helper-text">
+            Primeiro acesso? Ative sua conta com o codigo fornecido pelo administrador.
           </p>
+          <button id="show-activation-button" type="button" class="ghost-button">Ativar conta</button>
         </form>
 
-        <form id="register-form" class="panel form-card">
+        <form id="activation-form" class="panel form-card hidden" autocomplete="off">
           <div class="card-title">
-            <span class="eyebrow">Convite</span>
-            <h2>Criar acesso</h2>
+            <span class="eyebrow">Primeiro acesso</span>
+            <h2>Ativar conta</h2>
           </div>
           <label>
-            <span>Nome</span>
-            <input type="text" name="name" placeholder="Nome do colaborador" required />
-          </label>
-          <label>
             <span>Email</span>
-            <input type="email" name="email" placeholder="usuario@empresa.com" required />
+            <input type="email" name="email" placeholder="seu.email@empresa.com" required />
           </label>
           <label>
-            <span>Senha</span>
-            <input type="password" name="password" minlength="6" required />
+            <span>Codigo de acesso</span>
+            <input type="text" name="activationCode" placeholder="Informe o codigo recebido" required />
           </label>
           <label>
-            <span>Código de convite</span>
-            <input type="text" name="inviteCode" placeholder="OPE-LOG-2026" required />
+            <span>Nova senha</span>
+            <input type="password" name="password" minlength="8" required />
           </label>
-          <button type="submit" class="secondary-button">Cadastrar na HORIZON</button>
-          <p class="muted">Convites iniciais: `ADM-LOG-2026`, `GER-LOG-2026`, `OPE-LOG-2026`</p>
+          <label>
+            <span>Confirmar senha</span>
+            <input type="password" name="confirmPassword" minlength="8" required />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="secondary-button">Confirmar ativacao</button>
+            <button id="show-login-button" type="button" class="ghost-button">Voltar ao login</button>
+          </div>
         </form>
       </div>
     </section>
@@ -89,7 +92,7 @@
     <div id="app-shell" class="app-shell hidden">
       <aside class="sidebar">
         <div class="sidebar-brand">
-          <img data-theme-logo class="sidebar-logo" src="/assets/horizon-logo-light.jpeg" alt="HORIZON" />
+          <img data-theme-logo class="sidebar-logo" src="./assets/horizon-logo-light.jpeg" alt="HORIZON" />
           <span class="eyebrow">Painel operacional</span>
           <h2>HORIZON</h2>
           <p>Gestão que constrói resultados.</p>
@@ -111,7 +114,7 @@
       <main class="main-content">
         <header class="topbar">
           <div class="topbar-brand">
-            <img data-theme-logo class="topbar-logo" src="/assets/horizon-logo-light.jpeg" alt="HORIZON" />
+            <img data-theme-logo class="topbar-logo" src="./assets/horizon-logo-light.jpeg" alt="HORIZON" />
             <div>
               <span class="eyebrow">Usuário conectado</span>
               <h1 id="topbar-user-name">-</h1>
@@ -422,10 +425,6 @@
                   <span>Data e hora</span>
                   <input type="datetime-local" name="occurredAt" />
                 </label>
-                <label class="full-width">
-                  <span>Observações</span>
-                  <textarea name="notes" rows="3"></textarea>
-                </label>
               </div>
               <div class="form-actions">
                 <button type="submit" class="primary-button">Registrar movimentação</button>
@@ -531,10 +530,6 @@
                 <label>
                   <span>Data e hora</span>
                   <input type="datetime-local" name="occurredAt" />
-                </label>
-                <label class="full-width">
-                  <span>Observações</span>
-                  <textarea name="notes" rows="3"></textarea>
                 </label>
               </div>
               <div class="form-actions">
@@ -655,10 +650,6 @@
                   <span>Ajudante</span>
                   <input type="text" name="assistant" />
                 </label>
-                <label class="full-width">
-                  <span>Observações</span>
-                  <textarea name="notes" rows="3"></textarea>
-                </label>
               </div>
               <div class="form-actions">
                 <button type="submit" class="primary-button">Salvar escala</button>
@@ -736,10 +727,6 @@
                 <label>
                   <span>Valor</span>
                   <input type="number" name="amount" min="0" step="0.01" />
-                </label>
-                <label class="full-width">
-                  <span>Observações</span>
-                  <textarea name="notes" rows="3"></textarea>
                 </label>
               </div>
               <div class="form-actions">
@@ -935,17 +922,26 @@
         <section id="admin-section" class="content-section">
           <div class="section-header">
             <div>
-              <span class="eyebrow">Perfis, convites e auditoria</span>
+              <span class="eyebrow">Perfis, ativacao e auditoria</span>
               <h2>Gestão</h2>
             </div>
           </div>
           <div class="two-column-grid">
-            <form id="invite-form" class="panel form-card">
+            <form id="admin-user-form" class="panel form-card">
+              <input type="hidden" name="id" />
               <div class="card-title">
-                <span class="eyebrow">Acesso</span>
-                <h3>Gerar convite</h3>
+                <span class="eyebrow">Usuarios</span>
+                <h3>Criar ou editar acesso</h3>
               </div>
               <div class="form-grid">
+                <label>
+                  <span>Nome</span>
+                  <input type="text" name="name" placeholder="Nome do colaborador" required />
+                </label>
+                <label>
+                  <span>Email</span>
+                  <input type="email" name="email" placeholder="usuario@empresa.com" required />
+                </label>
                 <label>
                   <span>Perfil</span>
                   <select name="role">
@@ -954,33 +950,31 @@
                     <option value="ADMIN">Administrador</option>
                   </select>
                 </label>
-                <label class="full-width">
-                  <span>Observações</span>
-                  <textarea name="notes" rows="3"></textarea>
-                </label>
               </div>
               <div class="form-actions">
-                <button type="submit" class="primary-button">Criar convite</button>
+                <button type="submit" class="primary-button">Salvar usuario</button>
+                <button id="admin-user-reset-button" type="button" class="ghost-button">Limpar</button>
               </div>
             </form>
 
             <div class="panel table-panel">
               <div class="card-title">
-                <span class="eyebrow">Convites</span>
-                <h3>Códigos emitidos</h3>
+                <span class="eyebrow">Controle</span>
+                <h3>Usuarios administraveis</h3>
               </div>
               <div class="table-wrapper">
                 <table>
                   <thead>
                     <tr>
-                      <th>Código</th>
+                      <th>Nome</th>
+                      <th>Email</th>
                       <th>Perfil</th>
-                      <th>Criado por</th>
-                      <th>Usado por</th>
-                      <th>Data</th>
+                      <th>Status</th>
+                      <th>Ativacao</th>
+                      <th>Ações</th>
                     </tr>
                   </thead>
-                  <tbody id="invites-table-body"></tbody>
+                  <tbody id="admin-users-table-body"></tbody>
                 </table>
               </div>
             </div>
@@ -1024,6 +1018,8 @@
       </div>
     </div>
 
-    <script src="/app.js"></script>
+    <script src="./vendor/xlsx.full.min.js"></script>
+    <script src="./local-api.js"></script>
+    <script src="./app.js"></script>
   </body>
 </html>

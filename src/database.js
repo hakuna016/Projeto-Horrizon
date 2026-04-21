@@ -1,14 +1,46 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const initSqlJs = require("sql.js");
 const { hashPassword } = require("./security");
 const { normalizeSpreadsheetIssueDate, nowIso } = require("./helpers");
 
-const DB_PATH = path.join(__dirname, "..", "data", "logistica.db");
+const DEFAULT_DB_FILENAME = "logistica.db";
+const DEFAULT_DB_PATH = path.join(__dirname, "..", "data", DEFAULT_DB_FILENAME);
+
+function resolveDatabasePath() {
+  const configuredPath = String(process.env.DB_PATH || "").trim();
+  if (configuredPath) {
+    return {
+      path: path.resolve(configuredPath),
+      source: "DB_PATH",
+    };
+  }
+
+  const railwayVolumeMountPath = String(process.env.RAILWAY_VOLUME_MOUNT_PATH || "").trim();
+  if (railwayVolumeMountPath) {
+    return {
+      path: path.resolve(railwayVolumeMountPath, DEFAULT_DB_FILENAME),
+      source: "RAILWAY_VOLUME_MOUNT_PATH",
+    };
+  }
+
+  return {
+    path: path.resolve(DEFAULT_DB_PATH),
+    source: "default",
+  };
+}
+
+const DATABASE_PATH_INFO = resolveDatabasePath();
+const DB_PATH = DATABASE_PATH_INFO.path;
+const DB_PATH_SOURCE = DATABASE_PATH_INFO.source;
+const LEGACY_PUBLIC_INVITE_CODES = ["ADM-LOG-2026", "GER-LOG-2026", "OPE-LOG-2026"];
 const DEFAULT_FUEL_STORAGES = [
   { name: "Estoque S-10", fuelKind: "S10" },
   { name: "Estoque S-500", fuelKind: "S500" },
 ];
+const DEFAULT_MASTER_ADMIN_EMAIL = "master@horizon.internal";
+const DEFAULT_MASTER_ADMIN_NAME = "Conta interna";
 
 let SQL = null;
 let db = null;
@@ -132,7 +164,10 @@ function createTables() {
       role TEXT NOT NULL,
       invite_code_used TEXT,
       active INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      is_system INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS sessions (
@@ -157,6 +192,20 @@ function createTables() {
       used_at TEXT,
       FOREIGN KEY(created_by) REFERENCES users(id),
       FOREIGN KEY(used_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS activation_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      code TEXT NOT NULL UNIQUE,
+      purpose TEXT NOT NULL DEFAULT 'ACTIVATION',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id),
+      FOREIGN KEY(created_by) REFERENCES users(id)
     );
 
     CREATE TABLE IF NOT EXISTS supplier_rules (
@@ -330,6 +379,7 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_fuel_records_plate ON fuel_records(plate, occurred_at);
     CREATE INDEX IF NOT EXISTS idx_schedules_date ON schedules(scheduled_date);
     CREATE INDEX IF NOT EXISTS idx_action_logs_created_at ON action_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_activation_codes_user ON activation_codes(user_id, active, expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_xml_key ON notes(xml_key) WHERE xml_key IS NOT NULL AND xml_key <> '';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode ON inventory_products(barcode) WHERE barcode IS NOT NULL AND barcode <> '';
   `);
@@ -352,6 +402,46 @@ function migrateFuelSchema() {
 function migrateOperationalSchema() {
   ensureColumn("schedules", "location", "TEXT");
   ensureColumn("schedules", "responsible_name", "TEXT");
+}
+
+function migrateAuthSchema() {
+  ensureColumn("users", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'");
+  ensureColumn("users", "is_system", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("users", "updated_at", "TEXT");
+
+  runScript(`
+    CREATE TABLE IF NOT EXISTS activation_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      code TEXT NOT NULL UNIQUE,
+      purpose TEXT NOT NULL DEFAULT 'ACTIVATION',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id),
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_activation_codes_user ON activation_codes(user_id, active, expires_at);
+  `);
+
+  write(
+    `
+      UPDATE users
+      SET status = CASE WHEN coalesce(active, 1) = 1 THEN 'ACTIVE' ELSE 'BLOCKED' END
+      WHERE status IS NULL OR trim(status) = ''
+    `
+  );
+  write(
+    `
+      UPDATE users
+      SET updated_at = coalesce(updated_at, created_at)
+      WHERE updated_at IS NULL OR trim(updated_at) = ''
+    `
+  );
+  write("UPDATE users SET is_system = 1 WHERE invite_code_used = 'SEED-ADMIN'");
 }
 
 function ensureDefaultFuelStorages() {
@@ -625,45 +715,38 @@ function migrateLegacySpreadsheetIssueDates() {
   });
 }
 
-function seedDatabase() {
-  const usersRow = get("SELECT COUNT(*) AS total FROM users");
-  const totalUsers = usersRow ? Number(usersRow.total) : 0;
+function resolveMasterAdminSeed() {
+  const configuredEmail = String(process.env.MASTER_ADMIN_EMAIL || "").trim().toLowerCase();
+  const configuredPassword = String(process.env.MASTER_ADMIN_PASSWORD || "").trim();
+  const configuredName = String(process.env.MASTER_ADMIN_NAME || "").trim();
+  const generatedPassword = crypto.randomBytes(18).toString("base64url");
 
-  if (totalUsers > 0) {
+  return {
+    email: configuredEmail || DEFAULT_MASTER_ADMIN_EMAIL,
+    password: configuredPassword || generatedPassword,
+    name: configuredName || DEFAULT_MASTER_ADMIN_NAME,
+    generatedPassword: !configuredPassword,
+  };
+}
+
+function revokeLegacyPublicInvites() {
+  const legacyInvites = all(
+    `
+      SELECT id, code
+      FROM invite_codes
+      WHERE code IN (?, ?, ?)
+        AND active = 1
+    `,
+    LEGACY_PUBLIC_INVITE_CODES
+  );
+
+  if (!legacyInvites.length) {
     return;
   }
 
   transaction(() => {
-    const createdAt = nowIso();
-    const adminId = insert(
-      `
-        INSERT INTO users (name, email, password_hash, role, invite_code_used, active, created_at)
-        VALUES (?, ?, ?, ?, ?, 1, ?)
-      `,
-      [
-        "Administrador",
-        "admin@frigorifico.local",
-        hashPassword("admin123"),
-        "ADMIN",
-        "SEED-ADMIN",
-        createdAt,
-      ]
-    );
-
-    const defaultInvites = [
-      ["ADM-LOG-2026", "ADMIN", "Convite inicial para administradores"],
-      ["GER-LOG-2026", "MANAGER", "Convite inicial para gerentes"],
-      ["OPE-LOG-2026", "OPERATIONAL", "Convite inicial para operacao"],
-    ];
-
-    for (const [code, role, notes] of defaultInvites) {
-      insert(
-        `
-          INSERT INTO invite_codes (code, role, notes, active, created_by, created_at)
-          VALUES (?, ?, ?, 1, ?, ?)
-        `,
-        [code, role, notes, adminId, createdAt]
-      );
+    for (const invite of legacyInvites) {
+      write("UPDATE invite_codes SET active = 0 WHERE id = ?", [invite.id]);
     }
 
     insert(
@@ -672,16 +755,73 @@ function seedDatabase() {
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `,
       [
-        adminId,
-        "Administrador",
+        null,
+        "Sistema",
+        "REVOKE_PUBLIC_INVITES",
+        "INVITE",
+        null,
+        JSON.stringify({ revokedCodes: legacyInvites.map((invite) => invite.code) }),
+        nowIso(),
+      ]
+    );
+  });
+}
+
+function seedDatabase() {
+  const usersRow = get("SELECT COUNT(*) AS total FROM users");
+  const totalUsers = usersRow ? Number(usersRow.total) : 0;
+
+  if (totalUsers > 0) {
+    return;
+  }
+
+  const masterAdmin = resolveMasterAdminSeed();
+
+  transaction(() => {
+    const createdAt = nowIso();
+    insert(
+      `
+        INSERT INTO users (
+          name, email, password_hash, role, invite_code_used, active, status, is_system, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 1, 'ACTIVE', 1, ?, ?)
+      `,
+      [
+        masterAdmin.name,
+        masterAdmin.email,
+        hashPassword(masterAdmin.password),
+        "ADMIN",
+        "SEED-ADMIN",
+        createdAt,
+        createdAt,
+      ]
+    );
+
+    insert(
+      `
+        INSERT INTO action_logs (user_id, user_name, action, entity_type, entity_id, details, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        null,
+        "Sistema",
         "SEED_DATABASE",
         "SYSTEM",
-        String(adminId),
-        JSON.stringify({ message: "Base inicial criada com usuario administrador" }),
+        null,
+        JSON.stringify({ message: "Base inicial criada com conta mestra interna" }),
         createdAt,
       ]
     );
   });
+
+  if (masterAdmin.generatedPassword) {
+    console.warn("[Horizon] Conta mestra criada internamente.");
+    console.warn(
+      "[Horizon] Defina MASTER_ADMIN_EMAIL e MASTER_ADMIN_PASSWORD no ambiente para controlar as credenciais iniciais."
+    );
+    console.warn(`[Horizon] Email interno: ${masterAdmin.email}`);
+    console.warn(`[Horizon] Senha temporaria: ${masterAdmin.password}`);
+  }
 }
 
 async function initDatabase() {
@@ -703,7 +843,9 @@ async function initDatabase() {
   createTables();
   migrateFuelSchema();
   migrateOperationalSchema();
+  migrateAuthSchema();
   seedDatabase();
+  revokeLegacyPublicInvites();
   ensureDefaultFuelStorages();
   migrateLegacyFuelRecords();
   consolidateFuelStorages();
@@ -715,6 +857,7 @@ async function initDatabase() {
 
 module.exports = {
   DB_PATH,
+  DB_PATH_SOURCE,
   initDatabase,
   get,
   all,
