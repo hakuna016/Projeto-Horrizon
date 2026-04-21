@@ -1,14 +1,68 @@
 const $ = (id) => document.getElementById(id);
 const THEME_STORAGE_KEY = "horizon-theme";
+const BRAND_LOGO = "./assets/horizon-brand-premium.jpeg";
 const THEME_LOGOS = {
-  light: "./assets/horizon-logo-light.jpeg",
-  dark: "./assets/horizon-logo-dark.jpeg",
+  light: BRAND_LOGO,
+  dark: BRAND_LOGO,
 };
 const BROWSER_MODE_NOTICE_KEY = "horizon-browser-mode-notice-v1";
 const runtimeState = {
   apiMode: null,
   apiProbe: null,
 };
+const UI_ICONS = {
+  dashboard:
+    '<path d="M4 19.5h16" /><path d="M7 16V10" /><path d="M12 16V5" /><path d="M17 16v-7" />',
+  notes:
+    '<rect x="5" y="3.75" width="14" height="16.5" rx="2.5" /><path d="M9 8.5h6" /><path d="M9 12h6" /><path d="M9 15.5h4" />',
+  inventory:
+    '<path d="M4.75 8.25 12 4l7.25 4.25v7.5L12 20l-7.25-4.25z" /><path d="M12 20v-7.5" /><path d="M4.75 8.25 12 12.5l7.25-4.25" />',
+  fuel:
+    '<path d="M7 20V7.5A2.5 2.5 0 0 1 9.5 5H14a2 2 0 0 1 2 2v13" /><path d="M7 11h9" /><path d="M16 8h1.5a2.5 2.5 0 0 1 2.5 2.5V17a2 2 0 0 1-2 2h-1" /><path d="M18.5 8V5.5" />',
+  schedules:
+    '<rect x="4" y="5" width="16" height="15" rx="3" /><path d="M8 3.5v3" /><path d="M16 3.5v3" /><path d="M4 9.5h16" /><path d="M8.5 13h3" /><path d="M14 13h1.5" /><path d="M8.5 16h7" />',
+  fines:
+    '<path d="M12 4.5 20 19H4L12 4.5Z" /><path d="M12 10v4.5" /><path d="M12 17.2h.01" />',
+  checklists:
+    '<rect x="6" y="4.5" width="12" height="15.5" rx="2.5" /><path d="M9 4.5h6v3H9z" /><path d="m9.5 13 1.8 1.8 3.7-4" />',
+  emails:
+    '<rect x="4" y="6" width="16" height="12" rx="2.5" /><path d="m5 8 7 5 7-5" />',
+  admin:
+    '<circle cx="12" cy="12" r="3.25" /><path d="M12 2.75v2.1" /><path d="M12 19.15v2.1" /><path d="m4.93 4.93 1.49 1.49" /><path d="m17.58 17.58 1.49 1.49" /><path d="M2.75 12h2.1" /><path d="M19.15 12h2.1" /><path d="m4.93 19.07 1.49-1.49" /><path d="m17.58 6.42 1.49-1.49" />',
+  analytics:
+    '<path d="M4 19.5h16" /><path d="m6.5 15.5 3.4-3.4 2.7 2.7 4.9-5.3" /><path d="M17.5 9.5H20V12" />',
+  efficiency:
+    '<path d="M5 16a7 7 0 1 1 14 0" /><path d="m12 12 3.5-3.5" /><path d="M12 16.25h.01" />',
+  vehicle:
+    '<path d="M3.5 7.5h11v8h-11z" /><path d="M14.5 10h3l2 2.5v3H14.5z" /><circle cx="7.25" cy="17.5" r="1.75" /><circle cx="17.25" cy="17.5" r="1.75" />',
+  alert:
+    '<path d="M12 4.5 20 19H4L12 4.5Z" /><path d="M12 10v4.5" /><path d="M12 17.2h.01" />',
+  team:
+    '<circle cx="9" cy="9" r="2.25" /><circle cx="16.5" cy="10.5" r="1.75" /><path d="M5.5 18a3.5 3.5 0 0 1 7 0" /><path d="M13.75 18a2.75 2.75 0 0 1 5.5 0" />',
+};
+const NAV_ICONS = {
+  dashboard: "dashboard",
+  notes: "notes",
+  inventory: "inventory",
+  fuel: "fuel",
+  schedules: "schedules",
+  fines: "fines",
+  checklists: "checklists",
+  emails: "emails",
+  admin: "admin",
+};
+const SECTION_ICONS = {
+  dashboard: "dashboard",
+  notes: "notes",
+  inventory: "inventory",
+  fuel: "fuel",
+  schedules: "schedules",
+  fines: "fines",
+  checklists: "checklists",
+  emails: "emails",
+  admin: "admin",
+};
+const DASHBOARD_TITLE_ICONS = ["analytics", "efficiency", "vehicle", "fuel", "notes", "alert", "schedules"];
 
 const state = {
   user: null,
@@ -233,12 +287,14 @@ const refs = {
   themeDarkButton: $("theme-dark-button"),
   siteFavicon: $("site-favicon"),
   toastRoot: $("toast-root"),
+  appLoading: $("app-loading"),
 };
 
 document.addEventListener("DOMContentLoaded", initialize);
 
 async function initialize() {
   applyTheme(resolveInitialTheme());
+  decorateStaticInterface();
   bindEvents();
   switchAuthMode("login");
   applyDefaultFormValues();
@@ -253,6 +309,8 @@ async function initialize() {
     }
   } catch (error) {
     showToast(error.message, "error");
+  } finally {
+    hideAppLoading();
   }
 }
 
@@ -394,7 +452,7 @@ function applyTheme(theme) {
 
   const metaTheme = document.querySelector('meta[name="theme-color"]');
   if (metaTheme) {
-    metaTheme.setAttribute("content", nextTheme === "dark" ? "#0d1319" : "#b10f16");
+    metaTheme.setAttribute("content", nextTheme === "dark" ? "#0d1117" : "#c40000");
   }
 
   const nextLogo = THEME_LOGOS[nextTheme];
@@ -744,22 +802,25 @@ function renderOperationalInsights(analytics) {
 
   return `
     <div class="dashboard-insight-grid">
-      <article class="dashboard-insight-card">
-        <span class="eyebrow">Hodometro capturado</span>
-        <strong>${escapeHtml(formatPercent(coverage.percent || 0, 0))}</strong>
-        <span class="muted">${escapeHtml(`${coverage.withOdometer || 0} de ${coverage.totalRecords || 0} saidas no periodo`)}</span>
-      </article>
-      <article class="dashboard-insight-card">
-        <span class="eyebrow">Saude do estoque</span>
-        <strong>${escapeHtml(formatPercent(Math.min(stockHealth.percent || 0, 999), 0))}</strong>
-        <span class="muted">
-          ${
-            stockHealth.totalMinimumBalance > 0
-              ? escapeHtml(`${stockHealth.lowStorageCount || 0} estoque(s) abaixo do minimo`)
-              : "Configure estoque minimo para monitorar cobertura"
-          }
-        </span>
-      </article>
+      ${buildStatCard({
+        className: "dashboard-insight-card",
+        label: "Hodometro capturado",
+        value: formatPercent(coverage.percent || 0, 0),
+        note: `${coverage.withOdometer || 0} de ${coverage.totalRecords || 0} saidas no periodo`,
+        icon: "analytics",
+        tone: "brand",
+      })}
+      ${buildStatCard({
+        className: "dashboard-insight-card",
+        label: "Saude do estoque",
+        value: formatPercent(Math.min(stockHealth.percent || 0, 999), 0),
+        note:
+          stockHealth.totalMinimumBalance > 0
+            ? `${stockHealth.lowStorageCount || 0} estoque(s) abaixo do minimo`
+            : "Configure estoque minimo para monitorar cobertura",
+        icon: "inventory",
+        tone: stockHealth.lowStorageCount ? "warning" : "success",
+      })}
     </div>
   `;
 }
@@ -827,6 +888,88 @@ function buildRowActionButton(action, id, label, iconHtml, extraClass = "") {
       ${iconHtml}
     </button>
   `;
+}
+
+function iconMarkup(name, className = "ui-icon") {
+  const body = UI_ICONS[name] || UI_ICONS.dashboard;
+  return `
+    <svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      ${body}
+    </svg>
+  `;
+}
+
+function buildIconBadge(icon, tone = "brand") {
+  return `<span class="ui-icon-badge ui-icon-badge--${tone}">${iconMarkup(icon)}</span>`;
+}
+
+function buildStatCard({ className, label, value, note = "", icon = "", tone = "brand", extra = "" }) {
+  return `
+    <article class="${className}">
+      ${icon ? buildIconBadge(icon, tone) : ""}
+      <span class="eyebrow">${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      ${note ? `<span class="muted">${escapeHtml(note)}</span>` : ""}
+      ${extra}
+    </article>
+  `;
+}
+
+function decorateStaticInterface() {
+  document.querySelectorAll(".nav-item").forEach((button) => {
+    if (button.dataset.decorated === "true") {
+      return;
+    }
+
+    const section = button.dataset.section;
+    const label = button.textContent.trim();
+    button.innerHTML = `
+      <span class="nav-item__icon">${iconMarkup(NAV_ICONS[section] || "dashboard")}</span>
+      <span class="nav-item__label">${escapeHtml(label)}</span>
+    `;
+    button.dataset.decorated = "true";
+  });
+
+  document.querySelectorAll(".content-section").forEach((panel) => {
+    const header = panel.querySelector(".section-header > div:first-child");
+    const title = header?.querySelector("h2");
+    if (!header || !title || header.dataset.decorated === "true") {
+      return;
+    }
+
+    const section = panel.id.replace(/-section$/, "");
+    const titleLabel = title.textContent.trim();
+    title.classList.add("section-heading");
+    title.innerHTML = `
+      <span class="section-heading__icon">${iconMarkup(SECTION_ICONS[section] || "dashboard")}</span>
+      <span>${escapeHtml(titleLabel)}</span>
+    `;
+    header.dataset.decorated = "true";
+  });
+
+  document.querySelectorAll("#dashboard-section .dashboard-grid > article .card-title").forEach((title, index) => {
+    if (title.dataset.decorated === "true") {
+      return;
+    }
+
+    title.classList.add("card-title--with-icon");
+    title.insertAdjacentHTML(
+      "afterbegin",
+      `<span class="card-title__icon">${iconMarkup(DASHBOARD_TITLE_ICONS[index] || "dashboard")}</span>`
+    );
+    title.dataset.decorated = "true";
+  });
+}
+
+function hideAppLoading() {
+  if (!refs.appLoading) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    refs.appLoading.classList.add("is-hidden");
+    refs.appLoading.setAttribute("aria-hidden", "true");
+  });
 }
 
 function setUser(user) {
@@ -1118,15 +1261,20 @@ function renderDashboard() {
 
   refs.dashboardSummary.innerHTML = `
     <article class="dashboard-hero-card">
-      <span class="eyebrow">Leitura operacional</span>
-      <h3>${escapeHtml(selectedPlate ? `Analise focada em ${selectedPlate}` : "Visao consolidada da logistica")}</h3>
-      <p class="muted">
-        ${
-          selectedPlate
-            ? escapeHtml(`Indicadores filtrados para a placa ${selectedPlate} nos ultimos ${periodDays} dias.`)
-            : escapeHtml(`Consumos, eficiencia e gargalos do abastecimento nos ultimos ${periodDays} dias.`)
-        }
-      </p>
+      <div class="dashboard-hero-card__header">
+        ${buildIconBadge(selectedPlate ? "vehicle" : "dashboard", selectedPlate ? "danger" : "brand")}
+        <div>
+          <span class="eyebrow">Leitura operacional</span>
+          <h3>${escapeHtml(selectedPlate ? `Analise focada em ${selectedPlate}` : "Visao consolidada da logistica")}</h3>
+          <p class="muted">
+            ${
+              selectedPlate
+                ? escapeHtml(`Indicadores filtrados para a placa ${selectedPlate} nos ultimos ${periodDays} dias.`)
+                : escapeHtml(`Consumos, eficiencia e gargalos do abastecimento nos ultimos ${periodDays} dias.`)
+            }
+          </p>
+        </div>
+      </div>
       <div class="dashboard-chip-row">
         <span class="dashboard-chip">${escapeHtml(`S-500 ${formatLiters(fuelByKind.S500 || 0)} L`)}</span>
         <span class="dashboard-chip">${escapeHtml(`S-10 ${formatLiters(fuelByKind.S10 || 0)} L`)}</span>
@@ -1134,21 +1282,30 @@ function renderDashboard() {
       </div>
     </article>
     <div class="dashboard-summary-stack">
-      <article class="dashboard-summary-stat">
-        <span class="eyebrow">Consumo no periodo</span>
-        <strong>${escapeHtml(`${formatLiters(metricsState.periodFuelConsumption || 0)} L`)}</strong>
-        <span class="muted">Saidas registradas no intervalo atual</span>
-      </article>
-      <article class="dashboard-summary-stat">
-        <span class="eyebrow">Media diaria</span>
-        <strong>${escapeHtml(`${formatLiters(metricsState.averageDailyConsumption || 0)} L`)}</strong>
-        <span class="muted">Consumo medio por dia dentro do filtro</span>
-      </article>
-      <article class="dashboard-summary-stat">
-        <span class="eyebrow">Melhor eficiencia</span>
-        <strong>${escapeHtml(bestVehicle ? formatKmPerLiter(bestVehicle.kmPerLiter) : "-")}</strong>
-        <span class="muted">${escapeHtml(bestVehicle ? `Placa ${bestVehicle.plate}` : "Aguardando hodometro valido")}</span>
-      </article>
+      ${buildStatCard({
+        className: "dashboard-summary-stat",
+        label: "Consumo no periodo",
+        value: `${formatLiters(metricsState.periodFuelConsumption || 0)} L`,
+        note: "Saidas registradas no intervalo atual",
+        icon: "fuel",
+        tone: "brand",
+      })}
+      ${buildStatCard({
+        className: "dashboard-summary-stat",
+        label: "Media diaria",
+        value: `${formatLiters(metricsState.averageDailyConsumption || 0)} L`,
+        note: "Consumo medio por dia dentro do filtro",
+        icon: "analytics",
+        tone: "neutral",
+      })}
+      ${buildStatCard({
+        className: "dashboard-summary-stat",
+        label: "Melhor eficiencia",
+        value: bestVehicle ? formatKmPerLiter(bestVehicle.kmPerLiter) : "-",
+        note: bestVehicle ? `Placa ${bestVehicle.plate}` : "Aguardando hodometro valido",
+        icon: "efficiency",
+        tone: bestVehicle ? "success" : "warning",
+      })}
     </div>
   `;
 
@@ -1156,37 +1313,50 @@ function renderDashboard() {
     {
       label: "Notas pendentes",
       value: formatNumber(metricsState.pendingNotes || 0),
+      icon: "notes",
+      tone: "warning",
     },
     {
       label: "Aguardando reconhecimento",
       value: formatNumber(metricsState.waitingRecognition || 0),
+      icon: "alert",
+      tone: "danger",
     },
     {
       label: "Enviadas ao financeiro",
       value: formatNumber(metricsState.sentToFinance || 0),
+      icon: "emails",
+      tone: "brand",
     },
     {
       label: "Saldo combustivel",
       value: `${formatLiters(metricsState.fuelBalance || 0)} L`,
+      icon: "fuel",
+      tone: "brand",
     },
     {
       label: "Estoque minimo em alerta",
       value: formatNumber(metricsState.lowStockCount || 0),
+      icon: "inventory",
+      tone: metricsState.lowStockCount ? "danger" : "success",
     },
     {
       label: "Veiculos monitorados",
       value: formatNumber(metricsState.monitoredVehicles || 0),
+      icon: "vehicle",
+      tone: "neutral",
     },
   ];
 
   refs.dashboardMetrics.innerHTML = metrics
-    .map(
-      (metric) => `
-        <article class="metric-card metric-card--dashboard">
-          <span class="eyebrow">${escapeHtml(metric.label)}</span>
-          <strong>${escapeHtml(metric.value)}</strong>
-        </article>
-      `
+    .map((metric) =>
+      buildStatCard({
+        className: "metric-card metric-card--dashboard",
+        label: metric.label,
+        value: metric.value,
+        icon: metric.icon,
+        tone: metric.tone,
+      })
     )
     .join("");
 
@@ -2385,27 +2555,34 @@ function renderChecklistComposer() {
     {
       label: "Itens OK",
       value: formatNumber(summary.ok),
-      tone: "status-green",
+      toneClass: "status-green",
+      tone: "success",
+      icon: "checklists",
     },
     {
       label: "Atencao",
       value: formatNumber(summary.attention),
-      tone: "status-yellow",
+      toneClass: "status-yellow",
+      tone: "warning",
+      icon: "alert",
     },
     {
       label: "Criticos",
       value: formatNumber(summary.critical),
-      tone: "status-red",
+      toneClass: "status-red",
+      tone: "danger",
+      icon: "fines",
     },
   ]
-    .map(
-      (item) => `
-        <article class="operations-kpi-card operations-kpi-card--compact">
-          <span class="eyebrow">${escapeHtml(item.label)}</span>
-          <strong>${escapeHtml(item.value)}</strong>
-          <span class="status-badge ${item.tone}">${escapeHtml(item.label)}</span>
-        </article>
-      `
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card operations-kpi-card--compact",
+        label: item.label,
+        value: item.value,
+        icon: item.icon,
+        tone: item.tone,
+        extra: `<span class="status-badge ${item.toneClass}">${escapeHtml(item.label)}</span>`,
+      })
     )
     .join("");
 
@@ -2605,18 +2782,19 @@ function refreshScheduleSummary() {
   const assistants = items.filter((item) => item.assistant).length;
 
   refs.scheduleSummaryCards.innerHTML = [
-    { label: "Total de veiculos", value: uniqueVehicles.size },
-    { label: "Total de motoristas", value: uniqueDrivers.size },
-    { label: "Total de ajudantes", value: assistants },
+    { label: "Total de veiculos", value: uniqueVehicles.size, icon: "vehicle", tone: "brand" },
+    { label: "Total de motoristas", value: uniqueDrivers.size, icon: "team", tone: "neutral" },
+    { label: "Total de ajudantes", value: assistants, icon: "schedules", tone: "warning" },
   ]
-    .map(
-      (item) => `
-        <article class="operations-kpi-card operations-kpi-card--compact">
-          <span class="eyebrow">${escapeHtml(item.label)}</span>
-          <strong>${escapeHtml(formatNumber(item.value))}</strong>
-          <span class="muted">Escala filtrada</span>
-        </article>
-      `
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card operations-kpi-card--compact",
+        label: item.label,
+        value: formatNumber(item.value),
+        note: "Escala filtrada",
+        icon: item.icon,
+        tone: item.tone,
+      })
     )
     .join("");
 
@@ -2658,31 +2836,40 @@ function renderFuel() {
       label: "Abastecimentos",
       value: formatNumber(analytics.monthExitRecords.length),
       note: "Saidas no mes atual",
+      icon: "fuel",
+      tone: "brand",
     },
     {
       label: "Total de litros",
       value: `${formatLiters(analytics.monthLiters)} L`,
       note: "Consumo do mes atual",
+      icon: "analytics",
+      tone: "neutral",
     },
     {
       label: "Media por lancamento",
       value: `${formatLiters(analytics.avgLiters)} L`,
       note: "Considerando apenas saidas",
+      icon: "dashboard",
+      tone: "warning",
     },
     {
       label: "Media km/L",
       value: formatKmPerLiter(analytics.avgKmPerLiter),
       note: "Com base nos hodometros informados",
+      icon: "efficiency",
+      tone: "success",
     },
   ]
-    .map(
-      (item) => `
-        <article class="operations-kpi-card">
-          <span class="eyebrow">${escapeHtml(item.label)}</span>
-          <strong>${escapeHtml(item.value)}</strong>
-          <span class="muted">${escapeHtml(item.note)}</span>
-        </article>
-      `
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card",
+        label: item.label,
+        value: item.value,
+        note: item.note,
+        icon: item.icon,
+        tone: item.tone,
+      })
     )
     .join("");
 

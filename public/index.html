@@ -3,13 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>HORIZON | Gestao que constroi resultados</title>
-    <meta name="theme-color" content="#b10f16" />
-    <link id="site-favicon" rel="icon" type="image/jpeg" href="./assets/horizon-logo-light.jpeg" />
+    <title>HORIZON | Gestão que gera resultados</title>
+    <meta name="theme-color" content="#0d1117" />
+    <link id="site-favicon" rel="icon" type="image/jpeg" href="./assets/horizon-brand-premium.jpeg" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div id="toast-root" class="toast-root"></div>
+    <div id="app-loading" class="app-loading">
+      <div class="app-loading__shell">
+        <div class="app-loading__logo-wrap">
+          <img
+            data-theme-logo
+            class="app-loading__logo"
+            src="./assets/horizon-brand-premium.jpeg"
+            alt="HORIZON - Gestão que gera resultados"
+          />
+        </div>
+        <div class="app-loading__copy">
+          <span class="eyebrow">Inicializando sistema</span>
+          <h2>Preparando a operação HORIZON</h2>
+          <p class="muted">Carregando módulos, indicadores e identidade visual.</p>
+        </div>
+        <div class="app-loading__bar"><span></span></div>
+      </div>
+    </div>
     <div class="theme-switcher" role="group" aria-label="Tema do site">
       <button id="theme-light-button" class="theme-toggle-button" type="button">Light</button>
       <button id="theme-dark-button" class="theme-toggle-button" type="button">Dark</button>
@@ -21,8 +39,8 @@
             <img
             data-theme-logo
             class="brand-logo-image"
-            src="./assets/horizon-logo-light.jpeg"
-            alt="HORIZON - Gestao que constroi resultados"
+            src="./assets/horizon-brand-premium.jpeg"
+            alt="HORIZON - Gestão que gera resultados"
           />
         </div>
         <span class="eyebrow">HORIZON</span>
@@ -31,7 +49,7 @@
           Gestão centralizada para notas fiscais, estoque, abastecimento,
           escala, multas, checklist e central inteligente de emails.
         </p>
-        <p class="brand-signature">Gestão que constrói resultados.</p>
+        <p class="brand-signature">Gestão que gera resultados.</p>
         <div class="brand-badges">
           <span>Operacao integrada</span>
           <span>NF + estoque + campo</span>
@@ -92,10 +110,15 @@
     <div id="app-shell" class="app-shell hidden">
       <aside class="sidebar">
         <div class="sidebar-brand">
-          <img data-theme-logo class="sidebar-logo" src="./assets/horizon-logo-light.jpeg" alt="HORIZON" />
+          <img
+            data-theme-logo
+            class="sidebar-logo"
+            src="./assets/horizon-brand-premium.jpeg"
+            alt="HORIZON - Gestão que gera resultados"
+          />
           <span class="eyebrow">Painel operacional</span>
           <h2>HORIZON</h2>
-          <p>Gestão que constrói resultados.</p>
+          <p>Gestão que gera resultados.</p>
         </div>
 
         <nav class="nav-menu">
@@ -114,7 +137,12 @@
       <main class="main-content">
         <header class="topbar">
           <div class="topbar-brand">
-            <img data-theme-logo class="topbar-logo" src="./assets/horizon-logo-light.jpeg" alt="HORIZON" />
+            <img
+              data-theme-logo
+              class="topbar-logo"
+              src="./assets/horizon-brand-premium.jpeg"
+              alt="HORIZON - Gestão que gera resultados"
+            />
             <div>
               <span class="eyebrow">Usuário conectado</span>
               <h1 id="topbar-user-name">-</h1>
