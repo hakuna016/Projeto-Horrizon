@@ -78,6 +78,28 @@ const FUEL_TYPE_ALIASES = {
   saída: "EXIT",
 };
 
+const FUEL_KIND_ALIASES = {
+  s500: "S500",
+  s_500: "S500",
+  diesel_s500: "S500",
+  diesel_s_500: "S500",
+  s10: "S10",
+  s_10: "S10",
+  diesel_s10: "S10",
+  diesel_s_10: "S10",
+};
+
+const VEHICLE_FUEL_PROFILE_ALIASES = {
+  s500: "S500",
+  s_500: "S500",
+  s10: "S10",
+  s_10: "S10",
+  both: "BOTH",
+  ambos: "BOTH",
+  ambos_combustiveis: "BOTH",
+  ambos_combustiveis_: "BOTH",
+};
+
 const FINE_STATUS_ALIASES = {
   aberta: "OPEN",
   open: "OPEN",
@@ -169,6 +191,24 @@ function normalizeInventoryMovement(value, fallback = "IN") {
 
 function normalizeFuelType(value, fallback = "ENTRY") {
   return normalizeEnum(value, FUEL_TYPE_ALIASES, fallback);
+}
+
+function normalizeFuelKind(value, fallback = "") {
+  return normalizeEnum(value, FUEL_KIND_ALIASES, fallback);
+}
+
+function normalizeVehicleFuelProfile(value, fallback = "S500") {
+  return normalizeEnum(value, VEHICLE_FUEL_PROFILE_ALIASES, fallback);
+}
+
+function normalizePlate(value) {
+  return normalizeText(value).toUpperCase();
+}
+
+function vehicleSupportsFuel(profile, fuelKind) {
+  const normalizedProfile = normalizeVehicleFuelProfile(profile, "S500");
+  const normalizedFuelKind = normalizeFuelKind(fuelKind, "");
+  return !normalizedFuelKind || normalizedProfile === "BOTH" || normalizedProfile === normalizedFuelKind;
 }
 
 function normalizeFineStatus(value, fallback = "OPEN") {
@@ -613,6 +653,7 @@ function queryProducts(search = "") {
     barcode: row.barcode,
     minStock: Number(row.min_stock || 0),
     currentStock: Number(row.current_stock || 0),
+    defaultCost: Number(row.default_cost || 0),
     active: Boolean(row.active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -620,9 +661,61 @@ function queryProducts(search = "") {
   }));
 }
 
+function queryVehicles(filters = {}) {
+  let sql = `
+    SELECT v.*, u.name AS user_name
+    FROM vehicles v
+    LEFT JOIN users u ON u.id = v.created_by
+    WHERE 1 = 1
+  `;
+  const params = [];
+
+  if (filters.activeOnly) {
+    sql += " AND v.active = 1";
+  }
+
+  if (filters.plate) {
+    sql += " AND v.plate = ?";
+    params.push(normalizePlate(filters.plate));
+  }
+
+  if (filters.fuelKind) {
+    const fuelKind = normalizeFuelKind(filters.fuelKind, "");
+    if (fuelKind) {
+      sql += " AND (v.fuel_profile = ? OR v.fuel_profile = 'BOTH')";
+      params.push(fuelKind);
+    }
+  }
+
+  sql += " ORDER BY v.plate ASC, v.id ASC";
+
+  return all(sql, params).map((row) => {
+    const fuelProfile = normalizeVehicleFuelProfile(row.fuel_profile, "S500");
+    return {
+      id: Number(row.id),
+      plate: row.plate,
+      fuelProfile,
+      brand: row.brand || "",
+      model: row.model || "",
+      sector: row.sector || "",
+      status: Number(row.active || 0) === 1 ? "ACTIVE" : "INACTIVE",
+      active: Number(row.active || 0) === 1,
+      notes: row.notes || "",
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      userName: row.user_name || "",
+      supportsS500: vehicleSupportsFuel(fuelProfile, "S500"),
+      supportsS10: vehicleSupportsFuel(fuelProfile, "S10"),
+      displayName: [row.plate, normalizeText([row.brand, row.model].filter(Boolean).join(" "))]
+        .filter(Boolean)
+        .join(" - "),
+    };
+  });
+}
+
 function queryInventoryMovements(filters = {}) {
   let sql = `
-    SELECT m.*, p.name AS product_name, p.unit AS product_unit, u.name AS user_name
+    SELECT m.*, p.name AS product_name, p.unit AS product_unit, p.default_cost AS product_default_cost, u.name AS user_name
     FROM inventory_movements m
     JOIN inventory_products p ON p.id = m.product_id
     LEFT JOIN users u ON u.id = m.created_by
@@ -645,6 +738,26 @@ function queryInventoryMovements(filters = {}) {
     params.push(filters.to);
   }
 
+  if (filters.branchName) {
+    sql += " AND lower(coalesce(m.branch_name, '')) = lower(?)";
+    params.push(normalizeText(filters.branchName));
+  }
+
+  if (filters.fuelKind) {
+    sql += " AND m.fuel_kind = ?";
+    params.push(normalizeFuelKind(filters.fuelKind, ""));
+  }
+
+  if (filters.document) {
+    sql += " AND lower(coalesce(m.document, '')) LIKE ?";
+    params.push(buildLikeSearch(filters.document));
+  }
+
+  if (filters.supplierName) {
+    sql += " AND lower(coalesce(m.supplier_name, '')) LIKE ?";
+    params.push(buildLikeSearch(filters.supplierName));
+  }
+
   sql += " ORDER BY m.occurred_at DESC, m.id DESC";
 
   return all(sql, params).map((row) => ({
@@ -655,6 +768,13 @@ function queryInventoryMovements(filters = {}) {
     type: row.type,
     quantity: Number(row.quantity || 0),
     balanceAfter: Number(row.balance_after || 0),
+    document: row.document || "",
+    branchName: row.branch_name || "",
+    supplierName: row.supplier_name || "",
+    fuelKind: row.fuel_kind || "",
+    unitCost: Number(row.unit_cost || 0),
+    totalCost: Number(row.total_cost || 0),
+    productDefaultCost: Number(row.product_default_cost || 0),
     notes: row.notes,
     occurredAt: row.occurred_at,
     createdAt: row.created_at,
@@ -664,9 +784,10 @@ function queryInventoryMovements(filters = {}) {
 
 function queryFuelRecords(filters = {}) {
   let sql = `
-    SELECT f.*, u.name AS user_name
+    SELECT f.*, u.name AS user_name, v.brand AS vehicle_brand, v.model AS vehicle_model, v.sector AS vehicle_sector
     FROM fuel_records f
     LEFT JOIN users u ON u.id = f.created_by
+    LEFT JOIN vehicles v ON v.id = f.vehicle_id
     WHERE 1 = 1
   `;
   const params = [];
@@ -698,6 +819,7 @@ function queryFuelRecords(filters = {}) {
     storageId: row.storage_id ? Number(row.storage_id) : null,
     storageName: row.storage_name || "",
     fuelKind: row.fuel_kind || "",
+    vehicleId: row.vehicle_id ? Number(row.vehicle_id) : null,
     type: row.type,
     plate: row.plate,
     quantity: Number(row.quantity || 0),
@@ -708,6 +830,9 @@ function queryFuelRecords(filters = {}) {
     occurredAt: row.occurred_at,
     createdAt: row.created_at,
     userName: row.user_name || "",
+    vehicleBrand: row.vehicle_brand || "",
+    vehicleModel: row.vehicle_model || "",
+    vehicleSector: row.vehicle_sector || "",
   }));
 }
 
@@ -1147,6 +1272,195 @@ function queryChecklists() {
       userName: row.user_name || "",
     };
   });
+}
+
+function buildInventoryMovementFilters(filters = {}, alias = "m") {
+  const clauses = [];
+  const params = [];
+
+  if (filters.productId) {
+    clauses.push(`${alias}.product_id = ?`);
+    params.push(Number(filters.productId));
+  }
+
+  if (filters.branchName) {
+    clauses.push(`lower(coalesce(${alias}.branch_name, '')) = lower(?)`);
+    params.push(normalizeText(filters.branchName));
+  }
+
+  if (filters.fuelKind) {
+    const fuelKind = normalizeFuelKind(filters.fuelKind, "");
+    if (fuelKind) {
+      clauses.push(`${alias}.fuel_kind = ?`);
+      params.push(fuelKind);
+    }
+  }
+
+  if (filters.document) {
+    clauses.push(`lower(coalesce(${alias}.document, '')) LIKE ?`);
+    params.push(buildLikeSearch(filters.document));
+  }
+
+  if (filters.supplierName) {
+    clauses.push(`lower(coalesce(${alias}.supplier_name, '')) LIKE ?`);
+    params.push(buildLikeSearch(filters.supplierName));
+  }
+
+  return {
+    sql: clauses.length ? clauses.join(" AND ") : "1 = 1",
+    params,
+  };
+}
+
+function buildKardexReport(filters = {}) {
+  const productId = Number(filters.productId);
+  const from = normalizeText(filters.from);
+  const to = normalizeText(filters.to);
+
+  if (!productId || !from || !to) {
+    throw new Error("Produto e periodo sao obrigatorios.");
+  }
+
+  if (from > to) {
+    throw new Error("A data inicial nao pode ser maior que a data final.");
+  }
+
+  const product = get("SELECT * FROM inventory_products WHERE id = ? LIMIT 1", [productId]);
+  if (!product) {
+    throw new Error("Produto nao encontrado.");
+  }
+
+  const filterSet = {
+    productId,
+    branchName: normalizeText(filters.branchName || filters.branch || filters.unitName),
+    fuelKind: normalizeFuelKind(filters.fuelKind, ""),
+    document: normalizeText(filters.document),
+    supplierName: normalizeText(filters.supplierName || filters.supplier),
+  };
+
+  const where = buildInventoryMovementFilters(filterSet, "m");
+  const openingRow = get(
+    `
+      SELECT COALESCE(SUM(CASE WHEN m.type = 'IN' THEN m.quantity ELSE -m.quantity END), 0) AS opening_balance
+      FROM inventory_movements m
+      WHERE ${where.sql}
+        AND m.occurred_at < ?
+    `,
+    [...where.params, from]
+  );
+
+  const movementRows = all(
+    `
+      SELECT m.*, u.name AS user_name
+      FROM inventory_movements m
+      LEFT JOIN users u ON u.id = m.created_by
+      WHERE ${where.sql}
+        AND m.occurred_at >= ?
+        AND m.occurred_at <= ?
+      ORDER BY m.occurred_at ASC, m.id ASC
+    `,
+    [...where.params, from, to]
+  );
+
+  const lastPurchase = get(
+    `
+      SELECT m.*, u.name AS user_name
+      FROM inventory_movements m
+      LEFT JOIN users u ON u.id = m.created_by
+      WHERE ${where.sql}
+        AND m.type = 'IN'
+        AND m.occurred_at <= ?
+      ORDER BY m.occurred_at DESC, m.id DESC
+      LIMIT 1
+    `,
+    [...where.params, to]
+  );
+
+  const openingBalance = Number(openingRow?.opening_balance || 0);
+  let runningBalance = openingBalance;
+  let totalEntries = 0;
+  let totalExits = 0;
+
+  const rows = movementRows.map((row) => {
+    const quantity = Number(row.quantity || 0);
+    const unitCost = Number(row.unit_cost || 0);
+    const totalCost = Number(row.total_cost || unitCost * quantity || 0);
+    const isEntry = row.type === "IN";
+
+    if (isEntry) {
+      totalEntries += quantity;
+      runningBalance += quantity;
+    } else {
+      totalExits += quantity;
+      runningBalance -= quantity;
+    }
+
+    return {
+      id: Number(row.id),
+      document: row.document || "",
+      date: row.occurred_at,
+      entryQuantity: isEntry ? quantity : 0,
+      exitQuantity: isEntry ? 0 : quantity,
+      quantity,
+      type: row.type,
+      unitCost,
+      totalCost,
+      balance: runningBalance,
+      notes: row.notes || "",
+      supplierName: row.supplier_name || "",
+      branchName: row.branch_name || "",
+      fuelKind: row.fuel_kind || "",
+      userName: row.user_name || "",
+    };
+  });
+
+  const currentCost =
+    Number(product.default_cost || 0) ||
+    Number(lastPurchase?.unit_cost || 0) ||
+    0;
+
+  return {
+    companyName: normalizeText(process.env.COMPANY_NAME || "HORIZON"),
+    reportName: "Ficha Kardex - Movimento do Estoque",
+    issuedAt: nowIso(),
+    period: {
+      from,
+      to,
+    },
+    product: {
+      id: Number(product.id),
+      name: product.name,
+      unit: product.unit,
+      defaultCost: Number(product.default_cost || 0),
+    },
+    filters: {
+      branchName: filterSet.branchName || "",
+      fuelKind: filterSet.fuelKind || "",
+      document: filterSet.document || "",
+      supplierName: filterSet.supplierName || "",
+    },
+    currentCost,
+    openingBalance,
+    rows,
+    totals: {
+      entries: totalEntries,
+      exits: totalExits,
+      finalBalance: runningBalance,
+    },
+    lastPurchase: lastPurchase
+      ? {
+          id: Number(lastPurchase.id),
+          document: lastPurchase.document || "",
+          supplierName: lastPurchase.supplier_name || "",
+          branchName: lastPurchase.branch_name || "",
+          fuelKind: lastPurchase.fuel_kind || "",
+          unitCost: Number(lastPurchase.unit_cost || 0),
+          totalCost: Number(lastPurchase.total_cost || 0),
+          date: lastPurchase.occurred_at,
+          userName: lastPurchase.user_name || "",
+        }
+      : null,
+  };
 }
 
 function queryEmails() {
@@ -1688,6 +2002,126 @@ async function start() {
     }
   });
 
+  app.get("/api/vehicles", requireAuth, (req, res) => {
+    const activeOnly = ["1", "true", "yes"].includes(String(req.query.activeOnly || "").toLowerCase());
+    res.json({
+      items: queryVehicles({
+        activeOnly,
+        fuelKind: req.query.fuelKind,
+        plate: req.query.plate,
+      }),
+    });
+  });
+
+  app.post("/api/vehicles", requireAuth, (req, res) => {
+    const plate = normalizePlate(req.body.plate);
+    const fuelProfile = normalizeVehicleFuelProfile(req.body.fuelProfile || req.body.fuelType, "S500");
+    const brand = normalizeText(req.body.brand);
+    const model = normalizeText(req.body.model);
+    const sector = normalizeText(req.body.sector || req.body.operation);
+    const notes = normalizeText(req.body.notes || req.body.observation);
+    const status = normalizeText(req.body.status || "ACTIVE").toUpperCase();
+    const active = status !== "INACTIVE";
+
+    if (!plate) {
+      return sendError(res, 400, "A placa do veiculo e obrigatoria.");
+    }
+
+    const duplicate = get("SELECT id FROM vehicles WHERE plate = ? LIMIT 1", [plate]);
+    if (duplicate) {
+      return sendError(res, 409, "Ja existe um veiculo cadastrado com esta placa.");
+    }
+
+    const timestamp = nowIso();
+    const vehicleId = insert(
+      `
+        INSERT INTO vehicles (
+          plate, fuel_profile, brand, model, sector, active, notes, created_by, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [plate, fuelProfile, brand, model, sector, active ? 1 : 0, notes, req.user.id, timestamp, timestamp]
+    );
+
+    write(
+      `
+        UPDATE fuel_records
+        SET vehicle_id = ?
+        WHERE plate = ?
+          AND (vehicle_id IS NULL OR vehicle_id = 0)
+      `,
+      [vehicleId, plate]
+    );
+
+    logAction(req.user, "CREATE_VEHICLE", "VEHICLE", vehicleId, {
+      plate,
+      fuelProfile,
+      brand,
+      model,
+      sector,
+      active,
+    });
+
+    return res.status(201).json({ item: queryVehicles({}).find((item) => item.id === vehicleId) });
+  });
+
+  app.put("/api/vehicles/:id", requireAuth, (req, res) => {
+    const vehicleId = Number(req.params.id);
+    const existing = get("SELECT * FROM vehicles WHERE id = ? LIMIT 1", [vehicleId]);
+
+    if (!existing) {
+      return sendError(res, 404, "Veiculo nao encontrado.");
+    }
+
+    const plate = normalizePlate(req.body.plate || existing.plate);
+    const fuelProfile = normalizeVehicleFuelProfile(req.body.fuelProfile || req.body.fuelType || existing.fuel_profile, "S500");
+    const brand = normalizeText(req.body.brand || existing.brand);
+    const model = normalizeText(req.body.model || existing.model);
+    const sector = normalizeText(req.body.sector || req.body.operation || existing.sector);
+    const notes = normalizeText(req.body.notes || req.body.observation || existing.notes);
+    const status = normalizeText(req.body.status || (Number(existing.active || 0) === 1 ? "ACTIVE" : "INACTIVE")).toUpperCase();
+    const active = status !== "INACTIVE";
+
+    if (!plate) {
+      return sendError(res, 400, "A placa do veiculo e obrigatoria.");
+    }
+
+    const duplicate = get("SELECT id FROM vehicles WHERE plate = ? AND id <> ? LIMIT 1", [plate, vehicleId]);
+    if (duplicate) {
+      return sendError(res, 409, "Ja existe um veiculo cadastrado com esta placa.");
+    }
+
+    const timestamp = nowIso();
+    write(
+      `
+        UPDATE vehicles
+        SET plate = ?, fuel_profile = ?, brand = ?, model = ?, sector = ?, active = ?, notes = ?, updated_at = ?
+        WHERE id = ?
+      `,
+      [plate, fuelProfile, brand, model, sector, active ? 1 : 0, notes, timestamp, vehicleId]
+    );
+
+    write(
+      `
+        UPDATE fuel_records
+        SET plate = ?, vehicle_id = ?
+        WHERE vehicle_id = ?
+      `,
+      [plate, vehicleId, vehicleId]
+    );
+
+    logAction(req.user, "UPDATE_VEHICLE", "VEHICLE", vehicleId, {
+      plate,
+      fuelProfile,
+      brand,
+      model,
+      sector,
+      active,
+    });
+
+    return res.json({ item: queryVehicles({}).find((item) => item.id === vehicleId) });
+  });
+
   app.get("/api/products", requireAuth, (req, res) => {
     res.json({ items: queryProducts(req.query.search || "") });
   });
@@ -1721,6 +2155,7 @@ async function start() {
     const barcode = normalizeText(req.body.barcode);
     const minStock = toNumber(req.body.minStock);
     const initialStock = toNumber(req.body.initialStock);
+    const defaultCost = toNumber(req.body.defaultCost);
 
     if (!name) {
       return sendError(res, 400, "Nome do produto e obrigatorio.");
@@ -1742,22 +2177,33 @@ async function start() {
     transaction(() => {
       productId = insert(
         `
-          INSERT INTO inventory_products (name, unit, barcode, min_stock, current_stock, active, created_by, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+          INSERT INTO inventory_products (
+            name, unit, barcode, min_stock, current_stock, default_cost, active, created_by, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         `,
-        [name, unit, barcode || null, minStock, initialStock, req.user.id, timestamp, timestamp]
+        [name, unit, barcode || null, minStock, initialStock, defaultCost, req.user.id, timestamp, timestamp]
       );
 
       if (initialStock > 0) {
         insert(
           `
-            INSERT INTO inventory_movements (product_id, type, quantity, balance_after, notes, occurred_at, created_by, created_at)
-            VALUES (?, 'IN', ?, ?, ?, ?, ?, ?)
+            INSERT INTO inventory_movements (
+              product_id, type, quantity, balance_after, document, branch_name, supplier_name, fuel_kind,
+              unit_cost, total_cost, notes, occurred_at, created_by, created_at
+            )
+            VALUES (?, 'IN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             productId,
             initialStock,
             initialStock,
+            "SALDO-INICIAL",
+            null,
+            null,
+            null,
+            defaultCost,
+            defaultCost * initialStock,
             "Saldo inicial do produto",
             timestamp,
             req.user.id,
@@ -1770,6 +2216,7 @@ async function start() {
         name,
         barcode,
         initialStock,
+        defaultCost,
       });
     });
 
@@ -1788,6 +2235,7 @@ async function start() {
     const unit = normalizeText(req.body.unit || existing.unit).toUpperCase();
     const barcode = normalizeText(req.body.barcode || existing.barcode);
     const minStock = toNumber(req.body.minStock ?? existing.min_stock);
+    const defaultCost = toNumber(req.body.defaultCost ?? existing.default_cost);
 
     if (barcode) {
       const barcodeInUse = get(
@@ -1802,13 +2250,13 @@ async function start() {
     write(
       `
         UPDATE inventory_products
-        SET name = ?, unit = ?, barcode = ?, min_stock = ?, updated_at = ?
+        SET name = ?, unit = ?, barcode = ?, min_stock = ?, default_cost = ?, updated_at = ?
         WHERE id = ?
       `,
-      [name, unit, barcode || null, minStock, nowIso(), productId]
+      [name, unit, barcode || null, minStock, defaultCost, nowIso(), productId]
     );
 
-    logAction(req.user, "UPDATE_PRODUCT", "PRODUCT", productId, { name, barcode, minStock });
+    logAction(req.user, "UPDATE_PRODUCT", "PRODUCT", productId, { name, barcode, minStock, defaultCost });
     return res.json({ item: queryProducts().find((item) => item.id === productId) });
   });
 
@@ -1816,10 +2264,34 @@ async function start() {
     res.json({ items: queryInventoryMovements(req.query) });
   });
 
+  app.get("/api/reports/kardex", requireAuth, (req, res) => {
+    try {
+      const report = buildKardexReport({
+        productId: req.query.productId,
+        from: req.query.from,
+        to: req.query.to,
+        branchName: req.query.branchName,
+        fuelKind: req.query.fuelKind,
+        document: req.query.document,
+        supplierName: req.query.supplierName,
+      });
+
+      return res.json({ report });
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
+  });
+
   app.post("/api/inventory/movements", requireAuth, (req, res) => {
     const productId = Number(req.body.productId);
     const type = normalizeInventoryMovement(req.body.type, "IN");
     const quantity = toNumber(req.body.quantity);
+    const document = normalizeText(req.body.document);
+    const branchName = normalizeText(req.body.branchName || req.body.branch || req.body.unitName);
+    const supplierName = normalizeText(req.body.supplierName || req.body.supplier);
+    const fuelKind = normalizeFuelKind(req.body.fuelKind, "");
+    const rawUnitCost = normalizeText(req.body.unitCost);
+    const unitCost = rawUnitCost ? toNumber(rawUnitCost) : null;
     const notes = normalizeText(req.body.notes);
     const occurredAt = normalizeText(req.body.occurredAt) || nowIso();
 
@@ -1834,35 +2306,66 @@ async function start() {
 
     const currentStock = Number(product.current_stock || 0);
     const nextStock = type === "IN" ? currentStock + quantity : currentStock - quantity;
+    const effectiveUnitCost = unitCost === null ? Number(product.default_cost || 0) : unitCost;
+    const totalCost = effectiveUnitCost * quantity;
 
     if (nextStock < 0) {
       return sendError(res, 400, "A saida nao pode deixar o estoque negativo.");
     }
 
+    if (effectiveUnitCost < 0) {
+      return sendError(res, 400, "Informe um valor unitario valido.");
+    }
+
     let movementId = 0;
+    const timestamp = nowIso();
 
     transaction(() => {
       movementId = insert(
         `
-          INSERT INTO inventory_movements (product_id, type, quantity, balance_after, notes, occurred_at, created_by, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO inventory_movements (
+            product_id, type, quantity, balance_after, document, branch_name, supplier_name, fuel_kind,
+            unit_cost, total_cost, notes, occurred_at, created_by, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
-        [productId, type, quantity, nextStock, notes, occurredAt, req.user.id, nowIso()]
+        [
+          productId,
+          type,
+          quantity,
+          nextStock,
+          document || null,
+          branchName || null,
+          supplierName || null,
+          fuelKind || null,
+          effectiveUnitCost,
+          totalCost,
+          notes,
+          occurredAt,
+          req.user.id,
+          timestamp,
+        ]
       );
 
       write(
         `
           UPDATE inventory_products
-          SET current_stock = ?, updated_at = ?
+          SET current_stock = ?, default_cost = ?, updated_at = ?
           WHERE id = ?
         `,
-        [nextStock, nowIso(), productId]
+        [nextStock, type === "IN" && effectiveUnitCost > 0 ? effectiveUnitCost : Number(product.default_cost || 0), timestamp, productId]
       );
 
       logAction(req.user, "CREATE_INVENTORY_MOVEMENT", "INVENTORY", movementId, {
         productId,
         type,
         quantity,
+        document,
+        branchName,
+        supplierName,
+        fuelKind,
+        unitCost: effectiveUnitCost,
+        totalCost,
         balanceAfter: nextStock,
       });
     });
@@ -1883,15 +2386,16 @@ async function start() {
   app.post("/api/fuel", requireAuth, (req, res) => {
     const storageId = Number(req.body.storageId);
     const type = normalizeFuelType(req.body.type, "ENTRY");
-    const plate = normalizeText(req.body.plate).toUpperCase();
+    const vehicleId = Number(req.body.vehicleId || 0);
+    const fallbackPlate = normalizePlate(req.body.plate);
     const quantity = toNumber(req.body.quantity);
     const rawOdometer = normalizeText(req.body.odometerKm);
     const odometerKm = rawOdometer ? toNumber(rawOdometer) : null;
     const notes = normalizeText(req.body.notes);
     const occurredAt = normalizeText(req.body.occurredAt) || nowIso();
 
-    if (!storageId || !plate || quantity <= 0) {
-      return sendError(res, 400, "Informe estoque, placa e quantidade valida.");
+    if (!storageId || quantity <= 0) {
+      return sendError(res, 400, "Informe estoque e quantidade valida.");
     }
 
     if (rawOdometer && (!/\d/.test(rawOdometer) || odometerKm < 0)) {
@@ -1912,8 +2416,43 @@ async function start() {
       return sendError(res, 404, "Estoque de combustivel nao encontrado.");
     }
 
+    let vehicle =
+      (vehicleId &&
+        get(
+          `
+            SELECT *
+            FROM vehicles
+            WHERE id = ? AND active = 1
+            LIMIT 1
+          `,
+          [vehicleId]
+        )) ||
+      null;
+
+    if (!vehicle && fallbackPlate) {
+      vehicle = get(
+        `
+          SELECT *
+          FROM vehicles
+          WHERE plate = ? AND active = 1
+          LIMIT 1
+        `,
+        [fallbackPlate]
+      );
+    }
+
+    if (type === "EXIT" && !vehicle) {
+      return sendError(res, 400, "Selecione um veiculo ativo para registrar a saida.");
+    }
+
+    if (type === "EXIT" && !vehicleSupportsFuel(vehicle?.fuel_profile, storage.fuel_kind)) {
+      return sendError(res, 400, "Este veiculo nao aceita o combustivel selecionado.");
+    }
+
     const currentBalance = Number(storage.current_balance || 0);
     const nextBalance = type === "ENTRY" ? currentBalance + quantity : currentBalance - quantity;
+    const plate = type === "EXIT" ? normalizePlate(vehicle?.plate) : "";
+    const relatedVehicleId = type === "EXIT" ? Number(vehicle?.id || 0) : null;
 
     if (nextBalance < 0) {
       return sendError(
@@ -1930,15 +2469,16 @@ async function start() {
       recordId = insert(
         `
           INSERT INTO fuel_records (
-            storage_id, storage_name, fuel_kind, type, plate, quantity, odometer_km,
+            storage_id, storage_name, fuel_kind, vehicle_id, type, plate, quantity, odometer_km,
             balance_before, balance_after, notes, occurred_at, created_by, created_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           storageId,
           storage.name,
           storage.fuel_kind,
+          relatedVehicleId,
           type,
           plate,
           quantity,
@@ -1965,6 +2505,7 @@ async function start() {
         storageId,
         storageName: storage.name,
         fuelKind: storage.fuel_kind,
+        vehicleId: relatedVehicleId,
         type,
         plate,
         quantity,

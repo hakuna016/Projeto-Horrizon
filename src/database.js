@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const initSqlJs = require("sql.js");
-const { hashPassword } = require("./security");
+const { hashPassword, verifyPassword } = require("./security");
 const { normalizeSpreadsheetIssueDate, nowIso } = require("./helpers");
 
 const DEFAULT_DB_FILENAME = "logistica.db";
@@ -246,6 +246,7 @@ function createTables() {
       barcode TEXT,
       min_stock REAL NOT NULL DEFAULT 0,
       current_stock REAL NOT NULL DEFAULT 0,
+      default_cost REAL NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       created_by INTEGER,
       created_at TEXT NOT NULL,
@@ -259,11 +260,32 @@ function createTables() {
       type TEXT NOT NULL,
       quantity REAL NOT NULL,
       balance_after REAL NOT NULL,
+      document TEXT,
+      branch_name TEXT,
+      supplier_name TEXT,
+      fuel_kind TEXT,
+      unit_cost REAL NOT NULL DEFAULT 0,
+      total_cost REAL NOT NULL DEFAULT 0,
       notes TEXT,
       occurred_at TEXT NOT NULL,
       created_by INTEGER,
       created_at TEXT NOT NULL,
       FOREIGN KEY(product_id) REFERENCES inventory_products(id),
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS vehicles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plate TEXT NOT NULL,
+      fuel_profile TEXT NOT NULL DEFAULT 'S500',
+      brand TEXT,
+      model TEXT,
+      sector TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      notes TEXT,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
       FOREIGN KEY(created_by) REFERENCES users(id)
     );
 
@@ -285,6 +307,7 @@ function createTables() {
       storage_id INTEGER,
       storage_name TEXT,
       fuel_kind TEXT,
+      vehicle_id INTEGER,
       type TEXT NOT NULL,
       plate TEXT NOT NULL,
       quantity REAL NOT NULL,
@@ -296,6 +319,7 @@ function createTables() {
       created_by INTEGER,
       created_at TEXT NOT NULL,
       FOREIGN KEY(storage_id) REFERENCES fuel_storages(id),
+      FOREIGN KEY(vehicle_id) REFERENCES vehicles(id),
       FOREIGN KEY(created_by) REFERENCES users(id)
     );
 
@@ -375,6 +399,7 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_notes_status ON notes(status);
     CREATE INDEX IF NOT EXISTS idx_notes_supplier ON notes(supplier_name);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_product ON inventory_movements(product_id);
+    CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_date ON inventory_movements(product_id, occurred_at, id);
     CREATE INDEX IF NOT EXISTS idx_fuel_records_occurred_at ON fuel_records(occurred_at);
     CREATE INDEX IF NOT EXISTS idx_fuel_records_plate ON fuel_records(plate, occurred_at);
     CREATE INDEX IF NOT EXISTS idx_schedules_date ON schedules(scheduled_date);
@@ -382,6 +407,48 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_activation_codes_user ON activation_codes(user_id, active, expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_xml_key ON notes(xml_key) WHERE xml_key IS NOT NULL AND xml_key <> '';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode ON inventory_products(barcode) WHERE barcode IS NOT NULL AND barcode <> '';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicles_plate ON vehicles(plate);
+  `);
+}
+
+function migrateInventorySchema() {
+  ensureColumn("inventory_products", "default_cost", "REAL NOT NULL DEFAULT 0");
+  ensureColumn("inventory_movements", "document", "TEXT");
+  ensureColumn("inventory_movements", "branch_name", "TEXT");
+  ensureColumn("inventory_movements", "supplier_name", "TEXT");
+  ensureColumn("inventory_movements", "fuel_kind", "TEXT");
+  ensureColumn("inventory_movements", "unit_cost", "REAL NOT NULL DEFAULT 0");
+  ensureColumn("inventory_movements", "total_cost", "REAL NOT NULL DEFAULT 0");
+
+  runScript(`
+    CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_date ON inventory_movements(product_id, occurred_at, id);
+  `);
+}
+
+function migrateVehicleSchema() {
+  runScript(`
+    CREATE TABLE IF NOT EXISTS vehicles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plate TEXT NOT NULL,
+      fuel_profile TEXT NOT NULL DEFAULT 'S500',
+      brand TEXT,
+      model TEXT,
+      sector TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      notes TEXT,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicles_plate ON vehicles(plate);
+  `);
+
+  ensureColumn("fuel_records", "vehicle_id", "INTEGER");
+
+  runScript(`
+    CREATE INDEX IF NOT EXISTS idx_fuel_records_vehicle ON fuel_records(vehicle_id, occurred_at);
   `);
 }
 
@@ -389,12 +456,14 @@ function migrateFuelSchema() {
   ensureColumn("fuel_records", "storage_id", "INTEGER");
   ensureColumn("fuel_records", "storage_name", "TEXT");
   ensureColumn("fuel_records", "fuel_kind", "TEXT");
+  ensureColumn("fuel_records", "vehicle_id", "INTEGER");
   ensureColumn("fuel_records", "odometer_km", "REAL");
   ensureColumn("fuel_records", "balance_before", "REAL NOT NULL DEFAULT 0");
   runScript(
     `
       CREATE INDEX IF NOT EXISTS idx_fuel_records_storage ON fuel_records(storage_id, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_fuel_records_plate ON fuel_records(plate, occurred_at);
+      CREATE INDEX IF NOT EXISTS idx_fuel_records_vehicle ON fuel_records(vehicle_id, occurred_at);
     `
   );
 }
@@ -729,6 +798,144 @@ function resolveMasterAdminSeed() {
   };
 }
 
+function syncMasterAdminFromEnvironment() {
+  const configuredEmail = String(process.env.MASTER_ADMIN_EMAIL || "").trim().toLowerCase();
+  const configuredPassword = String(process.env.MASTER_ADMIN_PASSWORD || "").trim();
+  const configuredName = String(process.env.MASTER_ADMIN_NAME || "").trim() || DEFAULT_MASTER_ADMIN_NAME;
+
+  if (!configuredEmail && !configuredPassword && !configuredName) {
+    return;
+  }
+
+  if (!configuredEmail || !configuredPassword) {
+    console.warn(
+      "[Horizon] MASTER_ADMIN_EMAIL e MASTER_ADMIN_PASSWORD devem ser definidos juntos para sincronizar a conta mestra."
+    );
+    return;
+  }
+
+  const existingSystemUser =
+    get(
+      `
+        SELECT *
+        FROM users
+        WHERE invite_code_used = 'SEED-ADMIN'
+           OR coalesce(is_system, 0) = 1
+        ORDER BY id ASC
+        LIMIT 1
+      `
+    ) || null;
+
+  const conflictingUser = get(
+    `
+      SELECT id, email
+      FROM users
+      WHERE lower(email) = lower(?)
+        AND (? IS NULL OR id <> ?)
+      LIMIT 1
+    `,
+    [configuredEmail, existingSystemUser ? Number(existingSystemUser.id) : null, existingSystemUser ? Number(existingSystemUser.id) : null]
+  );
+
+  if (conflictingUser) {
+    console.warn(
+      `[Horizon] Nao foi possivel sincronizar a conta mestra: o email ${configuredEmail} ja esta em uso por outro usuario.`
+    );
+    return;
+  }
+
+  const existingName = existingSystemUser ? String(existingSystemUser.name || "").trim() : "";
+  const existingEmail = existingSystemUser ? String(existingSystemUser.email || "").trim().toLowerCase() : "";
+  const credentialsAlreadyMatch =
+    existingSystemUser &&
+    existingEmail === configuredEmail &&
+    existingName === configuredName &&
+    existingSystemUser.role === "ADMIN" &&
+    String(existingSystemUser.status || "").toUpperCase() === "ACTIVE" &&
+    Number(existingSystemUser.active || 0) === 1 &&
+    Number(existingSystemUser.is_system || 0) === 1 &&
+    verifyPassword(configuredPassword, existingSystemUser.password_hash);
+
+  if (credentialsAlreadyMatch) {
+    return;
+  }
+
+  const timestamp = nowIso();
+
+  transaction(() => {
+    if (existingSystemUser) {
+      write(
+        `
+          UPDATE users
+          SET name = ?,
+              email = ?,
+              password_hash = ?,
+              role = 'ADMIN',
+              invite_code_used = 'SEED-ADMIN',
+              active = 1,
+              status = 'ACTIVE',
+              is_system = 1,
+              updated_at = ?
+          WHERE id = ?
+        `,
+        [configuredName, configuredEmail, hashPassword(configuredPassword), timestamp, existingSystemUser.id]
+      );
+
+      write("DELETE FROM sessions WHERE user_id = ?", [existingSystemUser.id]);
+      write("UPDATE activation_codes SET active = 0 WHERE user_id = ? AND active = 1", [existingSystemUser.id]);
+
+      insert(
+        `
+          INSERT INTO action_logs (user_id, user_name, action, entity_type, entity_id, details, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          existingSystemUser.id,
+          configuredName,
+          "SYNC_MASTER_ADMIN",
+          "USER",
+          String(existingSystemUser.id),
+          JSON.stringify({ email: configuredEmail, source: "env" }),
+          timestamp,
+        ]
+      );
+      return;
+    }
+
+    const createdId = insert(
+      `
+        INSERT INTO users (
+          name, email, password_hash, role, invite_code_used, active, status, is_system, created_at, updated_at
+        )
+        VALUES (?, ?, ?, 'ADMIN', 'SEED-ADMIN', 1, 'ACTIVE', 1, ?, ?)
+      `,
+      [configuredName, configuredEmail, hashPassword(configuredPassword), timestamp, timestamp]
+    );
+
+    insert(
+      `
+        INSERT INTO action_logs (user_id, user_name, action, entity_type, entity_id, details, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        createdId,
+        configuredName,
+        "SYNC_MASTER_ADMIN",
+        "USER",
+        String(createdId),
+        JSON.stringify({ email: configuredEmail, source: "env" }),
+        timestamp,
+      ]
+    );
+  });
+
+  if (existingSystemUser) {
+    console.log(`[Horizon] Conta mestra sincronizada pelo ambiente para ${configuredEmail}.`);
+  } else {
+    console.log(`[Horizon] Conta mestra criada pelo ambiente para ${configuredEmail}.`);
+  }
+}
+
 function revokeLegacyPublicInvites() {
   const legacyInvites = all(
     `
@@ -841,10 +1048,13 @@ async function initDatabase() {
 
   db.run("PRAGMA foreign_keys = ON;");
   createTables();
+  migrateInventorySchema();
+  migrateVehicleSchema();
   migrateFuelSchema();
   migrateOperationalSchema();
   migrateAuthSchema();
   seedDatabase();
+  syncMasterAdminFromEnvironment();
   revokeLegacyPublicInvites();
   ensureDefaultFuelStorages();
   migrateLegacyFuelRecords();

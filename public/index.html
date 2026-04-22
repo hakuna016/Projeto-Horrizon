@@ -125,7 +125,9 @@
           <button class="nav-item active" data-section="dashboard">Dashboard</button>
           <button class="nav-item" data-section="notes">Notas fiscais</button>
           <button class="nav-item" data-section="inventory">Estoque</button>
+          <button class="nav-item" data-section="vehicles">Veiculos</button>
           <button class="nav-item" data-section="fuel">Abastecimento</button>
+          <button class="nav-item" data-section="reports">Relatorios</button>
           <button class="nav-item" data-section="schedules">Escala</button>
           <button class="nav-item" data-section="fines">Multas</button>
           <button class="nav-item" data-section="checklists">Checklists</button>
@@ -398,6 +400,10 @@
                   <input type="number" name="minStock" min="0" step="0.01" value="0" />
                 </label>
                 <label>
+                  <span>Custo padrão</span>
+                  <input type="number" name="defaultCost" min="0" step="0.01" value="0" />
+                </label>
+                <label>
                   <span>Saldo inicial</span>
                   <input type="number" name="initialStock" min="0" step="0.01" value="0" />
                 </label>
@@ -440,18 +446,36 @@
                   <input type="number" name="quantity" min="0" step="0.01" required />
                 </label>
                 <label>
-                  <span>Hodometro (km)</span>
-                  <input
-                    type="number"
-                    name="odometerKm"
-                    min="0"
-                    step="1"
-                    placeholder="Opcional, recomendado para saida"
-                  />
+                  <span>Valor unitário</span>
+                  <input type="number" name="unitCost" min="0" step="0.01" placeholder="0,00" />
+                </label>
+                <label>
+                  <span>Documento</span>
+                  <input type="text" name="document" placeholder="NF, romaneio ou recibo" />
+                </label>
+                <label>
+                  <span>Fornecedor</span>
+                  <input type="text" name="supplierName" placeholder="Opcional" />
+                </label>
+                <label>
+                  <span>Filial / unidade</span>
+                  <input type="text" name="branchName" placeholder="Opcional" />
+                </label>
+                <label>
+                  <span>Tipo de combustível</span>
+                  <select name="fuelKind">
+                    <option value="">Nao se aplica</option>
+                    <option value="S500">S-500</option>
+                    <option value="S10">S-10</option>
+                  </select>
                 </label>
                 <label>
                   <span>Data e hora</span>
                   <input type="datetime-local" name="occurredAt" />
+                </label>
+                <label class="full-width">
+                  <span>Observação</span>
+                  <textarea name="notes" rows="3" placeholder="Observacoes do movimento"></textarea>
                 </label>
               </div>
               <div class="form-actions">
@@ -473,6 +497,7 @@
                       <th>Produto</th>
                       <th>Saldo</th>
                       <th>Mínimo</th>
+                      <th>Custo</th>
                       <th>Barras</th>
                       <th>Ações</th>
                     </tr>
@@ -494,12 +519,98 @@
                       <th>Produto</th>
                       <th>Tipo</th>
                       <th>Quantidade</th>
+                      <th>Documento</th>
+                      <th>Unitário</th>
+                      <th>Total</th>
                       <th>Saldo após</th>
                       <th>Usuário</th>
                       <th>#</th>
                     </tr>
                   </thead>
                   <tbody id="inventory-movements-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="vehicles-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Frota cadastrada</span>
+              <h2>Veiculos</h2>
+              <p class="section-description">Cadastro unico de placas para reduzir erro humano nos abastecimentos.</p>
+            </div>
+          </div>
+
+          <div class="two-column-grid">
+            <form id="vehicle-form" class="panel form-card">
+              <input type="hidden" name="id" />
+              <div class="card-title">
+                <span class="eyebrow">Cadastro</span>
+                <h3>Veiculo operacional</h3>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>Placa</span>
+                  <input type="text" name="plate" required maxlength="8" placeholder="ABC1D23" />
+                </label>
+                <label>
+                  <span>Combustivel</span>
+                  <select name="fuelProfile">
+                    <option value="S500">S-500</option>
+                    <option value="S10">S-10</option>
+                    <option value="BOTH">Ambos</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Marca</span>
+                  <input type="text" name="brand" />
+                </label>
+                <label>
+                  <span>Modelo</span>
+                  <input type="text" name="model" />
+                </label>
+                <label>
+                  <span>Setor / operacao</span>
+                  <input type="text" name="sector" />
+                </label>
+                <label>
+                  <span>Status</span>
+                  <select name="status">
+                    <option value="ACTIVE">Ativo</option>
+                    <option value="INACTIVE">Inativo</option>
+                  </select>
+                </label>
+                <label class="full-width">
+                  <span>Observacao</span>
+                  <textarea name="notes" rows="3" placeholder="Observacoes do veiculo"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Salvar veiculo</button>
+                <button type="button" id="vehicle-reset-button" class="ghost-button">Limpar</button>
+              </div>
+            </form>
+
+            <div class="panel table-panel">
+              <div class="card-title">
+                <span class="eyebrow">Base ativa</span>
+                <h3>Placas disponiveis</h3>
+              </div>
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Placa</th>
+                      <th>Combustivel</th>
+                      <th>Marca / modelo</th>
+                      <th>Setor</th>
+                      <th>Status</th>
+                      <th>Acoes</th>
+                    </tr>
+                  </thead>
+                  <tbody id="vehicles-table-body"></tbody>
                 </table>
               </div>
             </div>
@@ -514,6 +625,7 @@
               <p class="section-description">Controle e registro dos abastecimentos da frota.</p>
             </div>
             <div class="header-actions">
+              <button id="fuel-print-sheet-button" type="button" class="ghost-button">Imprimir folha diaria</button>
               <select id="fuel-filter-storage">
                 <option value="">Todos os combustíveis</option>
               </select>
@@ -544,8 +656,8 @@
                   </select>
                 </label>
                 <label>
-                  <span>Placa</span>
-                  <input type="text" name="plate" required />
+                  <span>Veiculo</span>
+                  <select id="fuel-vehicle-select" name="vehicleId"></select>
                 </label>
                 <label>
                   <span>Quantidade</span>
@@ -558,6 +670,10 @@
                 <label>
                   <span>Data e hora</span>
                   <input type="datetime-local" name="occurredAt" />
+                </label>
+                <label class="full-width">
+                  <span>Observacao</span>
+                  <textarea name="notes" rows="3" placeholder="Observacoes do abastecimento"></textarea>
                 </label>
               </div>
               <div class="form-actions">
@@ -582,13 +698,14 @@
             <div class="table-wrapper">
               <table>
                 <thead>
-                  <tr>
-                    <th>Estoque</th>
-                    <th>Combustível</th>
-                    <th>Tipo</th>
-                    <th>Placa</th>
-                    <th>Quantidade</th>
-                    <th>Hodometro</th>
+                    <tr>
+                      <th>Estoque</th>
+                      <th>Combustível</th>
+                      <th>Tipo</th>
+                      <th>Veiculo</th>
+                      <th>Placa</th>
+                      <th>Quantidade</th>
+                      <th>Hodometro</th>
                     <th>Saldo antes</th>
                     <th>Saldo após</th>
                     <th>Usuário</th>
@@ -639,6 +756,69 @@
               </div>
               <div id="fuel-side-insights" class="stack-list"></div>
             </article>
+          </div>
+        </section>
+
+        <section id="reports-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Prestacao de contas</span>
+              <h2>Relatorios</h2>
+              <p class="section-description">Ficha Kardex confiavel para fechamento e conferencia com o financeiro.</p>
+            </div>
+          </div>
+
+          <div class="panel form-card report-filter-card">
+            <div class="card-title">
+              <span class="eyebrow">Ficha Kardex</span>
+              <h3>Movimento do estoque</h3>
+            </div>
+            <form id="kardex-form" class="form-grid report-filter-grid">
+              <label>
+                <span>Produto</span>
+                <select id="kardex-product-select" name="productId" required></select>
+              </label>
+              <label>
+                <span>Data inicial</span>
+                <input type="date" name="from" required />
+              </label>
+              <label>
+                <span>Data final</span>
+                <input type="date" name="to" required />
+              </label>
+              <label>
+                <span>Filial / unidade</span>
+                <input type="text" name="branchName" placeholder="Opcional" />
+              </label>
+              <label>
+                <span>Tipo de combustivel</span>
+                <select name="fuelKind">
+                  <option value="">Todos</option>
+                  <option value="S500">S-500</option>
+                  <option value="S10">S-10</option>
+                </select>
+              </label>
+              <label>
+                <span>Documento</span>
+                <input type="text" name="document" placeholder="Opcional" />
+              </label>
+              <label>
+                <span>Fornecedor</span>
+                <input type="text" name="supplierName" placeholder="Opcional" />
+              </label>
+              <div class="form-actions report-filter-actions full-width">
+                <button id="kardex-view-button" type="submit" class="primary-button">Visualizar</button>
+                <button id="kardex-pdf-button" type="button" class="secondary-button">Gerar PDF</button>
+                <button id="kardex-print-button" type="button" class="ghost-button">Imprimir</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="kardex-preview" class="panel table-panel kardex-preview-panel">
+            <div class="dashboard-empty">
+              <strong>Ficha Kardex pronta para consulta</strong>
+              <p class="muted">Selecione o produto e o periodo para visualizar, gerar PDF ou imprimir.</p>
+            </div>
           </div>
         </section>
 

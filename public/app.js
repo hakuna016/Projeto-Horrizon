@@ -44,7 +44,9 @@ const NAV_ICONS = {
   dashboard: "dashboard",
   notes: "notes",
   inventory: "inventory",
+  vehicles: "vehicle",
   fuel: "fuel",
+  reports: "notes",
   schedules: "schedules",
   fines: "fines",
   checklists: "checklists",
@@ -55,7 +57,9 @@ const SECTION_ICONS = {
   dashboard: "dashboard",
   notes: "notes",
   inventory: "inventory",
+  vehicles: "vehicle",
   fuel: "fuel",
+  reports: "notes",
   schedules: "schedules",
   fines: "fines",
   checklists: "checklists",
@@ -70,6 +74,7 @@ const state = {
   authMode: "login",
   notes: [],
   products: [],
+  vehicles: [],
   inventoryMovements: [],
   fuelRecords: [],
   fuelStorages: [],
@@ -120,6 +125,7 @@ const state = {
     targetId: null,
     detector: null,
   },
+  kardexReport: null,
   theme: "light",
 };
 
@@ -242,6 +248,9 @@ const refs = {
   productForm: $("product-form"),
   productResetButton: $("product-reset-button"),
   productsTableBody: $("products-table-body"),
+  vehicleForm: $("vehicle-form"),
+  vehicleResetButton: $("vehicle-reset-button"),
+  vehiclesTableBody: $("vehicles-table-body"),
   movementForm: $("inventory-movement-form"),
   movementProductSelect: $("movement-product-select"),
   inventoryMovementsBody: $("inventory-movements-body"),
@@ -249,6 +258,8 @@ const refs = {
   lookupBarcodeButton: $("lookup-barcode-button"),
   fuelForm: $("fuel-form"),
   fuelStorageSelect: $("fuel-storage-select"),
+  fuelVehicleSelect: $("fuel-vehicle-select"),
+  fuelPrintSheetButton: $("fuel-print-sheet-button"),
   fuelFilterStorage: $("fuel-filter-storage"),
   fuelFilterFrom: $("fuel-filter-from"),
   fuelFilterTo: $("fuel-filter-to"),
@@ -273,6 +284,12 @@ const refs = {
   checklistItemsBuilder: $("checklist-items-builder"),
   checklistSummaryCards: $("checklist-summary-cards"),
   checklistHistoryFeed: $("checklist-history-feed"),
+  kardexForm: $("kardex-form"),
+  kardexProductSelect: $("kardex-product-select"),
+  kardexViewButton: $("kardex-view-button"),
+  kardexPdfButton: $("kardex-pdf-button"),
+  kardexPrintButton: $("kardex-print-button"),
+  kardexPreview: $("kardex-preview"),
   emailForm: $("email-form"),
   emailsTableBody: $("emails-table-body"),
   adminUserForm: $("admin-user-form"),
@@ -396,9 +413,14 @@ function bindEvents() {
   refs.notesCategoryFilter.addEventListener("change", refreshNotes);
   refs.productForm.addEventListener("submit", handleProductSubmit);
   refs.productResetButton.addEventListener("click", resetProductForm);
+  refs.vehicleForm.addEventListener("submit", handleVehicleSubmit);
+  refs.vehicleResetButton.addEventListener("click", resetVehicleForm);
   refs.movementForm.addEventListener("submit", handleMovementSubmit);
   refs.lookupBarcodeButton.addEventListener("click", lookupProductByBarcode);
   refs.fuelForm.addEventListener("submit", handleFuelSubmit);
+  refs.fuelForm.elements.type.addEventListener("change", syncFuelFormState);
+  refs.fuelStorageSelect.addEventListener("change", syncFuelFormState);
+  refs.fuelPrintSheetButton?.addEventListener("click", handleFuelDailySheetPrint);
   refs.fuelFilterStorage.addEventListener("change", refreshFuel);
   refs.fuelFilterFrom.addEventListener("change", refreshFuel);
   refs.fuelFilterTo.addEventListener("change", refreshFuel);
@@ -410,6 +432,9 @@ function bindEvents() {
   refs.fineResetButton.addEventListener("click", resetFineForm);
   refs.checklistForm.addEventListener("submit", handleChecklistSubmit);
   refs.checklistResetButton.addEventListener("click", resetChecklistForm);
+  refs.kardexForm?.addEventListener("submit", handleKardexView);
+  refs.kardexPdfButton?.addEventListener("click", () => handleKardexPrint("pdf"));
+  refs.kardexPrintButton?.addEventListener("click", () => handleKardexPrint("print"));
   refs.emailForm.addEventListener("submit", handleEmailSubmit);
   refs.adminUserForm.addEventListener("submit", handleAdminUserSubmit);
   refs.adminUserResetButton?.addEventListener("click", resetAdminUserForm);
@@ -836,6 +861,14 @@ function formatFuelKindLabel(value) {
   return value || "-";
 }
 
+function formatVehicleFuelProfile(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (normalized === "BOTH") {
+    return "S-500 e S-10";
+  }
+  return formatFuelKindLabel(normalized);
+}
+
 function toLocalDateTimeInput(value) {
   if (!value) {
     return "";
@@ -1022,6 +1055,7 @@ function applyDefaultFormValues() {
   refs.noteForm.elements.category.value = "LOGISTICS";
   refs.noteForm.elements.issueDate.value = currentLocalDateTime();
   refs.fuelForm.elements.occurredAt.value = currentLocalDateTime();
+  refs.fuelForm.elements.type.value = "EXIT";
   refs.movementForm.elements.occurredAt.value = currentLocalDateTime();
   refs.scheduleForm.elements.scheduledDate.value = currentLocalDate();
   refs.scheduleForm.elements.responsibleName.value = state.user?.name || "";
@@ -1029,9 +1063,15 @@ function applyDefaultFormValues() {
   refs.checklistForm.elements.checklistDate.value = currentLocalDateTime();
   refs.checklistForm.elements.checklistType.value = "PRE_USE";
   refs.emailForm.elements.receivedAt.value = currentLocalDateTime();
+  if (refs.kardexForm) {
+    refs.kardexForm.elements.from.value = currentLocalDate().slice(0, 8) + "01";
+    refs.kardexForm.elements.to.value = currentLocalDate();
+  }
   resetAdminUserForm();
+  resetVehicleForm();
   state.checklistDraftItems = cloneChecklistTemplate();
   renderChecklistComposer();
+  syncFuelFormState();
 }
 
 async function refreshAll() {
@@ -1043,6 +1083,7 @@ async function refreshAll() {
     refreshDashboard(),
     refreshNotes(),
     refreshProducts(),
+    refreshVehicles(),
     refreshFuel(),
     refreshSchedules(),
     refreshFines(),
@@ -1098,12 +1139,20 @@ async function refreshProducts() {
   state.products = response.items || [];
   renderProducts();
   updateMovementProductSelect();
+  updateKardexProductSelect();
 }
 
 async function refreshInventoryMovements() {
   const response = await api("/api/inventory/movements");
   state.inventoryMovements = response.items || [];
   renderInventoryMovements();
+}
+
+async function refreshVehicles() {
+  const response = await api("/api/vehicles");
+  state.vehicles = response.items || [];
+  renderVehicles();
+  renderFuelVehicleOptions();
 }
 
 async function refreshFuel() {
@@ -1117,6 +1166,8 @@ async function refreshFuel() {
   state.fuelStorages = response.storages || [];
   renderFuel();
   renderFuelStorageOptions();
+  renderFuelVehicleOptions();
+  syncFuelFormState();
 }
 
 async function refreshSchedules() {
@@ -1570,6 +1621,7 @@ function renderProducts() {
               </td>
               <td>${escapeHtml(product.currentStock.toFixed(2))} ${escapeHtml(product.unit)}</td>
               <td>${escapeHtml(product.minStock.toFixed(2))} ${escapeHtml(product.unit)}</td>
+              <td>${escapeHtml(formatCurrency(product.defaultCost || 0))}</td>
               <td>${escapeHtml(product.barcode || "-")}</td>
               <td>
                 <div class="row-actions">
@@ -1580,7 +1632,7 @@ function renderProducts() {
           `
         )
         .join("")
-    : emptyRow("Nenhum produto cadastrado.", 5);
+    : emptyRow("Nenhum produto cadastrado.", 6);
 }
 
 function renderInventoryMovements() {
@@ -1592,6 +1644,9 @@ function renderInventoryMovements() {
               <td>${escapeHtml(movement.productName)}</td>
               <td>${statusBadge(movement.type)}</td>
               <td>${escapeHtml(movement.quantity.toFixed(2))}</td>
+              <td>${escapeHtml(movement.document || "-")}</td>
+              <td>${escapeHtml(formatCurrency(movement.unitCost || 0))}</td>
+              <td>${escapeHtml(formatCurrency(movement.totalCost || 0))}</td>
               <td>${escapeHtml(movement.balanceAfter.toFixed(2))}</td>
               <td>${escapeHtml(movement.userName || "-")}</td>
               <td>${escapeHtml(formatDateTime(movement.occurredAt))}</td>
@@ -1599,7 +1654,33 @@ function renderInventoryMovements() {
           `
         )
         .join("")
-    : emptyRow("Nenhuma movimentação registrada.", 6);
+    : emptyRow("Nenhuma movimentação registrada.", 9);
+}
+
+function renderVehicles() {
+  refs.vehiclesTableBody.innerHTML = state.vehicles.length
+    ? state.vehicles
+        .map(
+          (vehicle) => `
+            <tr>
+              <td>
+                <strong>${escapeHtml(vehicle.plate)}</strong>
+                <div class="muted">${escapeHtml(vehicle.notes || "-")}</div>
+              </td>
+              <td>${escapeHtml(formatVehicleFuelProfile(vehicle.fuelProfile))}</td>
+              <td>${escapeHtml([vehicle.brand, vehicle.model].filter(Boolean).join(" / ") || "-")}</td>
+              <td>${escapeHtml(vehicle.sector || "-")}</td>
+              <td>${vehicle.active ? `<span class="status-badge status-green">Ativo</span>` : `<span class="status-badge status-gray">Inativo</span>`}</td>
+              <td>
+                <div class="row-actions">
+                  ${buildRowActionButton("edit-vehicle", vehicle.id, "Editar veiculo", "&#9998;")}
+                </div>
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhum veiculo cadastrado.", 6);
 }
 
 function renderFuelStorageOptions() {
@@ -1633,6 +1714,88 @@ function renderFuelStorageOptions() {
     state.fuelStorages.some((storage) => String(storage.id) === String(currentFilterValue))
   ) {
     refs.fuelFilterStorage.value = currentFilterValue;
+  }
+}
+
+function updateKardexProductSelect() {
+  if (!refs.kardexProductSelect) {
+    return;
+  }
+
+  const currentValue = refs.kardexProductSelect.value;
+  refs.kardexProductSelect.innerHTML = state.products.length
+    ? `<option value="">Selecione um produto</option>${state.products
+        .map(
+          (product) => `
+            <option value="${product.id}">
+              ${escapeHtml(product.name)} (${escapeHtml(product.unit)})
+            </option>
+          `
+        )
+        .join("")}`
+    : `<option value="">Cadastre um produto primeiro</option>`;
+
+  if (currentValue && state.products.some((product) => String(product.id) === String(currentValue))) {
+    refs.kardexProductSelect.value = currentValue;
+  }
+}
+
+function getActiveFuelVehicles() {
+  const selectedStorage = state.fuelStorages.find(
+    (storage) => String(storage.id) === String(refs.fuelStorageSelect.value || "")
+  );
+  const selectedFuelKind = selectedStorage?.fuelKind || "";
+
+  return state.vehicles.filter((vehicle) => {
+    if (!vehicle.active) {
+      return false;
+    }
+    if (!selectedFuelKind) {
+      return true;
+    }
+    return vehicle.fuelProfile === "BOTH" || vehicle.fuelProfile === selectedFuelKind;
+  });
+}
+
+function renderFuelVehicleOptions() {
+  if (!refs.fuelVehicleSelect) {
+    return;
+  }
+
+  const currentValue = refs.fuelVehicleSelect.value;
+  const vehicles = getActiveFuelVehicles();
+  refs.fuelVehicleSelect.innerHTML = vehicles.length
+    ? `<option value="">Selecione um veiculo</option>${vehicles
+        .map(
+          (vehicle) => `
+            <option value="${vehicle.id}">
+              ${escapeHtml(vehicle.plate)} | ${escapeHtml([vehicle.brand, vehicle.model].filter(Boolean).join(" ")) || "Sem descricao"}
+            </option>
+          `
+        )
+        .join("")}`
+    : `<option value="">Nenhum veiculo ativo compativel</option>`;
+
+  if (currentValue && vehicles.some((vehicle) => String(vehicle.id) === String(currentValue))) {
+    refs.fuelVehicleSelect.value = currentValue;
+  }
+}
+
+function syncFuelFormState() {
+  if (!refs.fuelForm || !refs.fuelVehicleSelect) {
+    return;
+  }
+
+  renderFuelVehicleOptions();
+  const isExit = refs.fuelForm.elements.type.value === "EXIT";
+  refs.fuelVehicleSelect.disabled = !isExit;
+  refs.fuelVehicleSelect.required = isExit;
+  refs.fuelForm.elements.odometerKm.required = false;
+  refs.fuelForm.elements.odometerKm.disabled = !isExit;
+
+  if (!isExit) {
+    refs.fuelVehicleSelect.value = "";
+    refs.fuelForm.elements.odometerKm.value = "";
   }
 }
 
@@ -1901,6 +2064,7 @@ function handleRowActions(event) {
   if (action === "edit-note") editNote(id);
   if (action === "delete-note") deleteNote(id);
   if (action === "edit-product") editProduct(id);
+  if (action === "edit-vehicle") editVehicle(id);
   if (action === "edit-schedule") editSchedule(id);
   if (action === "edit-fine") editFine(id);
   if (action === "edit-checklist") editChecklist(id);
@@ -1936,9 +2100,25 @@ function editProduct(id) {
   refs.productForm.elements.unit.value = product.unit;
   refs.productForm.elements.barcode.value = product.barcode || "";
   refs.productForm.elements.minStock.value = product.minStock;
+  refs.productForm.elements.defaultCost.value = product.defaultCost || 0;
   refs.productForm.elements.initialStock.value = 0;
   refs.productForm.elements.initialStock.disabled = true;
   setSection("inventory");
+}
+
+function editVehicle(id) {
+  const vehicle = findById(state.vehicles, id);
+  if (!vehicle) return;
+
+  refs.vehicleForm.elements.id.value = vehicle.id;
+  refs.vehicleForm.elements.plate.value = vehicle.plate;
+  refs.vehicleForm.elements.fuelProfile.value = vehicle.fuelProfile;
+  refs.vehicleForm.elements.brand.value = vehicle.brand || "";
+  refs.vehicleForm.elements.model.value = vehicle.model || "";
+  refs.vehicleForm.elements.sector.value = vehicle.sector || "";
+  refs.vehicleForm.elements.status.value = vehicle.active ? "ACTIVE" : "INACTIVE";
+  refs.vehicleForm.elements.notes.value = vehicle.notes || "";
+  setSection("vehicles");
 }
 
 function editSchedule(id) {
@@ -2234,6 +2414,7 @@ async function handleProductSubmit(event) {
     unit: refs.productForm.elements.unit.value,
     barcode: refs.productForm.elements.barcode.value,
     minStock: refs.productForm.elements.minStock.value,
+    defaultCost: refs.productForm.elements.defaultCost.value,
     initialStock: refs.productForm.elements.initialStock.value,
   };
 
@@ -2250,6 +2431,33 @@ async function handleProductSubmit(event) {
   }
 }
 
+async function handleVehicleSubmit(event) {
+  event.preventDefault();
+  const id = refs.vehicleForm.elements.id.value;
+
+  const payload = {
+    plate: refs.vehicleForm.elements.plate.value,
+    fuelProfile: refs.vehicleForm.elements.fuelProfile.value,
+    brand: refs.vehicleForm.elements.brand.value,
+    model: refs.vehicleForm.elements.model.value,
+    sector: refs.vehicleForm.elements.sector.value,
+    status: refs.vehicleForm.elements.status.value,
+    notes: refs.vehicleForm.elements.notes.value,
+  };
+
+  try {
+    await api(id ? `/api/vehicles/${id}` : "/api/vehicles", {
+      method: id ? "PUT" : "POST",
+      body: payload,
+    });
+    resetVehicleForm();
+    await Promise.all([refreshVehicles(), refreshFuel(), refreshDashboard()]);
+    showToast(id ? "Veiculo atualizado." : "Veiculo cadastrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 async function handleMovementSubmit(event) {
   event.preventDefault();
 
@@ -2257,6 +2465,11 @@ async function handleMovementSubmit(event) {
     productId: refs.movementForm.elements.productId.value,
     type: refs.movementForm.elements.type.value,
     quantity: refs.movementForm.elements.quantity.value,
+    document: refs.movementForm.elements.document.value,
+    branchName: refs.movementForm.elements.branchName.value,
+    supplierName: refs.movementForm.elements.supplierName.value,
+    fuelKind: refs.movementForm.elements.fuelKind.value,
+    unitCost: refs.movementForm.elements.unitCost.value,
     occurredAt: toIsoDateTime(refs.movementForm.elements.occurredAt.value),
     notes: refs.movementForm.elements.notes.value,
   };
@@ -2291,11 +2504,12 @@ async function lookupProductByBarcode() {
 
 async function handleFuelSubmit(event) {
   event.preventDefault();
+  const isExit = refs.fuelForm.elements.type.value === "EXIT";
 
   const payload = {
     storageId: refs.fuelForm.elements.storageId.value,
     type: refs.fuelForm.elements.type.value,
-    plate: refs.fuelForm.elements.plate.value,
+    vehicleId: isExit ? refs.fuelForm.elements.vehicleId.value : "",
     quantity: refs.fuelForm.elements.quantity.value,
     odometerKm: refs.fuelForm.elements.odometerKm.value,
     occurredAt: toIsoDateTime(refs.fuelForm.elements.occurredAt.value),
@@ -2304,8 +2518,7 @@ async function handleFuelSubmit(event) {
 
   try {
     await api("/api/fuel", { method: "POST", body: payload });
-    refs.fuelForm.reset();
-    refs.fuelForm.elements.occurredAt.value = currentLocalDateTime();
+    resetFuelForm();
     await Promise.all([refreshFuel(), refreshDashboard()]);
     showToast("Abastecimento registrado.");
   } catch (error) {
@@ -2431,8 +2644,27 @@ function resetProductForm() {
   refs.productForm.elements.id.value = "";
   refs.productForm.elements.unit.value = "UN";
   refs.productForm.elements.minStock.value = 0;
+  refs.productForm.elements.defaultCost.value = 0;
   refs.productForm.elements.initialStock.value = 0;
   refs.productForm.elements.initialStock.disabled = false;
+}
+
+function resetVehicleForm() {
+  if (!refs.vehicleForm) {
+    return;
+  }
+
+  refs.vehicleForm.reset();
+  refs.vehicleForm.elements.id.value = "";
+  refs.vehicleForm.elements.fuelProfile.value = "S500";
+  refs.vehicleForm.elements.status.value = "ACTIVE";
+}
+
+function resetFuelForm() {
+  refs.fuelForm.reset();
+  refs.fuelForm.elements.type.value = "EXIT";
+  refs.fuelForm.elements.occurredAt.value = currentLocalDateTime();
+  syncFuelFormState();
 }
 
 function resetScheduleForm() {
@@ -2451,6 +2683,379 @@ function resetChecklistForm() {
   refs.checklistForm.reset();
   refs.checklistForm.elements.id.value = "";
   refs.checklistForm.elements.checklistDate.value = currentLocalDateTime();
+}
+
+function buildKardexRequestPayload() {
+  return {
+    productId: refs.kardexForm.elements.productId.value,
+    from: refs.kardexForm.elements.from.value ? `${refs.kardexForm.elements.from.value}T00:00:00` : "",
+    to: refs.kardexForm.elements.to.value ? `${refs.kardexForm.elements.to.value}T23:59:59` : "",
+    branchName: refs.kardexForm.elements.branchName.value,
+    fuelKind: refs.kardexForm.elements.fuelKind.value,
+    document: refs.kardexForm.elements.document.value,
+    supplierName: refs.kardexForm.elements.supplierName.value,
+  };
+}
+
+async function fetchKardexReport() {
+  const payload = buildKardexRequestPayload();
+  if (!payload.productId || !payload.from || !payload.to) {
+    throw new Error("Selecione produto, data inicial e data final.");
+  }
+
+  const query = new URLSearchParams();
+  Object.entries(payload).forEach(([key, value]) => {
+    if (value) {
+      query.set(key, value);
+    }
+  });
+
+  const response = await api(`/api/reports/kardex?${query.toString()}`);
+  state.kardexReport = response.report || null;
+  renderKardexPreview();
+  return state.kardexReport;
+}
+
+function renderKardexPreview() {
+  if (!refs.kardexPreview) {
+    return;
+  }
+
+  const report = state.kardexReport;
+  if (!report) {
+    refs.kardexPreview.innerHTML = `
+      <div class="dashboard-empty">
+        <strong>Ficha Kardex pronta para consulta</strong>
+        <p class="muted">Selecione o produto e o periodo para visualizar, gerar PDF ou imprimir.</p>
+      </div>
+    `;
+    return;
+  }
+
+  refs.kardexPreview.innerHTML = `
+    <div class="kardex-preview">
+      <div class="kardex-preview__header">
+        <div>
+          <span class="eyebrow">Relatorio</span>
+          <h3>${escapeHtml(report.reportName)}</h3>
+          <p class="muted">${escapeHtml(`${formatDateOnly(report.period.from)} a ${formatDateOnly(report.period.to)}`)}</p>
+        </div>
+        <div class="kardex-preview__meta">
+          <span><strong>Emissao:</strong> ${escapeHtml(formatDateTime(report.issuedAt))}</span>
+          <span><strong>Produto:</strong> ${escapeHtml(report.product.name)}</span>
+          <span><strong>Unidade:</strong> ${escapeHtml(report.product.unit)}</span>
+          <span><strong>Custo:</strong> ${escapeHtml(formatCurrency(report.currentCost || 0))}</span>
+          <span><strong>Saldo anterior:</strong> ${escapeHtml(`${formatNumber(report.openingBalance || 0, 2, 2)} ${report.product.unit}`)}</span>
+        </div>
+      </div>
+      <div class="kardex-filter-summary">
+        <span class="dashboard-chip">Filial/unidade: ${escapeHtml(report.filters.branchName || "Todas")}</span>
+        <span class="dashboard-chip">Combustivel: ${escapeHtml(report.filters.fuelKind ? formatFuelKindLabel(report.filters.fuelKind) : "Todos")}</span>
+        <span class="dashboard-chip">Documento: ${escapeHtml(report.filters.document || "Todos")}</span>
+        <span class="dashboard-chip">Fornecedor: ${escapeHtml(report.filters.supplierName || "Todos")}</span>
+      </div>
+      ${
+        report.lastPurchase
+          ? `<div class="stack-item">
+              <strong>Ultima compra</strong>
+              <p class="muted">${escapeHtml(
+                `${formatDateTime(report.lastPurchase.date)} | ${report.lastPurchase.document || "Sem documento"} | ${report.lastPurchase.supplierName || "Sem fornecedor"}`
+              )}</p>
+            </div>`
+          : ""
+      }
+      <div class="table-wrapper">
+        <table class="kardex-table">
+          <thead>
+            <tr>
+              <th>Documento</th>
+              <th>Data</th>
+              <th>Entradas</th>
+              <th>Saidas</th>
+              <th>Unitario</th>
+              <th>Valor total</th>
+              <th>Saldo</th>
+              <th>Observacao</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="kardex-table__opening-row">
+              <td colspan="6"><strong>Saldo anterior ao periodo</strong></td>
+              <td><strong>${escapeHtml(`${formatNumber(report.openingBalance || 0, 2, 2)} ${report.product.unit}`)}</strong></td>
+              <td>Base do saldo acumulado</td>
+            </tr>
+            ${
+              report.rows.length
+                ? report.rows
+                    .map(
+                      (row) => `
+                        <tr>
+                          <td>${escapeHtml(row.document || "-")}</td>
+                          <td>${escapeHtml(formatDateTime(row.date))}</td>
+                          <td>${escapeHtml(row.entryQuantity ? formatNumber(row.entryQuantity, 2, 2) : "-")}</td>
+                          <td>${escapeHtml(row.exitQuantity ? formatNumber(row.exitQuantity, 2, 2) : "-")}</td>
+                          <td>${escapeHtml(formatCurrency(row.unitCost || 0))}</td>
+                          <td>${escapeHtml(formatCurrency(row.totalCost || 0))}</td>
+                          <td>${escapeHtml(`${formatNumber(row.balance || 0, 2, 2)} ${report.product.unit}`)}</td>
+                          <td>${escapeHtml(row.notes || "-")}</td>
+                        </tr>
+                      `
+                    )
+                    .join("")
+                : `<tr><td colspan="8" class="muted">Nenhuma movimentacao encontrada para os filtros informados.</td></tr>`
+            }
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2"><strong>Totais do periodo</strong></td>
+              <td><strong>${escapeHtml(formatNumber(report.totals.entries || 0, 2, 2))}</strong></td>
+              <td><strong>${escapeHtml(formatNumber(report.totals.exits || 0, 2, 2))}</strong></td>
+              <td colspan="2"><strong>Saldo final</strong></td>
+              <td><strong>${escapeHtml(`${formatNumber(report.totals.finalBalance || 0, 2, 2)} ${report.product.unit}`)}</strong></td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function handleKardexView(event) {
+  event.preventDefault();
+
+  try {
+    await fetchKardexReport();
+    showToast("Ficha Kardex atualizada.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleKardexPrint(mode = "print") {
+  try {
+    const report = await fetchKardexReport();
+    openPrintDocument({
+      title: `${report.reportName} - ${report.product.name}`,
+      html: buildKardexPrintDocument(report, mode),
+    });
+    showToast(mode === "pdf" ? "Na impressao, escolha Salvar como PDF." : "Janela de impressao aberta.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleFuelDailySheetPrint() {
+  try {
+    if (!state.vehicles.length) {
+      await refreshVehicles();
+    }
+
+    const activeVehicles = state.vehicles.filter((vehicle) => vehicle.active);
+    const grouped = {
+      s500: activeVehicles.filter((vehicle) => vehicle.supportsS500),
+      s10: activeVehicles.filter((vehicle) => vehicle.supportsS10),
+    };
+
+    openPrintDocument({
+      title: `Controle diario de abastecimento - ${currentLocalDate()}`,
+      html: buildFuelDailySheetDocument(grouped),
+    });
+    showToast("Folha diaria pronta para impressao.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function openPrintDocument({ title, html }) {
+  const popup = window.open("", "_blank", "noopener,noreferrer,width=1080,height=900");
+  if (!popup) {
+    throw new Error("Nao foi possivel abrir a janela de impressao.");
+  }
+
+  popup.document.open();
+  popup.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8" /><title>${escapeHtml(
+    title
+  )}</title></head><body>${html}<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},180);});</script></body></html>`);
+  popup.document.close();
+}
+
+function buildFuelDailySheetRows(vehicles = [], extraRows = 4) {
+  const rows = vehicles.map(
+    (vehicle) => `
+      <tr>
+        <td>${escapeHtml(vehicle.plate)}</td>
+        <td></td>
+        <td></td>
+        <td></td>
+      </tr>
+    `
+  );
+
+  for (let index = 0; index < extraRows; index += 1) {
+    rows.push(`
+      <tr>
+        <td>&nbsp;</td>
+        <td></td>
+        <td></td>
+        <td></td>
+      </tr>
+    `);
+  }
+
+  return rows.join("");
+}
+
+function buildFuelDailySheetBlock(title, vehicles, pumpLabel, tankLabel) {
+  return `
+    <section class="print-sheet__block">
+      <header class="print-sheet__block-header">
+        <h2>${escapeHtml(title)}</h2>
+      </header>
+      <table class="print-sheet__table">
+        <thead>
+          <tr>
+            <th>Placa</th>
+            <th>KM</th>
+            <th>Litros</th>
+            <th>Observacao</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${buildFuelDailySheetRows(vehicles)}
+        </tbody>
+      </table>
+      <footer class="print-sheet__footer">
+        <div><strong>${escapeHtml(pumpLabel)}:</strong> ____________________</div>
+        <div><strong>${escapeHtml(tankLabel)}:</strong> ____________________</div>
+        <div><strong>KM:</strong> ____________________</div>
+      </footer>
+    </section>
+  `;
+}
+
+function buildFuelDailySheetDocument(groupedVehicles) {
+  return `
+    <style>
+      body { font-family: Arial, sans-serif; color: #111; margin: 0; }
+      .print-sheet { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 12mm; box-sizing: border-box; }
+      .print-sheet__header { margin-bottom: 8mm; }
+      .print-sheet__header h1 { margin: 0 0 4px; font-size: 18px; }
+      .print-sheet__header p { margin: 0; font-size: 12px; }
+      .print-sheet__block { margin-bottom: 10mm; }
+      .print-sheet__block-header { border-bottom: 1px solid #111; margin-bottom: 4mm; }
+      .print-sheet__block-header h2 { margin: 0 0 4px; font-size: 15px; }
+      .print-sheet__table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .print-sheet__table th, .print-sheet__table td { border: 1px solid #111; padding: 6px 8px; font-size: 11px; height: 11mm; }
+      .print-sheet__table th:nth-child(1), .print-sheet__table td:nth-child(1) { width: 22%; }
+      .print-sheet__table th:nth-child(2), .print-sheet__table td:nth-child(2) { width: 14%; }
+      .print-sheet__table th:nth-child(3), .print-sheet__table td:nth-child(3) { width: 14%; }
+      .print-sheet__table th:nth-child(4), .print-sheet__table td:nth-child(4) { width: 50%; }
+      .print-sheet__footer { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4mm; font-size: 11px; }
+      @page { size: A4 portrait; margin: 10mm; }
+    </style>
+    <main class="print-sheet">
+      <header class="print-sheet__header">
+        <h1>Controle diario de abastecimento</h1>
+        <p>Data de emissao: ${escapeHtml(formatDateOnly(currentLocalDate()))}</p>
+      </header>
+      ${buildFuelDailySheetBlock("Bloco 1 - Diesel S-500", groupedVehicles.s500 || [], "Bomba S-500", "Litros tanque")}
+      ${buildFuelDailySheetBlock("Bloco 2 - Diesel S-10", groupedVehicles.s10 || [], "Bomba S-10", "Litros tanque")}
+    </main>
+  `;
+}
+
+function buildKardexPrintDocument(report, mode) {
+  return `
+    <style>
+      body { font-family: Arial, sans-serif; color: #111; margin: 0; }
+      .print-report { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 12mm; box-sizing: border-box; }
+      .print-report__header { display: grid; gap: 4px; margin-bottom: 6mm; }
+      .print-report__header h1 { margin: 0; font-size: 18px; }
+      .print-report__header p { margin: 0; font-size: 11px; }
+      .print-report__meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; margin: 4mm 0 6mm; font-size: 11px; }
+      .print-report__hint { margin-bottom: 4mm; font-size: 11px; }
+      .print-report__table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .print-report__table th, .print-report__table td { border: 1px solid #111; padding: 5px 6px; font-size: 10px; vertical-align: top; }
+      .print-report__table th:nth-child(1), .print-report__table td:nth-child(1) { width: 14%; }
+      .print-report__table th:nth-child(2), .print-report__table td:nth-child(2) { width: 14%; }
+      .print-report__table th:nth-child(3), .print-report__table td:nth-child(3) { width: 10%; }
+      .print-report__table th:nth-child(4), .print-report__table td:nth-child(4) { width: 10%; }
+      .print-report__table th:nth-child(5), .print-report__table td:nth-child(5) { width: 11%; }
+      .print-report__table th:nth-child(6), .print-report__table td:nth-child(6) { width: 13%; }
+      .print-report__table th:nth-child(7), .print-report__table td:nth-child(7) { width: 12%; }
+      .print-report__table th:nth-child(8), .print-report__table td:nth-child(8) { width: 16%; }
+      .print-report__footer { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 6mm; font-size: 11px; }
+      @page { size: A4 portrait; margin: 10mm; }
+    </style>
+    <main class="print-report">
+      <header class="print-report__header">
+        <p>${escapeHtml(report.companyName || "HORIZON")}</p>
+        <h1>${escapeHtml(report.reportName)}</h1>
+        <p>Periodo: ${escapeHtml(formatDateOnly(report.period.from))} a ${escapeHtml(formatDateOnly(report.period.to))}</p>
+        <p>Emissao: ${escapeHtml(formatDateTime(report.issuedAt))}</p>
+      </header>
+      <div class="print-report__meta">
+        <div><strong>Produto:</strong> ${escapeHtml(report.product.name)}</div>
+        <div><strong>Unidade de medida:</strong> ${escapeHtml(report.product.unit)}</div>
+        <div><strong>Filial/unidade:</strong> ${escapeHtml(report.filters.branchName || "Todas")}</div>
+        <div><strong>Custo:</strong> ${escapeHtml(formatCurrency(report.currentCost || 0))}</div>
+        <div><strong>Ultima compra:</strong> ${escapeHtml(
+          report.lastPurchase ? `${formatDateTime(report.lastPurchase.date)} - ${report.lastPurchase.document || "Sem documento"}` : "Nao informada"
+        )}</div>
+        <div><strong>Fornecedor:</strong> ${escapeHtml(report.filters.supplierName || report.lastPurchase?.supplierName || "-")}</div>
+      </div>
+      <div class="print-report__hint">
+        ${escapeHtml(mode === "pdf" ? "Use o dialogo de impressao para salvar como PDF." : "Documento pronto para impressao administrativa.")}
+      </div>
+      <table class="print-report__table">
+        <thead>
+          <tr>
+            <th>Documento</th>
+            <th>Data</th>
+            <th>Entradas</th>
+            <th>Saidas</th>
+            <th>Unitario</th>
+            <th>Valor total</th>
+            <th>Saldo</th>
+            <th>Observacao</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td colspan="6"><strong>Saldo anterior ao periodo</strong></td>
+            <td><strong>${escapeHtml(`${formatNumber(report.openingBalance || 0, 2, 2)} ${report.product.unit}`)}</strong></td>
+            <td></td>
+          </tr>
+          ${
+            report.rows.length
+              ? report.rows
+                  .map(
+                    (row) => `
+                      <tr>
+                        <td>${escapeHtml(row.document || "-")}</td>
+                        <td>${escapeHtml(formatDateTime(row.date))}</td>
+                        <td>${escapeHtml(row.entryQuantity ? formatNumber(row.entryQuantity, 2, 2) : "-")}</td>
+                        <td>${escapeHtml(row.exitQuantity ? formatNumber(row.exitQuantity, 2, 2) : "-")}</td>
+                        <td>${escapeHtml(formatCurrency(row.unitCost || 0))}</td>
+                        <td>${escapeHtml(formatCurrency(row.totalCost || 0))}</td>
+                        <td>${escapeHtml(`${formatNumber(row.balance || 0, 2, 2)} ${report.product.unit}`)}</td>
+                        <td>${escapeHtml(row.notes || "-")}</td>
+                      </tr>
+                    `
+                  )
+                  .join("")
+              : `<tr><td colspan="8">Nenhuma movimentacao encontrada no periodo.</td></tr>`
+          }
+        </tbody>
+      </table>
+      <footer class="print-report__footer">
+        <div><strong>Total entradas:</strong> ${escapeHtml(formatNumber(report.totals.entries || 0, 2, 2))}</div>
+        <div><strong>Total saidas:</strong> ${escapeHtml(formatNumber(report.totals.exits || 0, 2, 2))}</div>
+        <div><strong>Saldo final:</strong> ${escapeHtml(`${formatNumber(report.totals.finalBalance || 0, 2, 2)} ${report.product.unit}`)}</div>
+      </footer>
+    </main>
+  `;
 }
 
 function cloneChecklistTemplate() {
@@ -2733,7 +3338,7 @@ function handleInteractivePanels(event) {
     const action = shortcut.dataset.fuelShortcut;
     if (action === "new") {
       refs.fuelForm.scrollIntoView({ behavior: "smooth", block: "start" });
-      refs.fuelForm.elements.plate.focus();
+      refs.fuelForm.elements.vehicleId.focus();
     }
 
     if (action === "last7") {
@@ -2912,7 +3517,8 @@ function renderFuel() {
               <td>${escapeHtml(item.storageName || "-")}</td>
               <td>${escapeHtml(formatFuelKindLabel(item.fuelKind))}</td>
               <td>${statusBadge(item.type)}</td>
-              <td>${escapeHtml(item.plate)}</td>
+              <td>${escapeHtml(item.vehicleId ? [item.vehicleBrand, item.vehicleModel].filter(Boolean).join(" / ") || "Veiculo cadastrado" : "-")}</td>
+              <td>${escapeHtml(item.plate || "-")}</td>
               <td>${escapeHtml(item.quantity.toFixed(2))} L</td>
               <td>${escapeHtml(item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}</td>
               <td>${escapeHtml(item.balanceBefore.toFixed(2))} L</td>
@@ -2923,7 +3529,7 @@ function renderFuel() {
           `
         )
         .join("")
-    : emptyRow("Nenhum abastecimento registrado.", 10);
+    : emptyRow("Nenhum abastecimento registrado.", 11);
 
   refs.fuelConsumptionChart.innerHTML = renderConsumptionChart({
     consumptionSeries: analytics.consumptionSeries,

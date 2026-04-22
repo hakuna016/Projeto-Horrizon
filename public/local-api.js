@@ -62,6 +62,27 @@
     saida_: "EXIT",
   };
 
+  const FUEL_KIND_ALIASES = {
+    s500: "S500",
+    s_500: "S500",
+    diesel_s500: "S500",
+    diesel_s_500: "S500",
+    s10: "S10",
+    s_10: "S10",
+    diesel_s10: "S10",
+    diesel_s_10: "S10",
+  };
+
+  const VEHICLE_FUEL_PROFILE_ALIASES = {
+    s500: "S500",
+    s_500: "S500",
+    s10: "S10",
+    s_10: "S10",
+    both: "BOTH",
+    ambos: "BOTH",
+    ambos_combustiveis: "BOTH",
+  };
+
   const FINE_STATUS_ALIASES = {
     aberta: "OPEN",
     open: "OPEN",
@@ -314,6 +335,24 @@
     return normalizeEnum(value, FUEL_TYPE_ALIASES, fallback);
   }
 
+  function normalizeFuelKind(value, fallback = "") {
+    return normalizeEnum(value, FUEL_KIND_ALIASES, fallback);
+  }
+
+  function normalizeVehicleFuelProfile(value, fallback = "S500") {
+    return normalizeEnum(value, VEHICLE_FUEL_PROFILE_ALIASES, fallback);
+  }
+
+  function normalizePlate(value) {
+    return normalizeText(value).toUpperCase();
+  }
+
+  function vehicleSupportsFuel(profile, fuelKind) {
+    const normalizedProfile = normalizeVehicleFuelProfile(profile, "S500");
+    const normalizedFuelKind = normalizeFuelKind(fuelKind, "");
+    return !normalizedFuelKind || normalizedProfile === "BOTH" || normalizedProfile === normalizedFuelKind;
+  }
+
   function normalizeFineStatus(value, fallback = "OPEN") {
     return normalizeEnum(value, FINE_STATUS_ALIASES, fallback);
   }
@@ -456,6 +495,7 @@
         supplierRules: 1,
         notes: 1,
         products: 1,
+        vehicles: 1,
         inventoryMovements: 1,
         fuelStorages: 1,
         fuelRecords: 1,
@@ -471,6 +511,7 @@
       supplierRules: [],
       notes: [],
       products: [],
+      vehicles: [],
       inventoryMovements: [],
       fuelStorages: [],
       fuelRecords: [],
@@ -500,6 +541,7 @@
       "supplierRules",
       "notes",
       "products",
+      "vehicles",
       "inventoryMovements",
       "fuelStorages",
       "fuelRecords",
@@ -521,6 +563,7 @@
       supplierRules: "supplierRules",
       notes: "notes",
       products: "products",
+      vehicles: "vehicles",
       inventoryMovements: "inventoryMovements",
       fuelStorages: "fuelStorages",
       fuelRecords: "fuelRecords",
@@ -733,6 +776,82 @@
     return db;
   }
 
+  function migrateOperationalDataShape(db) {
+    let changed = false;
+
+    for (const product of db.products) {
+      if (product.defaultCost === undefined) {
+        product.defaultCost = 0;
+        changed = true;
+      }
+    }
+
+    for (const vehicle of db.vehicles) {
+      const normalizedPlate = normalizePlate(vehicle.plate);
+      if (vehicle.plate !== normalizedPlate) {
+        vehicle.plate = normalizedPlate;
+        changed = true;
+      }
+      if (vehicle.fuelProfile === undefined) {
+        vehicle.fuelProfile = "S500";
+        changed = true;
+      }
+      if (vehicle.active === undefined) {
+        vehicle.active = true;
+        changed = true;
+      }
+      if (vehicle.notes === undefined) {
+        vehicle.notes = "";
+        changed = true;
+      }
+      if (vehicle.updatedAt === undefined) {
+        vehicle.updatedAt = vehicle.createdAt || nowIso();
+        changed = true;
+      }
+    }
+
+    for (const movement of db.inventoryMovements) {
+      if (movement.document === undefined) {
+        movement.document = "";
+        changed = true;
+      }
+      if (movement.branchName === undefined) {
+        movement.branchName = "";
+        changed = true;
+      }
+      if (movement.supplierName === undefined) {
+        movement.supplierName = "";
+        changed = true;
+      }
+      if (movement.fuelKind === undefined) {
+        movement.fuelKind = "";
+        changed = true;
+      }
+      if (movement.unitCost === undefined) {
+        movement.unitCost = 0;
+        changed = true;
+      }
+      if (movement.totalCost === undefined) {
+        movement.totalCost = Number(movement.unitCost || 0) * Number(movement.quantity || 0);
+        changed = true;
+      }
+    }
+
+    for (const record of db.fuelRecords) {
+      if (record.vehicleId === undefined) {
+        const vehicle = db.vehicles.find((item) => item.plate === normalizePlate(record.plate));
+        record.vehicleId = vehicle ? vehicle.id : null;
+        changed = true;
+      }
+      if (!record.plate) {
+        record.plate = "";
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
   function getPathId(path, base) {
     const match = path.match(new RegExp(`^${base}/(\\d+)$`));
     return match ? Number(match[1]) : 0;
@@ -881,11 +1000,53 @@
         barcode: product.barcode || "",
         minStock: Number(product.minStock || 0),
         currentStock: Number(product.currentStock || 0),
+        defaultCost: Number(product.defaultCost || 0),
         active: product.active !== false,
         createdAt: product.createdAt,
         updatedAt: product.updatedAt,
         lowStock: Number(product.currentStock || 0) <= Number(product.minStock || 0),
       }));
+  }
+
+  function queryVehicles(db, filters = {}) {
+    return db.vehicles
+      .filter((vehicle) => {
+        if (filters.activeOnly && vehicle.active === false) {
+          return false;
+        }
+        if (filters.plate && normalizePlate(vehicle.plate) !== normalizePlate(filters.plate)) {
+          return false;
+        }
+        if (filters.fuelKind) {
+          const fuelKind = normalizeFuelKind(filters.fuelKind, "");
+          if (fuelKind && !vehicleSupportsFuel(vehicle.fuelProfile, fuelKind)) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((left, right) => normalizePlate(left.plate).localeCompare(normalizePlate(right.plate)) || Number(left.id) - Number(right.id))
+      .map((vehicle) => {
+        const fuelProfile = normalizeVehicleFuelProfile(vehicle.fuelProfile, "S500");
+        return {
+          id: Number(vehicle.id),
+          plate: normalizePlate(vehicle.plate),
+          fuelProfile,
+          brand: vehicle.brand || "",
+          model: vehicle.model || "",
+          sector: vehicle.sector || "",
+          notes: vehicle.notes || "",
+          active: vehicle.active !== false,
+          status: vehicle.active === false ? "INACTIVE" : "ACTIVE",
+          createdAt: vehicle.createdAt,
+          updatedAt: vehicle.updatedAt,
+          supportsS500: vehicleSupportsFuel(fuelProfile, "S500"),
+          supportsS10: vehicleSupportsFuel(fuelProfile, "S10"),
+          displayName: [normalizePlate(vehicle.plate), normalizeText([vehicle.brand, vehicle.model].filter(Boolean).join(" "))]
+            .filter(Boolean)
+            .join(" - "),
+        };
+      });
   }
 
   function queryInventoryMovements(db, filters = {}) {
@@ -898,6 +1059,18 @@
           return false;
         }
         if (filters.to && String(movement.occurredAt || "") > String(filters.to)) {
+          return false;
+        }
+        if (filters.branchName && normalizeText(movement.branchName).toLowerCase() !== normalizeText(filters.branchName).toLowerCase()) {
+          return false;
+        }
+        if (filters.fuelKind && normalizeFuelKind(movement.fuelKind, "") !== normalizeFuelKind(filters.fuelKind, "")) {
+          return false;
+        }
+        if (filters.document && !includesSearch(movement.document, filters.document)) {
+          return false;
+        }
+        if (filters.supplierName && !includesSearch(movement.supplierName, filters.supplierName)) {
           return false;
         }
         return true;
@@ -914,6 +1087,12 @@
           type: movement.type,
           quantity: Number(movement.quantity || 0),
           balanceAfter: Number(movement.balanceAfter || 0),
+          document: movement.document || "",
+          branchName: movement.branchName || "",
+          supplierName: movement.supplierName || "",
+          fuelKind: movement.fuelKind || "",
+          unitCost: Number(movement.unitCost || 0),
+          totalCost: Number(movement.totalCost || 0),
           notes: movement.notes || "",
           occurredAt: movement.occurredAt,
           createdAt: movement.createdAt,
@@ -940,23 +1119,30 @@
         return true;
       })
       .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt) || Number(right.id) - Number(left.id))
-      .map((record) => ({
-        id: Number(record.id),
-        storageId: record.storageId ? Number(record.storageId) : null,
-        storageName: record.storageName || "",
-        fuelKind: record.fuelKind || "",
-        type: record.type,
-        plate: record.plate,
-        quantity: Number(record.quantity || 0),
-        odometerKm:
-          record.odometerKm === null || record.odometerKm === undefined ? null : Number(record.odometerKm),
-        balanceBefore: Number(record.balanceBefore || 0),
-        balanceAfter: Number(record.balanceAfter || 0),
-        notes: record.notes || "",
-        occurredAt: record.occurredAt,
-        createdAt: record.createdAt,
-        userName: getUserById(db, record.createdBy)?.name || "",
-      }));
+      .map((record) => {
+        const vehicle = db.vehicles.find((item) => Number(item.id) === Number(record.vehicleId));
+        return {
+          id: Number(record.id),
+          storageId: record.storageId ? Number(record.storageId) : null,
+          storageName: record.storageName || "",
+          fuelKind: record.fuelKind || "",
+          vehicleId: record.vehicleId ? Number(record.vehicleId) : null,
+          type: record.type,
+          plate: record.plate || "",
+          quantity: Number(record.quantity || 0),
+          odometerKm:
+            record.odometerKm === null || record.odometerKm === undefined ? null : Number(record.odometerKm),
+          balanceBefore: Number(record.balanceBefore || 0),
+          balanceAfter: Number(record.balanceAfter || 0),
+          notes: record.notes || "",
+          occurredAt: record.occurredAt,
+          createdAt: record.createdAt,
+          userName: getUserById(db, record.createdBy)?.name || "",
+          vehicleBrand: vehicle?.brand || "",
+          vehicleModel: vehicle?.model || "",
+          vehicleSector: vehicle?.sector || "",
+        };
+      });
   }
 
   function queryFuelStorages(db) {
@@ -1360,6 +1546,153 @@
       });
   }
 
+  function buildKardexReport(db, filters = {}) {
+    const productId = Number(filters.productId);
+    const from = normalizeText(filters.from);
+    const to = normalizeText(filters.to);
+
+    if (!productId || !from || !to) {
+      throw new ApiError(400, "Produto e periodo sao obrigatorios.");
+    }
+
+    if (from > to) {
+      throw new ApiError(400, "A data inicial nao pode ser maior que a data final.");
+    }
+
+    const product = db.products.find((item) => Number(item.id) === productId);
+    if (!product) {
+      throw new ApiError(404, "Produto nao encontrado.");
+    }
+
+    const filterSet = {
+      productId,
+      branchName: normalizeText(filters.branchName || filters.branch || filters.unitName),
+      fuelKind: normalizeFuelKind(filters.fuelKind, ""),
+      document: normalizeText(filters.document),
+      supplierName: normalizeText(filters.supplierName || filters.supplier),
+    };
+
+    const matchesFilters = (movement) => {
+      if (Number(movement.productId) !== productId) {
+        return false;
+      }
+      if (filterSet.branchName && normalizeText(movement.branchName).toLowerCase() !== filterSet.branchName.toLowerCase()) {
+        return false;
+      }
+      if (filterSet.fuelKind && normalizeFuelKind(movement.fuelKind, "") !== filterSet.fuelKind) {
+        return false;
+      }
+      if (filterSet.document && !includesSearch(movement.document, filterSet.document)) {
+        return false;
+      }
+      if (filterSet.supplierName && !includesSearch(movement.supplierName, filterSet.supplierName)) {
+        return false;
+      }
+      return true;
+    };
+
+    const relevantMovements = db.inventoryMovements
+      .filter(matchesFilters)
+      .slice()
+      .sort((left, right) => String(left.occurredAt || "").localeCompare(String(right.occurredAt || "")) || Number(left.id) - Number(right.id));
+
+    const openingBalance = relevantMovements
+      .filter((movement) => String(movement.occurredAt || "") < from)
+      .reduce(
+        (total, movement) =>
+          total + (movement.type === "IN" ? Number(movement.quantity || 0) : -Number(movement.quantity || 0)),
+        0
+      );
+
+    const rowsInPeriod = relevantMovements.filter(
+      (movement) => String(movement.occurredAt || "") >= from && String(movement.occurredAt || "") <= to
+    );
+
+    let runningBalance = openingBalance;
+    let totalEntries = 0;
+    let totalExits = 0;
+
+    const rows = rowsInPeriod.map((movement) => {
+      const quantity = Number(movement.quantity || 0);
+      const unitCost = Number(movement.unitCost || 0);
+      const totalCost = Number(movement.totalCost || unitCost * quantity || 0);
+      const isEntry = movement.type === "IN";
+
+      if (isEntry) {
+        totalEntries += quantity;
+        runningBalance += quantity;
+      } else {
+        totalExits += quantity;
+        runningBalance -= quantity;
+      }
+
+      return {
+        id: Number(movement.id),
+        document: movement.document || "",
+        date: movement.occurredAt,
+        entryQuantity: isEntry ? quantity : 0,
+        exitQuantity: isEntry ? 0 : quantity,
+        quantity,
+        type: movement.type,
+        unitCost,
+        totalCost,
+        balance: runningBalance,
+        notes: movement.notes || "",
+        supplierName: movement.supplierName || "",
+        branchName: movement.branchName || "",
+        fuelKind: movement.fuelKind || "",
+        userName: getUserById(db, movement.createdBy)?.name || "",
+      };
+    });
+
+    const lastPurchase = relevantMovements
+      .filter((movement) => movement.type === "IN" && String(movement.occurredAt || "") <= to)
+      .slice()
+      .sort((left, right) => String(right.occurredAt || "").localeCompare(String(left.occurredAt || "")) || Number(right.id) - Number(left.id))[0];
+
+    const currentCost = Number(product.defaultCost || 0) || Number(lastPurchase?.unitCost || 0) || 0;
+
+    return {
+      companyName: "HORIZON",
+      reportName: "Ficha Kardex - Movimento do Estoque",
+      issuedAt: nowIso(),
+      period: { from, to },
+      product: {
+        id: Number(product.id),
+        name: product.name,
+        unit: product.unit,
+        defaultCost: Number(product.defaultCost || 0),
+      },
+      filters: {
+        branchName: filterSet.branchName || "",
+        fuelKind: filterSet.fuelKind || "",
+        document: filterSet.document || "",
+        supplierName: filterSet.supplierName || "",
+      },
+      currentCost,
+      openingBalance,
+      rows,
+      totals: {
+        entries: totalEntries,
+        exits: totalExits,
+        finalBalance: runningBalance,
+      },
+      lastPurchase: lastPurchase
+        ? {
+            id: Number(lastPurchase.id),
+            document: lastPurchase.document || "",
+            supplierName: lastPurchase.supplierName || "",
+            branchName: lastPurchase.branchName || "",
+            fuelKind: lastPurchase.fuelKind || "",
+            unitCost: Number(lastPurchase.unitCost || 0),
+            totalCost: Number(lastPurchase.totalCost || 0),
+            date: lastPurchase.occurredAt,
+            userName: getUserById(db, lastPurchase.createdBy)?.name || "",
+          }
+        : null,
+    };
+  }
+
   function queryEmails(db) {
     return db.emails
       .slice()
@@ -1711,6 +2044,10 @@
         shouldPersist = true;
       }
 
+      if (migrateOperationalDataShape(db)) {
+        shouldPersist = true;
+      }
+
       if (shouldPersist) {
         saveDb(db);
       }
@@ -2027,6 +2364,123 @@
         return { ok: true };
       }
 
+      if (path === "/api/vehicles" && method === "GET") {
+        requireAuth(user);
+        return {
+          items: queryVehicles(db, {
+            activeOnly: ["1", "true", "yes"].includes(String(query.activeOnly || "").toLowerCase()),
+            fuelKind: query.fuelKind,
+            plate: query.plate,
+          }),
+        };
+      }
+
+      if (path === "/api/vehicles" && method === "POST") {
+        const currentUser = requireAuth(user);
+        const plate = normalizePlate(body.plate);
+        const fuelProfile = normalizeVehicleFuelProfile(body.fuelProfile || body.fuelType, "S500");
+        const brand = normalizeText(body.brand);
+        const model = normalizeText(body.model);
+        const sector = normalizeText(body.sector || body.operation);
+        const notes = normalizeText(body.notes || body.observation);
+        const status = normalizeText(body.status || "ACTIVE").toUpperCase();
+        const active = status !== "INACTIVE";
+
+        if (!plate) {
+          throw new ApiError(400, "A placa do veiculo e obrigatoria.");
+        }
+
+        const duplicate = db.vehicles.find((item) => normalizePlate(item.plate) === plate);
+        if (duplicate) {
+          throw new ApiError(409, "Ja existe um veiculo cadastrado com esta placa.");
+        }
+
+        const timestamp = nowIso();
+        const vehicleId = nextId(db, "vehicles");
+        db.vehicles.push({
+          id: vehicleId,
+          plate,
+          fuelProfile,
+          brand,
+          model,
+          sector,
+          notes,
+          active,
+          createdBy: currentUser.id,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+
+        db.fuelRecords.forEach((record) => {
+          if ((!record.vehicleId || Number(record.vehicleId) === 0) && normalizePlate(record.plate) === plate) {
+            record.vehicleId = vehicleId;
+          }
+        });
+
+        logAction(db, currentUser, "CREATE_VEHICLE", "VEHICLE", vehicleId, {
+          plate,
+          fuelProfile,
+          brand,
+          model,
+          sector,
+          active,
+        });
+        maybePersist(db);
+        return { item: queryVehicles(db).find((item) => item.id === vehicleId) || null };
+      }
+
+      const vehicleId = getPathId(path, "/api/vehicles");
+      if (vehicleId && method === "PUT") {
+        const currentUser = requireAuth(user);
+        const existing = db.vehicles.find((item) => Number(item.id) === vehicleId);
+        if (!existing) {
+          throw new ApiError(404, "Veiculo nao encontrado.");
+        }
+
+        const plate = normalizePlate(body.plate || existing.plate);
+        const fuelProfile = normalizeVehicleFuelProfile(body.fuelProfile || body.fuelType || existing.fuelProfile, "S500");
+        const brand = normalizeText(body.brand || existing.brand);
+        const model = normalizeText(body.model || existing.model);
+        const sector = normalizeText(body.sector || body.operation || existing.sector);
+        const notes = normalizeText(body.notes || body.observation || existing.notes);
+        const status = normalizeText(body.status || (existing.active === false ? "INACTIVE" : "ACTIVE")).toUpperCase();
+        const active = status !== "INACTIVE";
+
+        const duplicate = db.vehicles.find(
+          (item) => Number(item.id) !== vehicleId && normalizePlate(item.plate) === plate
+        );
+        if (duplicate) {
+          throw new ApiError(409, "Ja existe um veiculo cadastrado com esta placa.");
+        }
+
+        existing.plate = plate;
+        existing.fuelProfile = fuelProfile;
+        existing.brand = brand;
+        existing.model = model;
+        existing.sector = sector;
+        existing.notes = notes;
+        existing.active = active;
+        existing.updatedAt = nowIso();
+
+        db.fuelRecords.forEach((record) => {
+          if (Number(record.vehicleId) === vehicleId) {
+            record.plate = plate;
+            record.vehicleId = vehicleId;
+          }
+        });
+
+        logAction(db, currentUser, "UPDATE_VEHICLE", "VEHICLE", vehicleId, {
+          plate,
+          fuelProfile,
+          brand,
+          model,
+          sector,
+          active,
+        });
+        maybePersist(db);
+        return { item: queryVehicles(db).find((item) => item.id === vehicleId) || null };
+      }
+
       if (path === "/api/products" && method === "GET") {
         requireAuth(user);
         return { items: queryProducts(db, query.search || "") };
@@ -2060,6 +2514,7 @@
         const barcode = normalizeText(body.barcode);
         const minStock = toNumber(body.minStock);
         const initialStock = toNumber(body.initialStock);
+        const defaultCost = toNumber(body.defaultCost);
 
         if (!name) {
           throw new ApiError(400, "Nome do produto e obrigatorio.");
@@ -2081,6 +2536,7 @@
           barcode: barcode || "",
           minStock,
           currentStock: initialStock,
+          defaultCost,
           active: true,
           createdBy: currentUser.id,
           createdAt: timestamp,
@@ -2094,6 +2550,12 @@
             type: "IN",
             quantity: initialStock,
             balanceAfter: initialStock,
+            document: "SALDO-INICIAL",
+            branchName: "",
+            supplierName: "",
+            fuelKind: "",
+            unitCost: defaultCost,
+            totalCost: defaultCost * initialStock,
             notes: "Saldo inicial do produto",
             occurredAt: timestamp,
             createdBy: currentUser.id,
@@ -2105,6 +2567,7 @@
           name,
           barcode,
           initialStock,
+          defaultCost,
         });
         maybePersist(db);
         return { item: queryProducts(db).find((item) => item.id === productId) || null };
@@ -2122,6 +2585,7 @@
         const unit = normalizeText(body.unit || existing.unit).toUpperCase();
         const barcode = normalizeText(body.barcode || existing.barcode);
         const minStock = toNumber(body.minStock ?? existing.minStock);
+        const defaultCost = toNumber(body.defaultCost ?? existing.defaultCost);
 
         const barcodeInUse = barcode
           ? db.products.find(
@@ -2139,12 +2603,14 @@
         existing.unit = unit;
         existing.barcode = barcode || "";
         existing.minStock = minStock;
+        existing.defaultCost = defaultCost;
         existing.updatedAt = nowIso();
 
         logAction(db, currentUser, "UPDATE_PRODUCT", "PRODUCT", productId, {
           name,
           barcode,
           minStock,
+          defaultCost,
         });
         maybePersist(db);
         return { item: queryProducts(db).find((item) => item.id === productId) || null };
@@ -2155,11 +2621,22 @@
         return { items: queryInventoryMovements(db, query) };
       }
 
+      if (path === "/api/reports/kardex" && method === "GET") {
+        requireAuth(user);
+        return { report: buildKardexReport(db, query) };
+      }
+
       if (path === "/api/inventory/movements" && method === "POST") {
         const currentUser = requireAuth(user);
         const movementProductId = Number(body.productId);
         const type = normalizeInventoryMovement(body.type, "IN");
         const quantity = toNumber(body.quantity);
+        const document = normalizeText(body.document);
+        const branchName = normalizeText(body.branchName || body.branch || body.unitName);
+        const supplierName = normalizeText(body.supplierName || body.supplier);
+        const fuelKind = normalizeFuelKind(body.fuelKind, "");
+        const rawUnitCost = normalizeText(body.unitCost);
+        const unitCost = rawUnitCost ? toNumber(rawUnitCost) : null;
         const notes = normalizeText(body.notes);
         const occurredAt = normalizeText(body.occurredAt) || nowIso();
 
@@ -2176,8 +2653,13 @@
 
         const currentStock = Number(product.currentStock || 0);
         const nextStock = type === "IN" ? currentStock + quantity : currentStock - quantity;
+        const effectiveUnitCost = unitCost === null ? Number(product.defaultCost || 0) : unitCost;
+        const totalCost = effectiveUnitCost * quantity;
         if (nextStock < 0) {
           throw new ApiError(400, "A saida nao pode deixar o estoque negativo.");
+        }
+        if (effectiveUnitCost < 0) {
+          throw new ApiError(400, "Informe um valor unitario valido.");
         }
 
         const movementId = nextId(db, "inventoryMovements");
@@ -2187,6 +2669,12 @@
           type,
           quantity,
           balanceAfter: nextStock,
+          document,
+          branchName,
+          supplierName,
+          fuelKind,
+          unitCost: effectiveUnitCost,
+          totalCost,
           notes,
           occurredAt,
           createdBy: currentUser.id,
@@ -2194,12 +2682,21 @@
         });
 
         product.currentStock = nextStock;
+        if (type === "IN" && effectiveUnitCost > 0) {
+          product.defaultCost = effectiveUnitCost;
+        }
         product.updatedAt = nowIso();
 
         logAction(db, currentUser, "CREATE_INVENTORY_MOVEMENT", "INVENTORY", movementId, {
           productId: movementProductId,
           type,
           quantity,
+          document,
+          branchName,
+          supplierName,
+          fuelKind,
+          unitCost: effectiveUnitCost,
+          totalCost,
           balanceAfter: nextStock,
         });
         maybePersist(db);
@@ -2223,15 +2720,16 @@
         const currentUser = requireAuth(user);
         const storageId = Number(body.storageId);
         const type = normalizeFuelType(body.type, "ENTRY");
-        const plate = normalizeText(body.plate).toUpperCase();
+        const selectedVehicleId = Number(body.vehicleId || 0);
+        const fallbackPlate = normalizePlate(body.plate);
         const quantity = toNumber(body.quantity);
         const rawOdometer = normalizeText(body.odometerKm);
         const odometerKm = rawOdometer ? toNumber(rawOdometer) : null;
         const notes = normalizeText(body.notes);
         const occurredAt = normalizeText(body.occurredAt) || nowIso();
 
-        if (!storageId || !plate || quantity <= 0) {
-          throw new ApiError(400, "Informe estoque, placa e quantidade valida.");
+        if (!storageId || quantity <= 0) {
+          throw new ApiError(400, "Informe estoque e quantidade valida.");
         }
 
         if (rawOdometer && (!/\d/.test(rawOdometer) || odometerKm < 0)) {
@@ -2245,8 +2743,26 @@
           throw new ApiError(404, "Estoque de combustivel nao encontrado.");
         }
 
+        let vehicle =
+          db.vehicles.find((item) => Number(item.id) === selectedVehicleId && item.active !== false) || null;
+        if (!vehicle && fallbackPlate) {
+          vehicle = db.vehicles.find(
+            (item) => item.active !== false && normalizePlate(item.plate) === fallbackPlate
+          ) || null;
+        }
+
+        if (type === "EXIT" && !vehicle) {
+          throw new ApiError(400, "Selecione um veiculo ativo para registrar a saida.");
+        }
+
+        if (type === "EXIT" && !vehicleSupportsFuel(vehicle?.fuelProfile, storage.fuelKind)) {
+          throw new ApiError(400, "Este veiculo nao aceita o combustivel selecionado.");
+        }
+
         const currentBalance = Number(storage.currentBalance || 0);
         const nextBalance = type === "ENTRY" ? currentBalance + quantity : currentBalance - quantity;
+        const plate = type === "EXIT" ? normalizePlate(vehicle?.plate) : "";
+        const vehicleId = type === "EXIT" ? Number(vehicle?.id || 0) : null;
         if (nextBalance < 0) {
           throw new ApiError(400, `A saida nao pode deixar o estoque ${storage.name} negativo.`);
         }
@@ -2258,6 +2774,7 @@
           storageId,
           storageName: storage.name,
           fuelKind: storage.fuelKind,
+          vehicleId,
           type,
           plate,
           quantity,
@@ -2277,6 +2794,7 @@
           storageId,
           storageName: storage.name,
           fuelKind: storage.fuelKind,
+          vehicleId,
           type,
           plate,
           quantity,
