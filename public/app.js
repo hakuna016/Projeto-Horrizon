@@ -259,6 +259,8 @@ const refs = {
   inventoryMovementsBody: $("inventory-movements-body"),
   movementBarcodeInput: $("movement-barcode-input"),
   lookupBarcodeButton: $("lookup-barcode-button"),
+  fuelStockForm: $("fuel-stock-form"),
+  fuelStockProductSelect: $("fuel-stock-product-select"),
   fuelForm: $("fuel-form"),
   fuelStorageSelect: $("fuel-storage-select"),
   fuelVehicleSelect: $("fuel-vehicle-select"),
@@ -269,6 +271,7 @@ const refs = {
   fuelFilterPlate: $("fuel-filter-plate"),
   fuelKpiGrid: $("fuel-kpi-grid"),
   fuelStocksGrid: $("fuel-stocks-grid"),
+  fuelInventoryMovementsBody: $("fuel-inventory-movements-body"),
   fuelTableBody: $("fuel-table-body"),
   fuelConsumptionChart: $("fuel-consumption-chart"),
   fuelTopVehicles: $("fuel-top-vehicles"),
@@ -288,6 +291,7 @@ const refs = {
   checklistSummaryCards: $("checklist-summary-cards"),
   checklistHistoryFeed: $("checklist-history-feed"),
   kardexForm: $("kardex-form"),
+  kardexStockType: $("kardex-stock-type"),
   kardexProductSelect: $("kardex-product-select"),
   kardexViewButton: $("kardex-view-button"),
   kardexPdfButton: $("kardex-pdf-button"),
@@ -415,11 +419,13 @@ function bindEvents() {
   refs.notesStatusFilter.addEventListener("change", refreshNotes);
   refs.notesCategoryFilter.addEventListener("change", refreshNotes);
   refs.productForm.addEventListener("submit", handleProductSubmit);
+  refs.productForm.elements.stockType?.addEventListener("change", syncProductFormState);
   refs.productResetButton.addEventListener("click", resetProductForm);
   refs.vehicleForm.addEventListener("submit", handleVehicleSubmit);
   refs.vehicleResetButton.addEventListener("click", resetVehicleForm);
   refs.movementForm.addEventListener("submit", handleMovementSubmit);
   refs.lookupBarcodeButton.addEventListener("click", lookupProductByBarcode);
+  refs.fuelStockForm?.addEventListener("submit", handleFuelStockMovementSubmit);
   refs.fuelForm.addEventListener("submit", handleFuelSubmit);
   refs.fuelForm.elements.type.addEventListener("change", syncFuelFormState);
   refs.fuelStorageSelect.addEventListener("change", syncFuelFormState);
@@ -436,6 +442,7 @@ function bindEvents() {
   refs.checklistForm.addEventListener("submit", handleChecklistSubmit);
   refs.checklistResetButton.addEventListener("click", resetChecklistForm);
   refs.kardexForm?.addEventListener("submit", handleKardexView);
+  refs.kardexStockType?.addEventListener("change", syncKardexFormState);
   refs.kardexPdfButton?.addEventListener("click", () => handleKardexPrint("pdf"));
   refs.kardexPrintButton?.addEventListener("click", () => handleKardexPrint("print"));
   refs.emailForm.addEventListener("submit", handleEmailSubmit);
@@ -872,6 +879,78 @@ function formatVehicleFuelProfile(value) {
   return formatFuelKindLabel(normalized);
 }
 
+function normalizeClientStockType(value, fallback = "COMMON") {
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase();
+  if (normalized === "FUEL" || normalized === "COMBUSTIVEL" || normalized === "COMBUSTIBLE") {
+    return "FUEL";
+  }
+  if (normalized === "COMMON" || normalized === "COMUM" || normalized === "ESTOQUE_COMUM") {
+    return "COMMON";
+  }
+  return fallback;
+}
+
+function formatStockTypeLabel(value) {
+  return normalizeClientStockType(value, "COMMON") === "FUEL" ? "Combustivel" : "Estoque comum";
+}
+
+function getProductsByStockType(stockType) {
+  const normalizedStockType = normalizeClientStockType(stockType, "COMMON");
+  return state.products.filter(
+    (product) => normalizeClientStockType(product.stockType, "COMMON") === normalizedStockType
+  );
+}
+
+function getInventoryMovementsByStockType(stockType) {
+  const normalizedStockType = normalizeClientStockType(stockType, "COMMON");
+  return state.inventoryMovements.filter(
+    (movement) => normalizeClientStockType(movement.productStockType, "COMMON") === normalizedStockType
+  );
+}
+
+function getFilteredFuelInventoryMovements() {
+  const selectedStorage = state.fuelStorages.find(
+    (storage) => String(storage.id) === String(refs.fuelFilterStorage?.value || "")
+  );
+  const from = refs.fuelFilterFrom?.value ? toIsoDateTime(refs.fuelFilterFrom.value) : "";
+  const to = refs.fuelFilterTo?.value ? toIsoDateTime(refs.fuelFilterTo.value) : "";
+
+  return getInventoryMovementsByStockType("FUEL").filter((movement) => {
+    if (selectedStorage) {
+      const selectedProductId = Number(selectedStorage.productId || 0);
+      const movementProductId = Number(movement.productId || 0);
+      const fuelKindMatches =
+        !selectedStorage.fuelKind ||
+        String(movement.fuelKind || "").trim().toUpperCase() ===
+          String(selectedStorage.fuelKind || "").trim().toUpperCase();
+
+      if (selectedProductId) {
+        if (movementProductId) {
+          if (movementProductId !== selectedProductId) {
+            return false;
+          }
+        } else if (!fuelKindMatches) {
+          return false;
+        }
+      } else if (!fuelKindMatches) {
+        return false;
+      }
+    }
+
+    const occurredAt = String(movement.occurredAt || "");
+    if (from && occurredAt && occurredAt < from) {
+      return false;
+    }
+    if (to && occurredAt && occurredAt > to) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 function toLocalDateTimeInput(value) {
   if (!value) {
     return "";
@@ -1057,8 +1136,13 @@ function applyDefaultFormValues() {
   refs.noteForm.elements.status.value = "NEW";
   refs.noteForm.elements.category.value = "LOGISTICS";
   refs.noteForm.elements.issueDate.value = currentLocalDateTime();
+  refs.productForm.elements.stockType.value = "COMMON";
   refs.fuelForm.elements.occurredAt.value = currentLocalDateTime();
   refs.fuelForm.elements.type.value = "EXIT";
+  if (refs.fuelStockForm) {
+    refs.fuelStockForm.elements.type.value = "IN";
+    refs.fuelStockForm.elements.occurredAt.value = currentLocalDateTime();
+  }
   refs.movementForm.elements.occurredAt.value = currentLocalDateTime();
   refs.scheduleForm.elements.scheduledDate.value = currentLocalDate();
   refs.scheduleForm.elements.responsibleName.value = state.user?.name || "";
@@ -1067,6 +1151,7 @@ function applyDefaultFormValues() {
   refs.checklistForm.elements.checklistType.value = "PRE_USE";
   refs.emailForm.elements.receivedAt.value = currentLocalDateTime();
   if (refs.kardexForm) {
+    refs.kardexForm.elements.stockType.value = "COMMON";
     refs.kardexForm.elements.from.value = currentLocalDate().slice(0, 8) + "01";
     refs.kardexForm.elements.to.value = currentLocalDate();
   }
@@ -1074,7 +1159,9 @@ function applyDefaultFormValues() {
   resetVehicleForm();
   state.checklistDraftItems = cloneChecklistTemplate();
   renderChecklistComposer();
+  syncProductFormState();
   syncFuelFormState();
+  syncKardexFormState();
 }
 
 async function refreshAll() {
@@ -1142,6 +1229,7 @@ async function refreshProducts() {
   state.products = response.items || [];
   renderProducts();
   updateMovementProductSelect();
+  updateFuelStockProductSelect();
   updateKardexProductSelect();
 }
 
@@ -1149,6 +1237,7 @@ async function refreshInventoryMovements() {
   const response = await api("/api/inventory/movements");
   state.inventoryMovements = response.items || [];
   renderInventoryMovements();
+  renderFuelInventoryMovements();
 }
 
 async function refreshVehicles() {
@@ -3958,4 +4047,792 @@ function closeScanner() {
     targetId: null,
     detector: null,
   };
+}
+
+function updateMovementProductSelect() {
+  const commonProducts = getProductsByStockType("COMMON");
+  const currentValue = refs.movementProductSelect?.value || "";
+  if (!refs.movementProductSelect) {
+    return;
+  }
+
+  refs.movementProductSelect.innerHTML = commonProducts.length
+    ? `<option value="">Selecione um produto</option>${commonProducts
+        .map(
+          (product) => `
+            <option value="${product.id}">
+              ${escapeHtml(product.name)} (${escapeHtml(formatNumber(product.currentStock || 0, 2, 2))} ${escapeHtml(product.unit)})
+            </option>
+          `
+        )
+        .join("")}`
+    : `<option value="">Cadastre um item de almoxarifado primeiro</option>`;
+
+  if (currentValue && commonProducts.some((product) => String(product.id) === String(currentValue))) {
+    refs.movementProductSelect.value = currentValue;
+  }
+}
+
+function updateFuelStockProductSelect() {
+  if (!refs.fuelStockProductSelect) {
+    return;
+  }
+
+  const linkedFuelProducts = state.fuelStorages
+    .map((storage) => {
+      const product = state.products.find((item) => String(item.id) === String(storage.productId || ""));
+      return product
+        ? {
+            ...product,
+            linkedStorageName: storage.name,
+            linkedFuelKind: storage.fuelKind,
+          }
+        : null;
+    })
+    .filter(Boolean);
+  const fuelProducts = linkedFuelProducts.length ? linkedFuelProducts : getProductsByStockType("FUEL");
+  const currentValue = refs.fuelStockProductSelect.value;
+  refs.fuelStockProductSelect.innerHTML = fuelProducts.length
+    ? `<option value="">Selecione um combustivel</option>${fuelProducts
+        .map(
+          (product) => `
+            <option value="${product.id}">
+              ${escapeHtml(product.name)}
+              ${product.linkedFuelKind ? ` | ${escapeHtml(formatFuelKindLabel(product.linkedFuelKind))}` : ""}
+              ${product.linkedStorageName ? ` | ${escapeHtml(product.linkedStorageName)}` : ""}
+              (${escapeHtml(formatNumber(product.currentStock || 0, 2, 2))} ${escapeHtml(product.unit)})
+            </option>
+          `
+        )
+        .join("")}`
+    : `<option value="">Nenhum combustivel cadastrado</option>`;
+
+  refs.fuelStockProductSelect.disabled = !fuelProducts.length;
+  if (currentValue && fuelProducts.some((product) => String(product.id) === String(currentValue))) {
+    refs.fuelStockProductSelect.value = currentValue;
+  }
+}
+
+function renderFuelStorageOptions() {
+  const storageOptions = state.fuelStorages.length
+    ? state.fuelStorages
+        .map(
+          (storage) => `
+            <option value="${storage.id}">
+              ${escapeHtml(storage.name)} | ${escapeHtml(formatFuelKindLabel(storage.fuelKind))} | ${escapeHtml(formatLiters(storage.currentBalance))} L
+            </option>
+          `
+        )
+        .join("")
+    : `<option value="">Nenhum estoque disponivel</option>`;
+
+  const currentFormValue = refs.fuelStorageSelect?.value || "";
+  if (refs.fuelStorageSelect) {
+    refs.fuelStorageSelect.innerHTML = storageOptions;
+    if (
+      currentFormValue &&
+      state.fuelStorages.some((storage) => String(storage.id) === String(currentFormValue))
+    ) {
+      refs.fuelStorageSelect.value = currentFormValue;
+    } else if (state.fuelStorages.length) {
+      refs.fuelStorageSelect.value = String(state.fuelStorages[0].id);
+    }
+  }
+
+  const currentFilterValue = refs.fuelFilterStorage?.value || "";
+  if (refs.fuelFilterStorage) {
+    refs.fuelFilterStorage.innerHTML = `<option value="">Todos os combustiveis</option>${storageOptions}`;
+    if (
+      currentFilterValue &&
+      state.fuelStorages.some((storage) => String(storage.id) === String(currentFilterValue))
+    ) {
+      refs.fuelFilterStorage.value = currentFilterValue;
+    }
+  }
+
+  updateFuelStockProductSelect();
+}
+
+function updateKardexProductSelect() {
+  if (!refs.kardexProductSelect) {
+    return;
+  }
+
+  const stockType = normalizeClientStockType(refs.kardexStockType?.value || "COMMON", "COMMON");
+  const products = getProductsByStockType(stockType);
+  const currentValue = refs.kardexProductSelect.value;
+  const emptyLabel =
+    stockType === "FUEL" ? "Cadastre ou vincule um combustivel primeiro" : "Cadastre um item de almoxarifado primeiro";
+
+  refs.kardexProductSelect.innerHTML = products.length
+    ? `<option value="">Selecione um produto</option>${products
+        .map(
+          (product) => `
+            <option value="${product.id}">
+              ${escapeHtml(product.name)} (${escapeHtml(product.unit)})
+            </option>
+          `
+        )
+        .join("")}`
+    : `<option value="">${emptyLabel}</option>`;
+
+  if (currentValue && products.some((product) => String(product.id) === String(currentValue))) {
+    refs.kardexProductSelect.value = currentValue;
+  }
+}
+
+function syncProductFormState() {
+  if (!refs.productForm) {
+    return;
+  }
+
+  const stockType = normalizeClientStockType(refs.productForm.elements.stockType.value, "COMMON");
+  const unitField = refs.productForm.elements.unit;
+  const currentUnit = String(unitField.value || "").trim().toUpperCase();
+
+  if (stockType === "FUEL") {
+    if (!currentUnit || currentUnit === "UN") {
+      unitField.value = "L";
+    }
+  } else if (!currentUnit) {
+    unitField.value = "UN";
+  }
+}
+
+function syncKardexFormState() {
+  if (!refs.kardexForm) {
+    return;
+  }
+
+  const stockType = normalizeClientStockType(refs.kardexForm.elements.stockType.value, "COMMON");
+  const fuelKindField = refs.kardexForm.elements.fuelKind;
+  const isFuel = stockType === "FUEL";
+  if (fuelKindField) {
+    fuelKindField.disabled = !isFuel;
+    fuelKindField.required = false;
+    if (!isFuel) {
+      fuelKindField.value = "";
+    }
+  }
+
+  updateKardexProductSelect();
+}
+
+function renderProducts() {
+  const commonProducts = getProductsByStockType("COMMON");
+
+  refs.productsTableBody.innerHTML = commonProducts.length
+    ? commonProducts
+        .map(
+          (product) => `
+            <tr>
+              <td>
+                <strong>${escapeHtml(product.name)}</strong>
+                ${product.lowStock ? `<div><span class="status-badge status-red">Estoque minimo</span></div>` : ""}
+              </td>
+              <td>${escapeHtml(formatStockTypeLabel(product.stockType))}</td>
+              <td>${escapeHtml(formatNumber(product.currentStock || 0, 2, 2))} ${escapeHtml(product.unit)}</td>
+              <td>${escapeHtml(formatNumber(product.minStock || 0, 2, 2))} ${escapeHtml(product.unit)}</td>
+              <td>${escapeHtml(formatCurrency(product.defaultCost || 0))}</td>
+              <td>${escapeHtml(product.barcode || "-")}</td>
+              <td>
+                <div class="row-actions">
+                  ${buildRowActionButton("edit-product", product.id, "Editar produto", "&#9998;")}
+                </div>
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhum item de almoxarifado cadastrado.", 7);
+}
+
+function renderInventoryMovements() {
+  const commonMovements = getInventoryMovementsByStockType("COMMON");
+
+  refs.inventoryMovementsBody.innerHTML = commonMovements.length
+    ? commonMovements
+        .map(
+          (movement) => `
+            <tr>
+              <td>${escapeHtml(movement.productName)}</td>
+              <td>${statusBadge(movement.type)}</td>
+              <td>${escapeHtml(formatNumber(movement.quantity || 0, 2, 2))}</td>
+              <td>${escapeHtml(movement.document || "-")}</td>
+              <td>${escapeHtml(formatCurrency(movement.unitCost || 0))}</td>
+              <td>${escapeHtml(formatCurrency(movement.totalCost || 0))}</td>
+              <td>${escapeHtml(formatNumber(movement.balanceAfter || 0, 2, 2))}</td>
+              <td>${escapeHtml(movement.userName || "-")}</td>
+              <td>${escapeHtml(formatDateTime(movement.occurredAt))}</td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhuma movimentacao de almoxarifado registrada.", 9);
+}
+
+function renderFuelInventoryMovements() {
+  if (!refs.fuelInventoryMovementsBody) {
+    return;
+  }
+
+  const fuelMovements = getFilteredFuelInventoryMovements();
+  refs.fuelInventoryMovementsBody.innerHTML = fuelMovements.length
+    ? fuelMovements
+        .map(
+          (movement) => `
+            <tr>
+              <td>${escapeHtml(movement.productName)}</td>
+              <td>${statusBadge(movement.type)}</td>
+              <td>${escapeHtml(formatNumber(movement.quantity || 0, 2, 2))} ${escapeHtml(movement.productUnit || "L")}</td>
+              <td>${escapeHtml(movement.document || "-")}</td>
+              <td>${escapeHtml(formatCurrency(movement.unitCost || 0))}</td>
+              <td>${escapeHtml(formatCurrency(movement.totalCost || 0))}</td>
+              <td>${escapeHtml(`${formatNumber(movement.balanceAfter || 0, 2, 2)} ${movement.productUnit || "L"}`)}</td>
+              <td>${escapeHtml(movement.userName || "-")}</td>
+              <td>${escapeHtml(formatDateTime(movement.occurredAt))}</td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhuma movimentacao de combustivel registrada.", 9);
+}
+
+function editProduct(id) {
+  const product = findById(state.products, id);
+  if (!product) return;
+
+  refs.productForm.elements.id.value = product.id;
+  refs.productForm.elements.name.value = product.name;
+  refs.productForm.elements.unit.value = product.unit;
+  refs.productForm.elements.stockType.value = normalizeClientStockType(product.stockType, "COMMON");
+  refs.productForm.elements.barcode.value = product.barcode || "";
+  refs.productForm.elements.minStock.value = product.minStock;
+  refs.productForm.elements.defaultCost.value = product.defaultCost || 0;
+  refs.productForm.elements.initialStock.value = 0;
+  refs.productForm.elements.initialStock.disabled = true;
+  syncProductFormState();
+  setSection("inventory");
+}
+
+async function handleProductSubmit(event) {
+  event.preventDefault();
+  const id = refs.productForm.elements.id.value;
+
+  const payload = {
+    name: refs.productForm.elements.name.value,
+    unit: refs.productForm.elements.unit.value,
+    stockType: refs.productForm.elements.stockType.value,
+    barcode: refs.productForm.elements.barcode.value,
+    minStock: refs.productForm.elements.minStock.value,
+    defaultCost: refs.productForm.elements.defaultCost.value,
+    initialStock: refs.productForm.elements.initialStock.value,
+  };
+
+  try {
+    await api(id ? `/api/products/${id}` : "/api/products", {
+      method: id ? "PUT" : "POST",
+      body: payload,
+    });
+    resetProductForm();
+    await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshFuel(), refreshDashboard()]);
+    showToast(id ? "Produto atualizado." : "Produto cadastrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleMovementSubmit(event) {
+  event.preventDefault();
+
+  const payload = {
+    productId: refs.movementForm.elements.productId.value,
+    stockType: "COMMON",
+    type: refs.movementForm.elements.type.value,
+    quantity: refs.movementForm.elements.quantity.value,
+    document: refs.movementForm.elements.document.value,
+    branchName: refs.movementForm.elements.branchName.value,
+    supplierName: refs.movementForm.elements.supplierName.value,
+    unitCost: refs.movementForm.elements.unitCost.value,
+    occurredAt: toIsoDateTime(refs.movementForm.elements.occurredAt.value),
+    notes: refs.movementForm.elements.notes.value,
+  };
+
+  try {
+    await api("/api/inventory/movements", { method: "POST", body: payload });
+    refs.movementForm.reset();
+    refs.movementForm.elements.occurredAt.value = currentLocalDateTime();
+    refs.movementBarcodeInput.value = "";
+    updateMovementProductSelect();
+    await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+    showToast("Movimentacao do almoxarifado registrada.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleFuelStockMovementSubmit(event) {
+  event.preventDefault();
+  if (!refs.fuelStockForm) {
+    return;
+  }
+
+  const payload = {
+    productId: refs.fuelStockForm.elements.productId.value,
+    stockType: "FUEL",
+    type: refs.fuelStockForm.elements.type.value,
+    quantity: refs.fuelStockForm.elements.quantity.value,
+    document: refs.fuelStockForm.elements.document.value,
+    branchName: refs.fuelStockForm.elements.branchName.value,
+    supplierName: refs.fuelStockForm.elements.supplierName.value,
+    unitCost: refs.fuelStockForm.elements.unitCost.value,
+    occurredAt: toIsoDateTime(refs.fuelStockForm.elements.occurredAt.value),
+    notes: refs.fuelStockForm.elements.notes.value,
+  };
+
+  try {
+    await api("/api/inventory/movements", { method: "POST", body: payload });
+    resetFuelStockForm();
+    await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshFuel(), refreshDashboard()]);
+    showToast("Movimentacao de combustivel registrada.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function lookupProductByBarcode() {
+  const barcode = refs.movementBarcodeInput.value.trim();
+  if (!barcode) {
+    showToast("Informe um codigo de barras.", "error");
+    return;
+  }
+
+  try {
+    const response = await api(
+      `/api/products/barcode/${encodeURIComponent(barcode)}?${new URLSearchParams({ stockType: "COMMON" }).toString()}`
+    );
+    refs.movementProductSelect.value = String(response.item.id);
+    showToast(`Produto encontrado: ${response.item.name}`);
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function resetProductForm() {
+  refs.productForm.reset();
+  refs.productForm.elements.id.value = "";
+  refs.productForm.elements.stockType.value = "COMMON";
+  refs.productForm.elements.unit.value = "UN";
+  refs.productForm.elements.minStock.value = 0;
+  refs.productForm.elements.defaultCost.value = 0;
+  refs.productForm.elements.initialStock.value = 0;
+  refs.productForm.elements.initialStock.disabled = false;
+  syncProductFormState();
+}
+
+function resetFuelStockForm() {
+  if (!refs.fuelStockForm) {
+    return;
+  }
+
+  refs.fuelStockForm.reset();
+  refs.fuelStockForm.elements.type.value = "IN";
+  refs.fuelStockForm.elements.occurredAt.value = currentLocalDateTime();
+  updateFuelStockProductSelect();
+}
+
+function buildKardexRequestPayload() {
+  const stockType = normalizeClientStockType(refs.kardexForm.elements.stockType.value, "COMMON");
+  return {
+    productId: refs.kardexForm.elements.productId.value,
+    stockType,
+    from: refs.kardexForm.elements.from.value ? `${refs.kardexForm.elements.from.value}T00:00:00` : "",
+    to: refs.kardexForm.elements.to.value ? `${refs.kardexForm.elements.to.value}T23:59:59` : "",
+    branchName: refs.kardexForm.elements.branchName.value,
+    fuelKind: stockType === "FUEL" ? refs.kardexForm.elements.fuelKind.value : "",
+    document: refs.kardexForm.elements.document.value,
+    supplierName: refs.kardexForm.elements.supplierName.value,
+  };
+}
+
+function renderKardexPreview() {
+  if (!refs.kardexPreview) {
+    return;
+  }
+
+  const report = state.kardexReport;
+  if (!report) {
+    refs.kardexPreview.innerHTML = `
+      <div class="dashboard-empty">
+        <strong>Ficha Kardex pronta para consulta</strong>
+        <p class="muted">Selecione o produto e o periodo para visualizar, gerar PDF ou imprimir.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const reportStockType = normalizeClientStockType(
+    report.filters?.stockType || report.product?.stockType || "COMMON",
+    "COMMON"
+  );
+  const filterChips = [
+    `<span class="dashboard-chip">Tipo de estoque: ${escapeHtml(formatStockTypeLabel(reportStockType))}</span>`,
+    `<span class="dashboard-chip">Filial/unidade: ${escapeHtml(report.filters.branchName || "Todas")}</span>`,
+    reportStockType === "FUEL"
+      ? `<span class="dashboard-chip">Combustivel: ${escapeHtml(report.filters.fuelKind ? formatFuelKindLabel(report.filters.fuelKind) : "Todos")}</span>`
+      : "",
+    `<span class="dashboard-chip">Documento: ${escapeHtml(report.filters.document || "Todos")}</span>`,
+    `<span class="dashboard-chip">Fornecedor: ${escapeHtml(report.filters.supplierName || "Todos")}</span>`,
+  ]
+    .filter(Boolean)
+    .join("");
+
+  refs.kardexPreview.innerHTML = `
+    <div class="kardex-preview">
+      <div class="kardex-preview__header">
+        <div>
+          <span class="eyebrow">Relatorio</span>
+          <h3>${escapeHtml(report.reportName)}</h3>
+          <p class="muted">${escapeHtml(`${formatDateOnly(report.period.from)} a ${formatDateOnly(report.period.to)}`)}</p>
+        </div>
+        <div class="kardex-preview__meta">
+          <span><strong>Emissao:</strong> ${escapeHtml(formatDateTime(report.issuedAt))}</span>
+          <span><strong>Produto:</strong> ${escapeHtml(report.product.name)}</span>
+          <span><strong>Unidade:</strong> ${escapeHtml(report.product.unit)}</span>
+          <span><strong>Custo:</strong> ${escapeHtml(formatCurrency(report.currentCost || 0))}</span>
+          <span><strong>Saldo anterior:</strong> ${escapeHtml(`${formatNumber(report.openingBalance || 0, 2, 2)} ${report.product.unit}`)}</span>
+        </div>
+      </div>
+      <div class="kardex-filter-summary">
+        ${filterChips}
+      </div>
+      ${
+        report.lastPurchase
+          ? `<div class="stack-item">
+              <strong>Ultima compra</strong>
+              <p class="muted">${escapeHtml(
+                `${formatDateTime(report.lastPurchase.date)} | ${report.lastPurchase.document || "Sem documento"} | ${report.lastPurchase.supplierName || "Sem fornecedor"}`
+              )}</p>
+            </div>`
+          : ""
+      }
+      <div class="table-wrapper">
+        <table class="kardex-table">
+          <thead>
+            <tr>
+              <th>Documento</th>
+              <th>Data</th>
+              <th>Entradas</th>
+              <th>Saidas</th>
+              <th>Unitario</th>
+              <th>Valor total</th>
+              <th>Saldo</th>
+              <th>Observacao</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="kardex-table__opening-row">
+              <td colspan="6"><strong>Saldo anterior ao periodo</strong></td>
+              <td><strong>${escapeHtml(`${formatNumber(report.openingBalance || 0, 2, 2)} ${report.product.unit}`)}</strong></td>
+              <td>Base do saldo acumulado</td>
+            </tr>
+            ${
+              report.rows.length
+                ? report.rows
+                    .map(
+                      (row) => `
+                        <tr>
+                          <td>${escapeHtml(row.document || "-")}</td>
+                          <td>${escapeHtml(formatDateTime(row.date))}</td>
+                          <td>${escapeHtml(row.entryQuantity ? formatNumber(row.entryQuantity, 2, 2) : "-")}</td>
+                          <td>${escapeHtml(row.exitQuantity ? formatNumber(row.exitQuantity, 2, 2) : "-")}</td>
+                          <td>${escapeHtml(formatCurrency(row.unitCost || 0))}</td>
+                          <td>${escapeHtml(formatCurrency(row.totalCost || 0))}</td>
+                          <td>${escapeHtml(`${formatNumber(row.balance || 0, 2, 2)} ${report.product.unit}`)}</td>
+                          <td>${escapeHtml(row.notes || "-")}</td>
+                        </tr>
+                      `
+                    )
+                    .join("")
+                : `<tr><td colspan="8" class="muted">Nenhuma movimentacao encontrada para os filtros informados.</td></tr>`
+            }
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2"><strong>Totais do periodo</strong></td>
+              <td><strong>${escapeHtml(formatNumber(report.totals.entries || 0, 2, 2))}</strong></td>
+              <td><strong>${escapeHtml(formatNumber(report.totals.exits || 0, 2, 2))}</strong></td>
+              <td colspan="2"><strong>Saldo final</strong></td>
+              <td><strong>${escapeHtml(`${formatNumber(report.totals.finalBalance || 0, 2, 2)} ${report.product.unit}`)}</strong></td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function buildKardexPrintDocument(report, mode) {
+  const reportStockType = normalizeClientStockType(
+    report.filters?.stockType || report.product?.stockType || "COMMON",
+    "COMMON"
+  );
+  const fuelFilterBlock =
+    reportStockType === "FUEL"
+      ? `<div><strong>Combustivel:</strong> ${escapeHtml(report.filters.fuelKind ? formatFuelKindLabel(report.filters.fuelKind) : "Todos")}</div>`
+      : "";
+
+  return `
+    <style>
+      body { font-family: Arial, sans-serif; color: #111; margin: 0; }
+      .print-report { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 12mm; box-sizing: border-box; }
+      .print-report__header { display: grid; gap: 4px; margin-bottom: 6mm; }
+      .print-report__header h1 { margin: 0; font-size: 18px; }
+      .print-report__header p { margin: 0; font-size: 11px; }
+      .print-report__meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; margin: 4mm 0 6mm; font-size: 11px; }
+      .print-report__hint { margin-bottom: 4mm; font-size: 11px; }
+      .print-report__table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .print-report__table th, .print-report__table td { border: 1px solid #111; padding: 5px 6px; font-size: 10px; vertical-align: top; }
+      .print-report__table th:nth-child(1), .print-report__table td:nth-child(1) { width: 14%; }
+      .print-report__table th:nth-child(2), .print-report__table td:nth-child(2) { width: 14%; }
+      .print-report__table th:nth-child(3), .print-report__table td:nth-child(3) { width: 10%; }
+      .print-report__table th:nth-child(4), .print-report__table td:nth-child(4) { width: 10%; }
+      .print-report__table th:nth-child(5), .print-report__table td:nth-child(5) { width: 11%; }
+      .print-report__table th:nth-child(6), .print-report__table td:nth-child(6) { width: 13%; }
+      .print-report__table th:nth-child(7), .print-report__table td:nth-child(7) { width: 12%; }
+      .print-report__table th:nth-child(8), .print-report__table td:nth-child(8) { width: 16%; }
+      .print-report__footer { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 6mm; font-size: 11px; }
+      @page { size: A4 portrait; margin: 10mm; }
+    </style>
+    <main class="print-report">
+      <header class="print-report__header">
+        <p>${escapeHtml(report.companyName || "HORIZON")}</p>
+        <h1>${escapeHtml(report.reportName)}</h1>
+        <p>Periodo: ${escapeHtml(formatDateOnly(report.period.from))} a ${escapeHtml(formatDateOnly(report.period.to))}</p>
+        <p>Emissao: ${escapeHtml(formatDateTime(report.issuedAt))}</p>
+      </header>
+      <div class="print-report__meta">
+        <div><strong>Produto:</strong> ${escapeHtml(report.product.name)}</div>
+        <div><strong>Tipo de estoque:</strong> ${escapeHtml(formatStockTypeLabel(reportStockType))}</div>
+        <div><strong>Unidade de medida:</strong> ${escapeHtml(report.product.unit)}</div>
+        <div><strong>Filial/unidade:</strong> ${escapeHtml(report.filters.branchName || "Todas")}</div>
+        <div><strong>Custo:</strong> ${escapeHtml(formatCurrency(report.currentCost || 0))}</div>
+        <div><strong>Fornecedor:</strong> ${escapeHtml(report.filters.supplierName || report.lastPurchase?.supplierName || "-")}</div>
+        <div><strong>Ultima compra:</strong> ${escapeHtml(
+          report.lastPurchase ? `${formatDateTime(report.lastPurchase.date)} - ${report.lastPurchase.document || "Sem documento"}` : "Nao informada"
+        )}</div>
+        ${fuelFilterBlock}
+      </div>
+      <div class="print-report__hint">
+        ${escapeHtml(mode === "pdf" ? "Use o dialogo de impressao para salvar como PDF." : "Documento pronto para impressao administrativa.")}
+      </div>
+      <table class="print-report__table">
+        <thead>
+          <tr>
+            <th>Documento</th>
+            <th>Data</th>
+            <th>Entradas</th>
+            <th>Saidas</th>
+            <th>Unitario</th>
+            <th>Valor total</th>
+            <th>Saldo</th>
+            <th>Observacao</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td colspan="6"><strong>Saldo anterior ao periodo</strong></td>
+            <td><strong>${escapeHtml(`${formatNumber(report.openingBalance || 0, 2, 2)} ${report.product.unit}`)}</strong></td>
+            <td></td>
+          </tr>
+          ${
+            report.rows.length
+              ? report.rows
+                  .map(
+                    (row) => `
+                      <tr>
+                        <td>${escapeHtml(row.document || "-")}</td>
+                        <td>${escapeHtml(formatDateTime(row.date))}</td>
+                        <td>${escapeHtml(row.entryQuantity ? formatNumber(row.entryQuantity, 2, 2) : "-")}</td>
+                        <td>${escapeHtml(row.exitQuantity ? formatNumber(row.exitQuantity, 2, 2) : "-")}</td>
+                        <td>${escapeHtml(formatCurrency(row.unitCost || 0))}</td>
+                        <td>${escapeHtml(formatCurrency(row.totalCost || 0))}</td>
+                        <td>${escapeHtml(`${formatNumber(row.balance || 0, 2, 2)} ${report.product.unit}`)}</td>
+                        <td>${escapeHtml(row.notes || "-")}</td>
+                      </tr>
+                    `
+                  )
+                  .join("")
+              : `<tr><td colspan="8">Nenhuma movimentacao encontrada no periodo.</td></tr>`
+          }
+        </tbody>
+      </table>
+      <footer class="print-report__footer">
+        <div><strong>Total entradas:</strong> ${escapeHtml(formatNumber(report.totals.entries || 0, 2, 2))}</div>
+        <div><strong>Total saidas:</strong> ${escapeHtml(formatNumber(report.totals.exits || 0, 2, 2))}</div>
+        <div><strong>Saldo final:</strong> ${escapeHtml(`${formatNumber(report.totals.finalBalance || 0, 2, 2)} ${report.product.unit}`)}</div>
+      </footer>
+    </main>
+  `;
+}
+
+function renderFuel() {
+  const analytics = buildFuelPageAnalytics(state.fuelRecords);
+  const currentPlate = refs.fuelFilterPlate?.value || "";
+  if (refs.fuelFilterPlate) {
+    refs.fuelFilterPlate.innerHTML = `<option value="">Todos os veiculos</option>${analytics.plates
+      .map((plate) => `<option value="${escapeHtml(plate)}">${escapeHtml(plate)}</option>`)
+      .join("")}`;
+    refs.fuelFilterPlate.value = analytics.plates.includes(currentPlate) ? currentPlate : "";
+  }
+
+  const visibleRecords =
+    refs.fuelFilterPlate?.value
+      ? state.fuelRecords.filter((item) => item.plate === refs.fuelFilterPlate.value)
+      : state.fuelRecords;
+
+  refs.fuelKpiGrid.innerHTML = [
+    {
+      label: "Abastecimentos",
+      value: formatNumber(analytics.monthExitRecords.length),
+      note: "Saidas no mes atual",
+      icon: "fuel",
+      tone: "brand",
+    },
+    {
+      label: "Total de litros",
+      value: `${formatLiters(analytics.monthLiters)} L`,
+      note: "Consumo do mes atual",
+      icon: "analytics",
+      tone: "neutral",
+    },
+    {
+      label: "Media por lancamento",
+      value: `${formatLiters(analytics.avgLiters)} L`,
+      note: "Considerando apenas saidas",
+      icon: "dashboard",
+      tone: "warning",
+    },
+    {
+      label: "Media km/L",
+      value: formatKmPerLiter(analytics.avgKmPerLiter),
+      note: "Com base nos hodometros informados",
+      icon: "efficiency",
+      tone: "success",
+    },
+  ]
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card",
+        label: item.label,
+        value: item.value,
+        note: item.note,
+        icon: item.icon,
+        tone: item.tone,
+      })
+    )
+    .join("");
+
+  refs.fuelStocksGrid.innerHTML = state.fuelStorages.length
+    ? state.fuelStorages
+        .map((storage) => {
+          const isEmpty = Number(storage.currentBalance || 0) <= 0;
+          const isLow =
+            !isEmpty &&
+            Number(storage.minBalance || 0) > 0 &&
+            Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0);
+          const statusLabel = isEmpty ? "Sem saldo" : isLow ? "Abaixo do minimo" : "Operacional";
+          const toneClass = isEmpty ? "is-empty" : isLow ? "is-low" : "is-ok";
+
+          return `
+            <article class="fuel-stock-card ${toneClass}">
+              <div class="fuel-stock-card__top">
+                <span class="fuel-stock-card__kind">${escapeHtml(formatFuelKindLabel(storage.fuelKind))}</span>
+                <span class="fuel-stock-card__status">${escapeHtml(statusLabel)}</span>
+              </div>
+              <div class="fuel-stock-card__value-row">
+                <strong class="fuel-stock-card__value">${escapeHtml(formatLiters(storage.currentBalance))}</strong>
+                <span class="fuel-stock-card__unit">L</span>
+              </div>
+              <div class="fuel-stock-card__footer">
+                <strong>${escapeHtml(storage.name)}</strong>
+                <span>Saldo disponivel agora</span>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="stack-item"><strong>Nenhum estoque configurado</strong><p class="muted">Cadastre ou revise os estoques principais de combustivel.</p></div>`;
+
+  renderFuelInventoryMovements();
+
+  refs.fuelTableBody.innerHTML = visibleRecords.length
+    ? visibleRecords
+        .map(
+          (item) => `
+            <tr>
+              <td>${escapeHtml(item.storageName || "-")}</td>
+              <td>${escapeHtml(formatFuelKindLabel(item.fuelKind))}</td>
+              <td>${statusBadge(item.type)}</td>
+              <td>${escapeHtml(item.vehicleId ? [item.vehicleBrand, item.vehicleModel].filter(Boolean).join(" / ") || "Veiculo cadastrado" : "-")}</td>
+              <td>${escapeHtml(item.plate || "-")}</td>
+              <td>${escapeHtml(formatNumber(item.quantity || 0, 2, 2))} L</td>
+              <td>${escapeHtml(item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}</td>
+              <td>${escapeHtml(formatNumber(item.balanceBefore || 0, 2, 2))} L</td>
+              <td>${escapeHtml(formatNumber(item.balanceAfter || 0, 2, 2))} L</td>
+              <td>${escapeHtml(item.userName || "-")}</td>
+              <td>${escapeHtml(formatDateTime(item.occurredAt))}</td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhum abastecimento registrado.", 11);
+
+  refs.fuelConsumptionChart.innerHTML = renderConsumptionChart({
+    consumptionSeries: analytics.consumptionSeries,
+    totalConsumptionLiters: analytics.consumptionSeries.reduce((total, item) => total + item.total, 0),
+    peakConsumption: analytics.peakConsumption,
+    fuelMix: analytics.fuelMix,
+  });
+
+  refs.fuelTopVehicles.innerHTML = renderMeterList(
+    analytics.topVehicles.map((item) => ({
+      label: item.plate,
+      value: item.liters,
+      count: item.count,
+    })),
+    {
+      emptyTitle: "Sem consumo no periodo",
+      emptyDescription: "Assim que houver saidas registradas, os veiculos de maior consumo aparecem aqui.",
+      valueFormatter: (value) => `${formatLiters(value)} L`,
+      secondaryFormatter: (item) => `${item.count} lancamento(s)`,
+    }
+  );
+
+  refs.fuelSideInsights.innerHTML = buildFuelSideInsights(analytics);
+}
+
+async function handleFuelSubmit(event) {
+  event.preventDefault();
+  const isExit = refs.fuelForm.elements.type.value === "EXIT";
+
+  const payload = {
+    storageId: refs.fuelForm.elements.storageId.value,
+    type: refs.fuelForm.elements.type.value,
+    vehicleId: isExit ? refs.fuelForm.elements.vehicleId.value : "",
+    quantity: refs.fuelForm.elements.quantity.value,
+    odometerKm: refs.fuelForm.elements.odometerKm.value,
+    occurredAt: toIsoDateTime(refs.fuelForm.elements.occurredAt.value),
+    notes: refs.fuelForm.elements.notes.value,
+  };
+
+  try {
+    await api("/api/fuel", { method: "POST", body: payload });
+    resetFuelForm();
+    await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+    showToast("Abastecimento registrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
 }

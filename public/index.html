@@ -126,7 +126,7 @@
           <button class="nav-item" data-section="notes">Notas fiscais</button>
           <button class="nav-item" data-section="inventory">Estoque</button>
           <button class="nav-item" data-section="vehicles">Veiculos</button>
-          <button class="nav-item" data-section="fuel">Abastecimento</button>
+            <button class="nav-item" data-section="fuel">Combustivel</button>
           <button class="nav-item" data-section="reports">Relatorios</button>
           <button class="nav-item" data-section="schedules">Escala</button>
           <button class="nav-item" data-section="fines">Multas</button>
@@ -365,8 +365,9 @@
         <section id="inventory-section" class="content-section">
           <div class="section-header">
             <div>
-              <span class="eyebrow">Entradas e saídas</span>
+              <span class="eyebrow">Almoxarifado</span>
               <h2>Estoque</h2>
+              <p class="section-description">Entrada e saida apenas de materiais, pecas, ferramentas e itens do almoxarifado.</p>
             </div>
           </div>
 
@@ -385,6 +386,13 @@
                 <label>
                   <span>Unidade</span>
                   <input type="text" name="unit" value="UN" />
+                </label>
+                <label>
+                  <span>Classificacao</span>
+                  <select name="stockType" required>
+                    <option value="COMMON">Estoque comum</option>
+                    <option value="FUEL">Combustivel</option>
+                  </select>
                 </label>
                 <label>
                   <span>Código de barras</span>
@@ -416,8 +424,8 @@
 
             <form id="inventory-movement-form" class="panel form-card">
               <div class="card-title">
-                <span class="eyebrow">Movimentação</span>
-                <h3>Entrada e saída</h3>
+                <span class="eyebrow">Movimentação comum</span>
+                <h3>Entrada e saída do almoxarifado</h3>
               </div>
               <div class="form-grid">
                 <label class="full-width">
@@ -462,14 +470,6 @@
                   <input type="text" name="branchName" placeholder="Opcional" />
                 </label>
                 <label>
-                  <span>Tipo de combustível</span>
-                  <select name="fuelKind">
-                    <option value="">Nao se aplica</option>
-                    <option value="S500">S-500</option>
-                    <option value="S10">S-10</option>
-                  </select>
-                </label>
-                <label>
                   <span>Data e hora</span>
                   <input type="datetime-local" name="occurredAt" />
                 </label>
@@ -488,13 +488,14 @@
             <div class="panel table-panel">
               <div class="card-title">
                 <span class="eyebrow">Produtos</span>
-                <h3>Cadastro e alertas</h3>
+                <h3>Cadastro e alertas do almoxarifado</h3>
               </div>
               <div class="table-wrapper">
                 <table>
                   <thead>
                     <tr>
                       <th>Produto</th>
+                      <th>Tipo</th>
                       <th>Saldo</th>
                       <th>Mínimo</th>
                       <th>Custo</th>
@@ -510,7 +511,7 @@
             <div class="panel table-panel">
               <div class="card-title">
                 <span class="eyebrow">Histórico</span>
-                <h3>Movimentações</h3>
+                <h3>Movimentações do almoxarifado</h3>
               </div>
               <div class="table-wrapper">
                 <table>
@@ -524,7 +525,7 @@
                       <th>Total</th>
                       <th>Saldo após</th>
                       <th>Usuário</th>
-                      <th>#</th>
+                      <th>Data</th>
                     </tr>
                   </thead>
                   <tbody id="inventory-movements-body"></tbody>
@@ -620,9 +621,9 @@
         <section id="fuel-section" class="content-section module-section module-section--fuel">
           <div class="section-header">
             <div>
-              <span class="eyebrow">Controle crítico</span>
-              <h2>Abastecimento</h2>
-              <p class="section-description">Controle e registro dos abastecimentos da frota.</p>
+              <span class="eyebrow">Combustível</span>
+              <h2>Combustível</h2>
+              <p class="section-description">Movimentação separada do combustível e abastecimento operacional da frota.</p>
             </div>
             <div class="header-actions">
               <button id="fuel-print-sheet-button" type="button" class="ghost-button">Imprimir folha diaria</button>
@@ -638,10 +639,61 @@
           </div>
           <div id="fuel-kpi-grid" class="operations-kpi-grid"></div>
           <div class="two-column-grid operations-main-grid">
+            <form id="fuel-stock-form" class="panel form-card operations-form-card">
+              <div class="card-title">
+                <span class="eyebrow">Kardex de combustível</span>
+                <h3>Entrada e saída do combustível</h3>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>Produto</span>
+                  <select id="fuel-stock-product-select" name="productId"></select>
+                </label>
+                <label>
+                  <span>Tipo</span>
+                  <select name="type">
+                    <option value="IN">Entrada</option>
+                    <option value="OUT">Saída</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Quantidade (L)</span>
+                  <input type="number" name="quantity" min="0" step="0.01" required />
+                </label>
+                <label>
+                  <span>Valor unitário</span>
+                  <input type="number" name="unitCost" min="0" step="0.01" placeholder="0,00" />
+                </label>
+                <label>
+                  <span>Documento</span>
+                  <input type="text" name="document" placeholder="NF, romaneio ou recibo" />
+                </label>
+                <label>
+                  <span>Fornecedor</span>
+                  <input type="text" name="supplierName" placeholder="Opcional" />
+                </label>
+                <label>
+                  <span>Filial / unidade</span>
+                  <input type="text" name="branchName" placeholder="Opcional" />
+                </label>
+                <label>
+                  <span>Data e hora</span>
+                  <input type="datetime-local" name="occurredAt" />
+                </label>
+                <label class="full-width">
+                  <span>Observação</span>
+                  <textarea name="notes" rows="3" placeholder="Observações da movimentação de combustível"></textarea>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Registrar movimentação de combustível</button>
+              </div>
+            </form>
+
             <form id="fuel-form" class="panel form-card operations-form-card">
               <div class="card-title">
-                <span class="eyebrow">Registro</span>
-                <h3>Entrada e saída por combustível</h3>
+                <span class="eyebrow">Abastecimento operacional</span>
+                <h3>Saída para a frota</h3>
               </div>
               <div class="form-grid">
                 <label>
@@ -651,8 +703,8 @@
                 <label>
                   <span>Tipo</span>
                   <select name="type">
-                    <option value="ENTRY">Entrada</option>
-                    <option value="EXIT">Saída</option>
+                    <option value="EXIT">Saída operacional</option>
+                    <option value="ENTRY">Entrada de ajuste</option>
                   </select>
                 </label>
                 <label>
@@ -680,20 +732,45 @@
                 <button type="submit" class="primary-button">Registrar abastecimento</button>
               </div>
             </form>
+          </div>
 
-            <div class="panel operations-side-panel">
-              <div class="card-title">
-                <span class="eyebrow">Estoques principais</span>
-                <h3>Saldos atuais</h3>
-              </div>
-              <div id="fuel-stocks-grid" class="metric-grid"></div>
+          <div class="panel operations-side-panel">
+            <div class="card-title">
+              <span class="eyebrow">Tanques vinculados</span>
+              <h3>Saldos atuais do combustível</h3>
+            </div>
+            <div id="fuel-stocks-grid" class="metric-grid"></div>
+          </div>
+
+          <div class="panel table-panel operations-table-panel">
+            <div class="card-title">
+              <span class="eyebrow">Histórico do combustível</span>
+              <h3>Movimentações do Kardex de combustível</h3>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Produto</th>
+                    <th>Tipo</th>
+                    <th>Quantidade</th>
+                    <th>Documento</th>
+                    <th>Unitário</th>
+                    <th>Total</th>
+                    <th>Saldo após</th>
+                    <th>Usuário</th>
+                    <th>Data</th>
+                  </tr>
+                </thead>
+                <tbody id="fuel-inventory-movements-body"></tbody>
+              </table>
             </div>
           </div>
 
           <div class="panel table-panel operations-table-panel">
             <div class="card-title">
-              <span class="eyebrow">Histórico completo</span>
-              <h3>Saldo fixo por lançamento</h3>
+              <span class="eyebrow">Abastecimento operacional</span>
+              <h3>Saídas registradas por abastecimento</h3>
             </div>
             <div class="table-wrapper">
               <table>
@@ -771,9 +848,16 @@
           <div class="panel form-card report-filter-card">
             <div class="card-title">
               <span class="eyebrow">Ficha Kardex</span>
-              <h3>Movimento do estoque</h3>
+              <h3>Relatório separado por tipo de estoque</h3>
             </div>
             <form id="kardex-form" class="form-grid report-filter-grid">
+              <label>
+                <span>Tipo de Kardex</span>
+                <select id="kardex-stock-type" name="stockType">
+                  <option value="COMMON">Kardex de Estoque</option>
+                  <option value="FUEL">Kardex de Combustível</option>
+                </select>
+              </label>
               <label>
                 <span>Produto</span>
                 <select id="kardex-product-select" name="productId" required></select>

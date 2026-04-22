@@ -89,6 +89,16 @@ const FUEL_KIND_ALIASES = {
   diesel_s_10: "S10",
 };
 
+const STOCK_TYPE_ALIASES = {
+  common: "COMMON",
+  comum: "COMMON",
+  estoque_comum: "COMMON",
+  almoxarifado: "COMMON",
+  fuel: "FUEL",
+  combustivel: "FUEL",
+  combustiveis: "FUEL",
+};
+
 const VEHICLE_FUEL_PROFILE_ALIASES = {
   s500: "S500",
   s_500: "S500",
@@ -195,6 +205,10 @@ function normalizeFuelType(value, fallback = "ENTRY") {
 
 function normalizeFuelKind(value, fallback = "") {
   return normalizeEnum(value, FUEL_KIND_ALIASES, fallback);
+}
+
+function normalizeStockType(value, fallback = "COMMON") {
+  return normalizeEnum(value, STOCK_TYPE_ALIASES, fallback);
 }
 
 function normalizeVehicleFuelProfile(value, fallback = "S500") {
@@ -634,9 +648,14 @@ function queryNotes(filters = {}) {
   return all(sql, params).map(mapNoteRow);
 }
 
-function queryProducts(search = "") {
+function queryProducts(search = "", filters = {}) {
   let sql = "SELECT * FROM inventory_products WHERE active = 1";
   const params = [];
+
+  if (filters.stockType) {
+    sql += " AND stock_type = ?";
+    params.push(normalizeStockType(filters.stockType, "COMMON"));
+  }
 
   if (search) {
     sql += " AND (lower(name) LIKE ? OR lower(coalesce(barcode, '')) LIKE ?)";
@@ -651,6 +670,7 @@ function queryProducts(search = "") {
     name: row.name,
     unit: row.unit,
     barcode: row.barcode,
+    stockType: normalizeStockType(row.stock_type, "COMMON"),
     minStock: Number(row.min_stock || 0),
     currentStock: Number(row.current_stock || 0),
     defaultCost: Number(row.default_cost || 0),
@@ -715,7 +735,13 @@ function queryVehicles(filters = {}) {
 
 function queryInventoryMovements(filters = {}) {
   let sql = `
-    SELECT m.*, p.name AS product_name, p.unit AS product_unit, p.default_cost AS product_default_cost, u.name AS user_name
+    SELECT
+      m.*,
+      p.name AS product_name,
+      p.unit AS product_unit,
+      p.stock_type AS product_stock_type,
+      p.default_cost AS product_default_cost,
+      u.name AS user_name
     FROM inventory_movements m
     JOIN inventory_products p ON p.id = m.product_id
     LEFT JOIN users u ON u.id = m.created_by
@@ -726,6 +752,11 @@ function queryInventoryMovements(filters = {}) {
   if (filters.productId) {
     sql += " AND m.product_id = ?";
     params.push(Number(filters.productId));
+  }
+
+  if (filters.stockType) {
+    sql += " AND p.stock_type = ?";
+    params.push(normalizeStockType(filters.stockType, "COMMON"));
   }
 
   if (filters.from) {
@@ -765,6 +796,7 @@ function queryInventoryMovements(filters = {}) {
     productId: Number(row.product_id),
     productName: row.product_name,
     productUnit: row.product_unit,
+    productStockType: normalizeStockType(row.product_stock_type, "COMMON"),
     type: row.type,
     quantity: Number(row.quantity || 0),
     balanceAfter: Number(row.balance_after || 0),
@@ -775,6 +807,8 @@ function queryInventoryMovements(filters = {}) {
     unitCost: Number(row.unit_cost || 0),
     totalCost: Number(row.total_cost || 0),
     productDefaultCost: Number(row.product_default_cost || 0),
+    sourceType: row.source_type || "",
+    sourceId: row.source_id === null || row.source_id === undefined ? null : Number(row.source_id),
     notes: row.notes,
     occurredAt: row.occurred_at,
     createdAt: row.created_at,
@@ -839,15 +873,18 @@ function queryFuelRecords(filters = {}) {
 function queryFuelStorages() {
   return all(
     `
-      SELECT *
-      FROM fuel_storages
-      WHERE active = 1
-      ORDER BY fuel_kind ASC, name ASC
+      SELECT s.*, p.name AS product_name
+      FROM fuel_storages s
+      LEFT JOIN inventory_products p ON p.id = s.product_id
+      WHERE s.active = 1
+      ORDER BY s.fuel_kind ASC, s.name ASC
     `
   ).map((row) => ({
     id: Number(row.id),
     name: row.name,
     fuelKind: row.fuel_kind,
+    productId: row.product_id ? Number(row.product_id) : null,
+    productName: row.product_name || "",
     currentBalance: Number(row.current_balance || 0),
     minBalance: Number(row.min_balance || 0),
     active: Boolean(row.active),
@@ -869,6 +906,23 @@ function queryFuelOverview() {
     fuelByKind,
     storages,
   };
+}
+
+function getFuelStorageByProductId(productId) {
+  if (!productId) {
+    return null;
+  }
+
+  return get(
+    `
+      SELECT *
+      FROM fuel_storages
+      WHERE product_id = ? AND active = 1
+      ORDER BY id ASC
+      LIMIT 1
+    `,
+    [Number(productId)]
+  );
 }
 
 function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
@@ -1274,13 +1328,18 @@ function queryChecklists() {
   });
 }
 
-function buildInventoryMovementFilters(filters = {}, alias = "m") {
+function buildInventoryMovementFilters(filters = {}, alias = "m", productAlias = "p") {
   const clauses = [];
   const params = [];
 
   if (filters.productId) {
     clauses.push(`${alias}.product_id = ?`);
     params.push(Number(filters.productId));
+  }
+
+  if (filters.stockType) {
+    clauses.push(`${productAlias}.stock_type = ?`);
+    params.push(normalizeStockType(filters.stockType, "COMMON"));
   }
 
   if (filters.branchName) {
@@ -1332,17 +1391,28 @@ function buildKardexReport(filters = {}) {
 
   const filterSet = {
     productId,
+    stockType: normalizeStockType(filters.stockType || filters.reportType || filters.category, "COMMON"),
     branchName: normalizeText(filters.branchName || filters.branch || filters.unitName),
     fuelKind: normalizeFuelKind(filters.fuelKind, ""),
     document: normalizeText(filters.document),
     supplierName: normalizeText(filters.supplierName || filters.supplier),
   };
 
-  const where = buildInventoryMovementFilters(filterSet, "m");
+  const productStockType = normalizeStockType(product.stock_type, "COMMON");
+  if (productStockType !== filterSet.stockType) {
+    throw new Error("O produto selecionado nao pertence ao tipo de Kardex informado.");
+  }
+
+  if (filterSet.stockType !== "FUEL") {
+    filterSet.fuelKind = "";
+  }
+
+  const where = buildInventoryMovementFilters(filterSet, "m", "p");
   const openingRow = get(
     `
       SELECT COALESCE(SUM(CASE WHEN m.type = 'IN' THEN m.quantity ELSE -m.quantity END), 0) AS opening_balance
       FROM inventory_movements m
+      JOIN inventory_products p ON p.id = m.product_id
       WHERE ${where.sql}
         AND m.occurred_at < ?
     `,
@@ -1353,6 +1423,7 @@ function buildKardexReport(filters = {}) {
     `
       SELECT m.*, u.name AS user_name
       FROM inventory_movements m
+      JOIN inventory_products p ON p.id = m.product_id
       LEFT JOIN users u ON u.id = m.created_by
       WHERE ${where.sql}
         AND m.occurred_at >= ?
@@ -1366,6 +1437,7 @@ function buildKardexReport(filters = {}) {
     `
       SELECT m.*, u.name AS user_name
       FROM inventory_movements m
+      JOIN inventory_products p ON p.id = m.product_id
       LEFT JOIN users u ON u.id = m.created_by
       WHERE ${where.sql}
         AND m.type = 'IN'
@@ -1421,7 +1493,10 @@ function buildKardexReport(filters = {}) {
 
   return {
     companyName: normalizeText(process.env.COMPANY_NAME || "HORIZON"),
-    reportName: "Ficha Kardex - Movimento do Estoque",
+    reportName:
+      filterSet.stockType === "FUEL"
+        ? "Ficha Kardex - Combustivel"
+        : "Ficha Kardex - Almoxarifado",
     issuedAt: nowIso(),
     period: {
       from,
@@ -1431,9 +1506,11 @@ function buildKardexReport(filters = {}) {
       id: Number(product.id),
       name: product.name,
       unit: product.unit,
+      stockType: productStockType,
       defaultCost: Number(product.default_cost || 0),
     },
     filters: {
+      stockType: filterSet.stockType,
       branchName: filterSet.branchName || "",
       fuelKind: filterSet.fuelKind || "",
       document: filterSet.document || "",
@@ -1461,6 +1538,40 @@ function buildKardexReport(filters = {}) {
         }
       : null,
   };
+}
+
+function createInventoryMovementRecord(payload = {}) {
+  return insert(
+    `
+      INSERT INTO inventory_movements (
+        product_id, type, quantity, balance_after, document, branch_name, supplier_name, fuel_kind,
+        unit_cost, total_cost, notes, source_type, source_id, occurred_at, created_by, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      Number(payload.productId),
+      normalizeInventoryMovement(payload.type, "IN"),
+      Number(payload.quantity || 0),
+      Number(payload.balanceAfter || 0),
+      normalizeText(payload.document) || null,
+      normalizeText(payload.branchName) || null,
+      normalizeText(payload.supplierName) || null,
+      normalizeFuelKind(payload.fuelKind, "") || null,
+      Number(payload.unitCost || 0),
+      Number(payload.totalCost || 0),
+      normalizeText(payload.notes),
+      normalizeText(payload.sourceType) || null,
+      payload.sourceId === null || payload.sourceId === undefined || payload.sourceId === ""
+        ? null
+        : Number(payload.sourceId),
+      normalizeText(payload.occurredAt) || nowIso(),
+      payload.createdBy === null || payload.createdBy === undefined || payload.createdBy === ""
+        ? null
+        : Number(payload.createdBy),
+      normalizeText(payload.createdAt) || nowIso(),
+    ]
+  );
 }
 
 function queryEmails() {
@@ -1828,7 +1939,7 @@ async function start() {
       { days: periodDays, plate: selectedPlate },
       fuelOverview
     );
-    const lowStock = queryProducts().filter((item) => item.lowStock);
+    const lowStock = queryProducts("", { stockType: "COMMON" }).filter((item) => item.lowStock);
     const todaySchedules = querySchedules(todayDate());
     const agingNotes = all(
       `
@@ -2123,14 +2234,29 @@ async function start() {
   });
 
   app.get("/api/products", requireAuth, (req, res) => {
-    res.json({ items: queryProducts(req.query.search || "") });
+    res.json({
+      items: queryProducts(req.query.search || "", {
+        stockType: req.query.stockType,
+      }),
+    });
   });
 
   app.get("/api/products/barcode/:barcode", requireAuth, (req, res) => {
     const barcode = normalizeText(req.params.barcode);
     const product = get(
-      "SELECT * FROM inventory_products WHERE barcode = ? AND active = 1 LIMIT 1",
-      [barcode]
+      `
+        SELECT *
+        FROM inventory_products
+        WHERE barcode = ?
+          AND active = 1
+          AND (? = '' OR stock_type = ?)
+        LIMIT 1
+      `,
+      [
+        barcode,
+        normalizeStockType(req.query.stockType, ""),
+        normalizeStockType(req.query.stockType, ""),
+      ]
     );
 
     if (!product) {
@@ -2143,6 +2269,7 @@ async function start() {
         name: product.name,
         unit: product.unit,
         barcode: product.barcode,
+        stockType: normalizeStockType(product.stock_type, "COMMON"),
         minStock: Number(product.min_stock || 0),
         currentStock: Number(product.current_stock || 0),
       },
@@ -2153,12 +2280,17 @@ async function start() {
     const name = normalizeText(req.body.name);
     const unit = normalizeText(req.body.unit || "UN").toUpperCase();
     const barcode = normalizeText(req.body.barcode);
+    const stockType = normalizeStockType(req.body.stockType || req.body.category || req.body.inventoryType, "");
     const minStock = toNumber(req.body.minStock);
     const initialStock = toNumber(req.body.initialStock);
     const defaultCost = toNumber(req.body.defaultCost);
 
     if (!name) {
       return sendError(res, 400, "Nome do produto e obrigatorio.");
+    }
+
+    if (!stockType) {
+      return sendError(res, 400, "Informe a classificacao do item: comum ou combustivel.");
     }
 
     if (barcode) {
@@ -2178,49 +2310,55 @@ async function start() {
       productId = insert(
         `
           INSERT INTO inventory_products (
-            name, unit, barcode, min_stock, current_stock, default_cost, active, created_by, created_at, updated_at
+            name, unit, barcode, stock_type, min_stock, current_stock, default_cost, active, created_by, created_at, updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         `,
-        [name, unit, barcode || null, minStock, initialStock, defaultCost, req.user.id, timestamp, timestamp]
+        [name, unit, barcode || null, stockType, minStock, initialStock, defaultCost, req.user.id, timestamp, timestamp]
       );
 
       if (initialStock > 0) {
-        insert(
-          `
-            INSERT INTO inventory_movements (
-              product_id, type, quantity, balance_after, document, branch_name, supplier_name, fuel_kind,
-              unit_cost, total_cost, notes, occurred_at, created_by, created_at
-            )
-            VALUES (?, 'IN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `,
-          [
-            productId,
-            initialStock,
-            initialStock,
-            "SALDO-INICIAL",
-            null,
-            null,
-            null,
-            defaultCost,
-            defaultCost * initialStock,
-            "Saldo inicial do produto",
-            timestamp,
-            req.user.id,
-            timestamp,
-          ]
-        );
+        const linkedStorage = stockType === "FUEL" ? getFuelStorageByProductId(productId) : null;
+        createInventoryMovementRecord({
+          productId,
+          type: "IN",
+          quantity: initialStock,
+          balanceAfter: initialStock,
+          document: stockType === "FUEL" ? "SALDO-INICIAL-COMBUSTIVEL" : "SALDO-INICIAL",
+          fuelKind: linkedStorage?.fuel_kind || "",
+          unitCost: defaultCost,
+          totalCost: defaultCost * initialStock,
+          notes:
+            stockType === "FUEL"
+              ? "Saldo inicial do combustivel"
+              : "Saldo inicial do produto",
+          occurredAt: timestamp,
+          createdBy: req.user.id,
+          createdAt: timestamp,
+        });
+
+        if (linkedStorage) {
+          write(
+            `
+              UPDATE fuel_storages
+              SET current_balance = ?, updated_at = ?
+              WHERE id = ?
+            `,
+            [initialStock, timestamp, linkedStorage.id]
+          );
+        }
       }
 
       logAction(req.user, "CREATE_PRODUCT", "PRODUCT", productId, {
         name,
         barcode,
+        stockType,
         initialStock,
         defaultCost,
       });
     });
 
-    return res.status(201).json({ item: queryProducts().find((item) => item.id === productId) });
+    return res.status(201).json({ item: queryProducts("", { stockType }).find((item) => item.id === productId) });
   });
 
   app.put("/api/products/:id", requireAuth, (req, res) => {
@@ -2234,6 +2372,10 @@ async function start() {
     const name = normalizeText(req.body.name || existing.name);
     const unit = normalizeText(req.body.unit || existing.unit).toUpperCase();
     const barcode = normalizeText(req.body.barcode || existing.barcode);
+    const stockType = normalizeStockType(
+      req.body.stockType || req.body.category || req.body.inventoryType || existing.stock_type,
+      "COMMON"
+    );
     const minStock = toNumber(req.body.minStock ?? existing.min_stock);
     const defaultCost = toNumber(req.body.defaultCost ?? existing.default_cost);
 
@@ -2250,14 +2392,20 @@ async function start() {
     write(
       `
         UPDATE inventory_products
-        SET name = ?, unit = ?, barcode = ?, min_stock = ?, default_cost = ?, updated_at = ?
+        SET name = ?, unit = ?, barcode = ?, stock_type = ?, min_stock = ?, default_cost = ?, updated_at = ?
         WHERE id = ?
       `,
-      [name, unit, barcode || null, minStock, defaultCost, nowIso(), productId]
+      [name, unit, barcode || null, stockType, minStock, defaultCost, nowIso(), productId]
     );
 
-    logAction(req.user, "UPDATE_PRODUCT", "PRODUCT", productId, { name, barcode, minStock, defaultCost });
-    return res.json({ item: queryProducts().find((item) => item.id === productId) });
+    logAction(req.user, "UPDATE_PRODUCT", "PRODUCT", productId, {
+      name,
+      barcode,
+      stockType,
+      minStock,
+      defaultCost,
+    });
+    return res.json({ item: queryProducts("", { stockType }).find((item) => item.id === productId) });
   });
 
   app.get("/api/inventory/movements", requireAuth, (req, res) => {
@@ -2268,6 +2416,7 @@ async function start() {
     try {
       const report = buildKardexReport({
         productId: req.query.productId,
+        stockType: req.query.stockType,
         from: req.query.from,
         to: req.query.to,
         branchName: req.query.branchName,
@@ -2285,11 +2434,11 @@ async function start() {
   app.post("/api/inventory/movements", requireAuth, (req, res) => {
     const productId = Number(req.body.productId);
     const type = normalizeInventoryMovement(req.body.type, "IN");
+    const requestedStockType = normalizeStockType(req.body.stockType || req.body.category || req.body.inventoryType, "");
     const quantity = toNumber(req.body.quantity);
     const document = normalizeText(req.body.document);
     const branchName = normalizeText(req.body.branchName || req.body.branch || req.body.unitName);
     const supplierName = normalizeText(req.body.supplierName || req.body.supplier);
-    const fuelKind = normalizeFuelKind(req.body.fuelKind, "");
     const rawUnitCost = normalizeText(req.body.unitCost);
     const unitCost = rawUnitCost ? toNumber(rawUnitCost) : null;
     const notes = normalizeText(req.body.notes);
@@ -2303,6 +2452,18 @@ async function start() {
     if (!product) {
       return sendError(res, 404, "Produto nao encontrado.");
     }
+
+    const productStockType = normalizeStockType(product.stock_type, "COMMON");
+    if (requestedStockType && requestedStockType !== productStockType) {
+      return sendError(res, 400, "O produto selecionado nao pertence a este tipo de estoque.");
+    }
+
+    const linkedFuelStorage =
+      productStockType === "FUEL" ? getFuelStorageByProductId(productId) : null;
+    const fuelKind =
+      productStockType === "FUEL"
+        ? normalizeFuelKind(req.body.fuelKind || linkedFuelStorage?.fuel_kind, "")
+        : "";
 
     const currentStock = Number(product.current_stock || 0);
     const nextStock = type === "IN" ? currentStock + quantity : currentStock - quantity;
@@ -2321,31 +2482,22 @@ async function start() {
     const timestamp = nowIso();
 
     transaction(() => {
-      movementId = insert(
-        `
-          INSERT INTO inventory_movements (
-            product_id, type, quantity, balance_after, document, branch_name, supplier_name, fuel_kind,
-            unit_cost, total_cost, notes, occurred_at, created_by, created_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          productId,
-          type,
-          quantity,
-          nextStock,
-          document || null,
-          branchName || null,
-          supplierName || null,
-          fuelKind || null,
-          effectiveUnitCost,
-          totalCost,
-          notes,
-          occurredAt,
-          req.user.id,
-          timestamp,
-        ]
-      );
+      movementId = createInventoryMovementRecord({
+        productId,
+        type,
+        quantity,
+        balanceAfter: nextStock,
+        document,
+        branchName,
+        supplierName,
+        fuelKind,
+        unitCost: effectiveUnitCost,
+        totalCost,
+        notes,
+        occurredAt,
+        createdBy: req.user.id,
+        createdAt: timestamp,
+      });
 
       write(
         `
@@ -2356,8 +2508,20 @@ async function start() {
         [nextStock, type === "IN" && effectiveUnitCost > 0 ? effectiveUnitCost : Number(product.default_cost || 0), timestamp, productId]
       );
 
+      if (linkedFuelStorage) {
+        write(
+          `
+            UPDATE fuel_storages
+            SET current_balance = ?, updated_at = ?
+            WHERE id = ?
+          `,
+          [nextStock, timestamp, linkedFuelStorage.id]
+        );
+      }
+
       logAction(req.user, "CREATE_INVENTORY_MOVEMENT", "INVENTORY", movementId, {
         productId,
+        stockType: productStockType,
         type,
         quantity,
         document,
@@ -2371,7 +2535,7 @@ async function start() {
     });
 
     return res.status(201).json({
-      item: queryInventoryMovements({ productId }).find((item) => item.id === movementId),
+      item: queryInventoryMovements({ productId, stockType: productStockType }).find((item) => item.id === movementId),
     });
   });
 
@@ -2453,6 +2617,12 @@ async function start() {
     const nextBalance = type === "ENTRY" ? currentBalance + quantity : currentBalance - quantity;
     const plate = type === "EXIT" ? normalizePlate(vehicle?.plate) : "";
     const relatedVehicleId = type === "EXIT" ? Number(vehicle?.id || 0) : null;
+    const linkedFuelProduct =
+      storage.product_id
+        ? get("SELECT * FROM inventory_products WHERE id = ? AND active = 1 LIMIT 1", [Number(storage.product_id)])
+        : null;
+    const mirroredUnitCost = Number(linkedFuelProduct?.default_cost || 0);
+    const mirroredTotalCost = mirroredUnitCost * quantity;
 
     if (nextBalance < 0) {
       return sendError(
@@ -2501,9 +2671,41 @@ async function start() {
         [nextBalance, timestamp, storageId]
       );
 
+      if (linkedFuelProduct) {
+        createInventoryMovementRecord({
+          productId: linkedFuelProduct.id,
+          type: type === "ENTRY" ? "IN" : "OUT",
+          quantity,
+          balanceAfter: nextBalance,
+          document: type === "ENTRY" ? "ENTRADA-OPERACIONAL-COMBUSTIVEL" : "ABASTECIMENTO-OPERACIONAL",
+          fuelKind: storage.fuel_kind,
+          unitCost: mirroredUnitCost,
+          totalCost: mirroredTotalCost,
+          notes:
+            type === "EXIT"
+              ? [notes, plate ? `Abastecimento operacional da placa ${plate}` : ""].filter(Boolean).join(" | ")
+              : [notes, "Entrada registrada no modulo operacional de combustivel."].filter(Boolean).join(" | "),
+          sourceType: "FUEL_RECORD",
+          sourceId: recordId,
+          occurredAt,
+          createdBy: req.user.id,
+          createdAt: timestamp,
+        });
+
+        write(
+          `
+            UPDATE inventory_products
+            SET current_stock = ?, updated_at = ?
+            WHERE id = ?
+          `,
+          [nextBalance, timestamp, linkedFuelProduct.id]
+        );
+      }
+
       logAction(req.user, "CREATE_FUEL_RECORD", "FUEL", recordId, {
         storageId,
         storageName: storage.name,
+        productId: linkedFuelProduct ? Number(linkedFuelProduct.id) : null,
         fuelKind: storage.fuel_kind,
         vehicleId: relatedVehicleId,
         type,

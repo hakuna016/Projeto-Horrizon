@@ -3,7 +3,7 @@ const path = require("path");
 const crypto = require("crypto");
 const initSqlJs = require("sql.js");
 const { hashPassword, verifyPassword } = require("./security");
-const { normalizeSpreadsheetIssueDate, nowIso } = require("./helpers");
+const { normalizeSpreadsheetIssueDate, nowIso, normalizeKey, normalizeText } = require("./helpers");
 
 const DEFAULT_DB_FILENAME = "logistica.db";
 const DEFAULT_DB_PATH = path.join(__dirname, "..", "data", DEFAULT_DB_FILENAME);
@@ -39,6 +39,15 @@ const DEFAULT_FUEL_STORAGES = [
   { name: "Estoque S-10", fuelKind: "S10" },
   { name: "Estoque S-500", fuelKind: "S500" },
 ];
+const STOCK_TYPE_ALIASES = {
+  common: "COMMON",
+  comum: "COMMON",
+  estoque_comum: "COMMON",
+  almoxarifado: "COMMON",
+  fuel: "FUEL",
+  combustivel: "FUEL",
+  combustiveis: "FUEL",
+};
 const DEFAULT_MASTER_ADMIN_EMAIL = "master@horizon.internal";
 const DEFAULT_MASTER_ADMIN_NAME = "Conta interna";
 
@@ -50,6 +59,46 @@ function ensureDatabase() {
   if (!db) {
     throw new Error("Banco SQLite ainda nao inicializado.");
   }
+}
+
+function normalizeStockType(value, fallback = "COMMON") {
+  const normalized = normalizeKey(value);
+  if (!normalized) {
+    return fallback;
+  }
+  return STOCK_TYPE_ALIASES[normalized] || fallback;
+}
+
+function fuelProductNameForKind(fuelKind) {
+  const normalizedKind = normalizeText(fuelKind).toUpperCase();
+  if (normalizedKind === "S10") {
+    return "Diesel S-10";
+  }
+  if (normalizedKind === "S500") {
+    return "Diesel S-500";
+  }
+  return normalizedKind ? `Combustivel ${normalizedKind}` : "Combustivel";
+}
+
+function inferStockTypeFromLegacyProduct({ name = "", unit = "", fuelKind = "" }) {
+  const normalizedFuelKind = normalizeText(fuelKind).toUpperCase();
+  if (normalizedFuelKind) {
+    return "FUEL";
+  }
+
+  const normalizedName = normalizeKey(name);
+  const normalizedUnit = normalizeKey(unit);
+  const fuelHints = ["diesel", "gasolina", "etanol", "combustivel", "oleo", "arla", "s_10", "s_500"];
+
+  if (fuelHints.some((hint) => normalizedName.includes(hint))) {
+    return "FUEL";
+  }
+
+  if (["l", "lt", "lts", "litro", "litros"].includes(normalizedUnit) && /(s[_ ]?10|s[_ ]?500)/i.test(String(name))) {
+    return "FUEL";
+  }
+
+  return "COMMON";
 }
 
 function persistDatabase() {
@@ -244,6 +293,7 @@ function createTables() {
       name TEXT NOT NULL,
       unit TEXT NOT NULL DEFAULT 'UN',
       barcode TEXT,
+      stock_type TEXT NOT NULL DEFAULT 'COMMON',
       min_stock REAL NOT NULL DEFAULT 0,
       current_stock REAL NOT NULL DEFAULT 0,
       default_cost REAL NOT NULL DEFAULT 0,
@@ -267,6 +317,8 @@ function createTables() {
       unit_cost REAL NOT NULL DEFAULT 0,
       total_cost REAL NOT NULL DEFAULT 0,
       notes TEXT,
+      source_type TEXT,
+      source_id INTEGER,
       occurred_at TEXT NOT NULL,
       created_by INTEGER,
       created_at TEXT NOT NULL,
@@ -293,13 +345,15 @@ function createTables() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
       fuel_kind TEXT NOT NULL,
+      product_id INTEGER,
       current_balance REAL NOT NULL DEFAULT 0,
       min_balance REAL NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       created_by INTEGER,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY(created_by) REFERENCES users(id)
+      FOREIGN KEY(created_by) REFERENCES users(id),
+      FOREIGN KEY(product_id) REFERENCES inventory_products(id)
     );
 
     CREATE TABLE IF NOT EXISTS fuel_records (
@@ -412,6 +466,7 @@ function createTables() {
 }
 
 function migrateInventorySchema() {
+  ensureColumn("inventory_products", "stock_type", "TEXT NOT NULL DEFAULT 'COMMON'");
   ensureColumn("inventory_products", "default_cost", "REAL NOT NULL DEFAULT 0");
   ensureColumn("inventory_movements", "document", "TEXT");
   ensureColumn("inventory_movements", "branch_name", "TEXT");
@@ -419,9 +474,40 @@ function migrateInventorySchema() {
   ensureColumn("inventory_movements", "fuel_kind", "TEXT");
   ensureColumn("inventory_movements", "unit_cost", "REAL NOT NULL DEFAULT 0");
   ensureColumn("inventory_movements", "total_cost", "REAL NOT NULL DEFAULT 0");
+  ensureColumn("inventory_movements", "source_type", "TEXT");
+  ensureColumn("inventory_movements", "source_id", "INTEGER");
+
+  write(
+    `
+      UPDATE inventory_products
+      SET stock_type = 'COMMON'
+      WHERE stock_type IS NULL OR trim(stock_type) = ''
+    `
+  );
+
+  const inferredFuelProductIds = all(
+    `
+      SELECT DISTINCT p.id, p.name, p.unit, m.fuel_kind
+      FROM inventory_products p
+      LEFT JOIN inventory_movements m ON m.product_id = p.id
+      WHERE p.active = 1
+    `
+  )
+    .filter((row) => inferStockTypeFromLegacyProduct(row) === "FUEL")
+    .map((row) => Number(row.id));
+
+  if (inferredFuelProductIds.length) {
+    const placeholders = inferredFuelProductIds.map(() => "?").join(", ");
+    write(
+      `UPDATE inventory_products SET stock_type = 'FUEL' WHERE id IN (${placeholders})`,
+      inferredFuelProductIds
+    );
+  }
 
   runScript(`
+    CREATE INDEX IF NOT EXISTS idx_inventory_products_stock_type ON inventory_products(stock_type, name);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_date ON inventory_movements(product_id, occurred_at, id);
+    CREATE INDEX IF NOT EXISTS idx_inventory_movements_source ON inventory_movements(source_type, source_id);
   `);
 }
 
@@ -453,6 +539,7 @@ function migrateVehicleSchema() {
 }
 
 function migrateFuelSchema() {
+  ensureColumn("fuel_storages", "product_id", "INTEGER");
   ensureColumn("fuel_records", "storage_id", "INTEGER");
   ensureColumn("fuel_records", "storage_name", "TEXT");
   ensureColumn("fuel_records", "fuel_kind", "TEXT");
@@ -464,6 +551,7 @@ function migrateFuelSchema() {
       CREATE INDEX IF NOT EXISTS idx_fuel_records_storage ON fuel_records(storage_id, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_fuel_records_plate ON fuel_records(plate, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_fuel_records_vehicle ON fuel_records(vehicle_id, occurred_at);
+      CREATE INDEX IF NOT EXISTS idx_fuel_storages_product ON fuel_storages(product_id, active);
     `
   );
 }
@@ -747,6 +835,259 @@ function consolidateFuelStorages() {
           [timestamp, storage.id]
         );
       }
+    }
+  });
+}
+
+function matchFuelProductToStorage(product, storage) {
+  if (!product || normalizeStockType(product.stock_type, "COMMON") !== "FUEL") {
+    return false;
+  }
+
+  const normalizedName = normalizeKey(product.name);
+  if (!normalizedName) {
+    return false;
+  }
+
+  const defaultName = normalizeKey(fuelProductNameForKind(storage.fuel_kind));
+  if (normalizedName === defaultName) {
+    return true;
+  }
+
+  if (storage.fuel_kind === "S10") {
+    return normalizedName.includes("s10") || normalizedName.includes("s_10");
+  }
+
+  if (storage.fuel_kind === "S500") {
+    return normalizedName.includes("s500") || normalizedName.includes("s_500");
+  }
+
+  return normalizedName.includes(normalizeKey(storage.fuel_kind));
+}
+
+function ensureFuelProductsLinkedToStorages() {
+  const storages = all(
+    `
+      SELECT id, name, fuel_kind, product_id, current_balance, min_balance
+      FROM fuel_storages
+      WHERE active = 1
+      ORDER BY id ASC
+    `
+  );
+
+  if (!storages.length) {
+    return;
+  }
+
+  const adminUser = get("SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1");
+  const createdBy = adminUser ? Number(adminUser.id) : null;
+
+  transaction(() => {
+    const timestamp = nowIso();
+    const products = all("SELECT * FROM inventory_products WHERE active = 1 ORDER BY id ASC");
+    const productById = new Map(products.map((product) => [Number(product.id), product]));
+
+    for (const storage of storages) {
+      let product =
+        (storage.product_id && productById.get(Number(storage.product_id))) || null;
+
+      if (!matchFuelProductToStorage(product, storage)) {
+        product = products.find((item) => matchFuelProductToStorage(item, storage)) || null;
+      }
+
+      if (!product) {
+        const productId = insert(
+          `
+            INSERT INTO inventory_products (
+              name, unit, barcode, stock_type, min_stock, current_stock, default_cost, active, created_by, created_at, updated_at
+            )
+            VALUES (?, 'L', NULL, 'FUEL', ?, 0, 0, 1, ?, ?, ?)
+          `,
+          [fuelProductNameForKind(storage.fuel_kind), Number(storage.min_balance || 0), createdBy, timestamp, timestamp]
+        );
+
+        product = get("SELECT * FROM inventory_products WHERE id = ? LIMIT 1", [productId]);
+        products.push(product);
+        productById.set(Number(productId), product);
+      } else {
+        const resolvedMinStock =
+          Number(product.min_stock || 0) > 0
+            ? Number(product.min_stock || 0)
+            : Number(storage.min_balance || 0);
+
+        write(
+          `
+            UPDATE inventory_products
+            SET stock_type = 'FUEL',
+                unit = CASE WHEN trim(COALESCE(unit, '')) = '' THEN 'L' ELSE unit END,
+                min_stock = ?,
+                updated_at = ?
+            WHERE id = ?
+          `,
+          [resolvedMinStock, timestamp, product.id]
+        );
+
+        product.min_stock = resolvedMinStock;
+        product.stock_type = "FUEL";
+        product.unit = product.unit || "L";
+        product.updated_at = timestamp;
+      }
+
+      if (Number(storage.product_id || 0) !== Number(product.id)) {
+        write(
+          `
+            UPDATE fuel_storages
+            SET product_id = ?, updated_at = ?
+            WHERE id = ?
+          `,
+          [product.id, timestamp, storage.id]
+        );
+      }
+
+      const fuelRows = all(
+        `
+          SELECT id, type, plate, quantity, balance_after, notes, occurred_at, created_by, created_at
+          FROM fuel_records
+          WHERE storage_id = ?
+          ORDER BY occurred_at ASC, id ASC
+        `,
+        [storage.id]
+      );
+
+      for (const row of fuelRows) {
+        const existingMirror = get(
+          `
+            SELECT id
+            FROM inventory_movements
+            WHERE source_type = 'FUEL_RECORD' AND source_id = ?
+            LIMIT 1
+          `,
+          [row.id]
+        );
+
+        if (existingMirror) {
+          continue;
+        }
+
+        const quantity = Number(row.quantity || 0);
+        const unitCost = Number(product.default_cost || 0);
+        const totalCost = unitCost * quantity;
+        const noteParts = [];
+
+        if (normalizeText(row.notes)) {
+          noteParts.push(normalizeText(row.notes));
+        }
+        if (normalizeText(row.plate)) {
+          noteParts.push(`Movimento operacional vinculado a ${normalizeText(row.plate)}`);
+        }
+
+        insert(
+          `
+            INSERT INTO inventory_movements (
+              product_id, type, quantity, balance_after, document, branch_name, supplier_name, fuel_kind,
+              unit_cost, total_cost, notes, source_type, source_id, occurred_at, created_by, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, 'FUEL_RECORD', ?, ?, ?, ?)
+          `,
+          [
+            product.id,
+            row.type === "ENTRY" ? "IN" : "OUT",
+            quantity,
+            Number(row.balance_after || 0),
+            row.type === "ENTRY" ? "ENTRADA-OPERACIONAL-COMBUSTIVEL" : "ABASTECIMENTO-OPERACIONAL",
+            storage.fuel_kind,
+            unitCost,
+            totalCost,
+            noteParts.join(" | "),
+            row.id,
+            row.occurred_at,
+            row.created_by || createdBy,
+            row.created_at || row.occurred_at || timestamp,
+          ]
+        );
+      }
+
+      const latestMovement = get(
+        `
+          SELECT balance_after
+          FROM inventory_movements
+          WHERE product_id = ?
+          ORDER BY occurred_at DESC, id DESC
+          LIMIT 1
+        `,
+        [product.id]
+      );
+
+      const targetBalance = Number(storage.current_balance || 0);
+      const latestBalance = latestMovement ? Number(latestMovement.balance_after || 0) : 0;
+      const balanceDiff = Number((targetBalance - latestBalance).toFixed(6));
+
+      if (!latestMovement && targetBalance > 0) {
+        insert(
+          `
+            INSERT INTO inventory_movements (
+              product_id, type, quantity, balance_after, document, branch_name, supplier_name, fuel_kind,
+              unit_cost, total_cost, notes, source_type, source_id, occurred_at, created_by, created_at
+            )
+            VALUES (?, 'IN', ?, ?, 'SALDO-INICIAL-COMBUSTIVEL', NULL, NULL, ?, ?, ?, ?, 'FUEL_STORAGE_SYNC', ?, ?, ?, ?)
+          `,
+          [
+            product.id,
+            targetBalance,
+            targetBalance,
+            storage.fuel_kind,
+            Number(product.default_cost || 0),
+            Number(product.default_cost || 0) * targetBalance,
+            "Saldo inicial sincronizado a partir do tanque de combustivel.",
+            storage.id,
+            timestamp,
+            createdBy,
+            timestamp,
+          ]
+        );
+      } else if (latestMovement && Math.abs(balanceDiff) > 0.000001) {
+        insert(
+          `
+            INSERT INTO inventory_movements (
+              product_id, type, quantity, balance_after, document, branch_name, supplier_name, fuel_kind,
+              unit_cost, total_cost, notes, source_type, source_id, occurred_at, created_by, created_at
+            )
+            VALUES (?, ?, ?, ?, 'AJUSTE-SALDO-COMBUSTIVEL', NULL, NULL, ?, ?, ?, ?, 'FUEL_STORAGE_SYNC', ?, ?, ?, ?)
+          `,
+          [
+            product.id,
+            balanceDiff > 0 ? "IN" : "OUT",
+            Math.abs(balanceDiff),
+            targetBalance,
+            storage.fuel_kind,
+            Number(product.default_cost || 0),
+            Number(product.default_cost || 0) * Math.abs(balanceDiff),
+            "Ajuste automatico para alinhar o Kardex de combustivel ao saldo do tanque.",
+            storage.id,
+            timestamp,
+            createdBy,
+            timestamp,
+          ]
+        );
+      }
+
+      write(
+        `
+          UPDATE inventory_products
+          SET stock_type = 'FUEL',
+              unit = CASE WHEN trim(COALESCE(unit, '')) = '' THEN 'L' ELSE unit END,
+              min_stock = ?,
+              current_stock = ?,
+              updated_at = ?
+          WHERE id = ?
+        `,
+        [
+          Number(product.min_stock || 0) > 0 ? Number(product.min_stock || 0) : Number(storage.min_balance || 0),
+          targetBalance,
+          timestamp,
+          product.id,
+        ]
+      );
     }
   });
 }
@@ -1059,6 +1400,7 @@ async function initDatabase() {
   ensureDefaultFuelStorages();
   migrateLegacyFuelRecords();
   consolidateFuelStorages();
+  ensureFuelProductsLinkedToStorages();
   migrateLegacySpreadsheetIssueDates();
   persistDatabase();
 

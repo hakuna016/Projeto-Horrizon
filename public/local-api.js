@@ -73,6 +73,16 @@
     diesel_s_10: "S10",
   };
 
+  const STOCK_TYPE_ALIASES = {
+    common: "COMMON",
+    comum: "COMMON",
+    estoque_comum: "COMMON",
+    almoxarifado: "COMMON",
+    fuel: "FUEL",
+    combustivel: "FUEL",
+    combustiveis: "FUEL",
+  };
+
   const VEHICLE_FUEL_PROFILE_ALIASES = {
     s500: "S500",
     s_500: "S500",
@@ -339,6 +349,10 @@
     return normalizeEnum(value, FUEL_KIND_ALIASES, fallback);
   }
 
+  function normalizeStockType(value, fallback = "COMMON") {
+    return normalizeEnum(value, STOCK_TYPE_ALIASES, fallback);
+  }
+
   function normalizeVehicleFuelProfile(value, fallback = "S500") {
     return normalizeEnum(value, VEHICLE_FUEL_PROFILE_ALIASES, fallback);
   }
@@ -351,6 +365,37 @@
     const normalizedProfile = normalizeVehicleFuelProfile(profile, "S500");
     const normalizedFuelKind = normalizeFuelKind(fuelKind, "");
     return !normalizedFuelKind || normalizedProfile === "BOTH" || normalizedProfile === normalizedFuelKind;
+  }
+
+  function fuelProductNameForKind(fuelKind) {
+    const normalizedKind = normalizeText(fuelKind).toUpperCase();
+    if (normalizedKind === "S10") {
+      return "Diesel S-10";
+    }
+    if (normalizedKind === "S500") {
+      return "Diesel S-500";
+    }
+    return normalizedKind ? `Combustivel ${normalizedKind}` : "Combustivel";
+  }
+
+  function inferStockTypeFromLegacyProduct({ name = "", unit = "", fuelKind = "" }) {
+    if (normalizeFuelKind(fuelKind, "")) {
+      return "FUEL";
+    }
+
+    const normalizedName = normalizeKey(name);
+    const normalizedUnit = normalizeKey(unit);
+    const fuelHints = ["diesel", "gasolina", "etanol", "combustivel", "oleo", "arla", "s_10", "s_500"];
+
+    if (fuelHints.some((hint) => normalizedName.includes(hint))) {
+      return "FUEL";
+    }
+
+    if (["l", "lt", "lts", "litro", "litros"].includes(normalizedUnit) && /(s[_ ]?10|s[_ ]?500)/i.test(String(name))) {
+      return "FUEL";
+    }
+
+    return "COMMON";
   }
 
   function normalizeFineStatus(value, fallback = "OPEN") {
@@ -780,6 +825,10 @@
     let changed = false;
 
     for (const product of db.products) {
+      if (product.stockType === undefined) {
+        product.stockType = inferStockTypeFromLegacyProduct(product);
+        changed = true;
+      }
       if (product.defaultCost === undefined) {
         product.defaultCost = 0;
         changed = true;
@@ -835,6 +884,21 @@
         movement.totalCost = Number(movement.unitCost || 0) * Number(movement.quantity || 0);
         changed = true;
       }
+      if (movement.sourceType === undefined) {
+        movement.sourceType = "";
+        changed = true;
+      }
+      if (movement.sourceId === undefined) {
+        movement.sourceId = null;
+        changed = true;
+      }
+    }
+
+    for (const storage of db.fuelStorages) {
+      if (storage.productId === undefined) {
+        storage.productId = null;
+        changed = true;
+      }
     }
 
     for (const record of db.fuelRecords) {
@@ -847,6 +911,229 @@
         record.plate = "";
         changed = true;
       }
+    }
+
+    return changed;
+  }
+
+  function matchFuelProductToStorage(product, storage) {
+    if (!product || normalizeStockType(product.stockType, "COMMON") !== "FUEL") {
+      return false;
+    }
+
+    const normalizedName = normalizeKey(product.name);
+    if (!normalizedName) {
+      return false;
+    }
+
+    const defaultName = normalizeKey(fuelProductNameForKind(storage.fuelKind));
+    if (normalizedName === defaultName) {
+      return true;
+    }
+
+    if (storage.fuelKind === "S10") {
+      return normalizedName.includes("s10") || normalizedName.includes("s_10");
+    }
+
+    if (storage.fuelKind === "S500") {
+      return normalizedName.includes("s500") || normalizedName.includes("s_500");
+    }
+
+    return normalizedName.includes(normalizeKey(storage.fuelKind));
+  }
+
+  function createInventoryMovementRecord(db, payload = {}) {
+    const movement = {
+      id: nextId(db, "inventoryMovements"),
+      productId: Number(payload.productId),
+      type: normalizeInventoryMovement(payload.type, "IN"),
+      quantity: Number(payload.quantity || 0),
+      balanceAfter: Number(payload.balanceAfter || 0),
+      document: normalizeText(payload.document),
+      branchName: normalizeText(payload.branchName),
+      supplierName: normalizeText(payload.supplierName),
+      fuelKind: normalizeFuelKind(payload.fuelKind, ""),
+      unitCost: Number(payload.unitCost || 0),
+      totalCost: Number(payload.totalCost || 0),
+      notes: normalizeText(payload.notes),
+      sourceType: normalizeText(payload.sourceType),
+      sourceId:
+        payload.sourceId === null || payload.sourceId === undefined || payload.sourceId === ""
+          ? null
+          : Number(payload.sourceId),
+      occurredAt: normalizeText(payload.occurredAt) || nowIso(),
+      createdBy:
+        payload.createdBy === null || payload.createdBy === undefined || payload.createdBy === ""
+          ? null
+          : Number(payload.createdBy),
+      createdAt: normalizeText(payload.createdAt) || nowIso(),
+    };
+
+    db.inventoryMovements.push(movement);
+    return movement;
+  }
+
+  function getFuelStorageByProductId(db, productId) {
+    if (!productId) {
+      return null;
+    }
+
+    return (
+      db.fuelStorages.find(
+        (storage) => Number(storage.productId) === Number(productId) && storage.active !== false
+      ) || null
+    );
+  }
+
+  function ensureFuelProductsLinkedToStorages(db) {
+    let changed = false;
+    const timestamp = nowIso();
+    const adminUser = db.users.find((user) => user.role === "ADMIN") || null;
+    const createdBy = adminUser ? Number(adminUser.id) : null;
+
+    for (const storage of db.fuelStorages.filter((item) => item.active !== false)) {
+      let product =
+        (storage.productId && db.products.find((item) => Number(item.id) === Number(storage.productId))) || null;
+
+      if (!matchFuelProductToStorage(product, storage)) {
+        product = db.products.find((item) => matchFuelProductToStorage(item, storage)) || null;
+      }
+
+      if (!product) {
+        product = {
+          id: nextId(db, "products"),
+          name: fuelProductNameForKind(storage.fuelKind),
+          unit: "L",
+          barcode: "",
+          stockType: "FUEL",
+          minStock: Number(storage.minBalance || 0),
+          currentStock: 0,
+          defaultCost: 0,
+          active: true,
+          createdBy,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        db.products.push(product);
+        changed = true;
+      } else {
+        const nextMinStock =
+          Number(product.minStock || 0) > 0 ? Number(product.minStock || 0) : Number(storage.minBalance || 0);
+
+        if (product.stockType !== "FUEL") {
+          product.stockType = "FUEL";
+          changed = true;
+        }
+        if (!normalizeText(product.unit)) {
+          product.unit = "L";
+          changed = true;
+        }
+        if (Number(product.minStock || 0) !== nextMinStock) {
+          product.minStock = nextMinStock;
+          changed = true;
+        }
+        product.updatedAt = timestamp;
+      }
+
+      if (Number(storage.productId || 0) !== Number(product.id)) {
+        storage.productId = Number(product.id);
+        storage.updatedAt = timestamp;
+        changed = true;
+      }
+
+      for (const record of db.fuelRecords
+        .filter((item) => Number(item.storageId) === Number(storage.id))
+        .sort((left, right) => String(left.occurredAt || "").localeCompare(String(right.occurredAt || "")) || Number(left.id) - Number(right.id))) {
+        const existingMirror = db.inventoryMovements.find(
+          (movement) => movement.sourceType === "FUEL_RECORD" && Number(movement.sourceId) === Number(record.id)
+        );
+
+        if (existingMirror) {
+          continue;
+        }
+
+        const noteParts = [];
+        if (normalizeText(record.notes)) {
+          noteParts.push(normalizeText(record.notes));
+        }
+        if (normalizeText(record.plate)) {
+          noteParts.push(`Movimento operacional vinculado a ${normalizeText(record.plate)}`);
+        }
+
+        createInventoryMovementRecord(db, {
+          productId: product.id,
+          type: record.type === "ENTRY" ? "IN" : "OUT",
+          quantity: Number(record.quantity || 0),
+          balanceAfter: Number(record.balanceAfter || 0),
+          document:
+            record.type === "ENTRY"
+              ? "ENTRADA-OPERACIONAL-COMBUSTIVEL"
+              : "ABASTECIMENTO-OPERACIONAL",
+          fuelKind: storage.fuelKind,
+          unitCost: Number(product.defaultCost || 0),
+          totalCost: Number(product.defaultCost || 0) * Number(record.quantity || 0),
+          notes: noteParts.join(" | "),
+          sourceType: "FUEL_RECORD",
+          sourceId: record.id,
+          occurredAt: record.occurredAt,
+          createdBy: record.createdBy,
+          createdAt: record.createdAt || record.occurredAt || timestamp,
+        });
+        changed = true;
+      }
+
+      const productMovements = db.inventoryMovements
+        .filter((movement) => Number(movement.productId) === Number(product.id))
+        .sort((left, right) => String(left.occurredAt || "").localeCompare(String(right.occurredAt || "")) || Number(left.id) - Number(right.id));
+      const latestMovement = productMovements[productMovements.length - 1] || null;
+      const latestBalance = latestMovement ? Number(latestMovement.balanceAfter || 0) : 0;
+      const targetBalance = Number(storage.currentBalance || 0);
+      const balanceDiff = Number((targetBalance - latestBalance).toFixed(6));
+
+      if (!latestMovement && targetBalance > 0) {
+        createInventoryMovementRecord(db, {
+          productId: product.id,
+          type: "IN",
+          quantity: targetBalance,
+          balanceAfter: targetBalance,
+          document: "SALDO-INICIAL-COMBUSTIVEL",
+          fuelKind: storage.fuelKind,
+          unitCost: Number(product.defaultCost || 0),
+          totalCost: Number(product.defaultCost || 0) * targetBalance,
+          notes: "Saldo inicial sincronizado a partir do tanque de combustivel.",
+          sourceType: "FUEL_STORAGE_SYNC",
+          sourceId: storage.id,
+          occurredAt: timestamp,
+          createdBy,
+          createdAt: timestamp,
+        });
+        changed = true;
+      } else if (latestMovement && Math.abs(balanceDiff) > 0.000001) {
+        createInventoryMovementRecord(db, {
+          productId: product.id,
+          type: balanceDiff > 0 ? "IN" : "OUT",
+          quantity: Math.abs(balanceDiff),
+          balanceAfter: targetBalance,
+          document: "AJUSTE-SALDO-COMBUSTIVEL",
+          fuelKind: storage.fuelKind,
+          unitCost: Number(product.defaultCost || 0),
+          totalCost: Number(product.defaultCost || 0) * Math.abs(balanceDiff),
+          notes: "Ajuste automatico para alinhar o Kardex de combustivel ao saldo do tanque.",
+          sourceType: "FUEL_STORAGE_SYNC",
+          sourceId: storage.id,
+          occurredAt: timestamp,
+          createdBy,
+          createdAt: timestamp,
+        });
+        changed = true;
+      }
+
+      if (Number(product.currentStock || 0) !== targetBalance) {
+        product.currentStock = targetBalance;
+        changed = true;
+      }
+      product.stockType = "FUEL";
+      product.updatedAt = timestamp;
     }
 
     return changed;
@@ -983,9 +1270,15 @@
       .map((note) => mapNoteRow(db, note));
   }
 
-  function queryProducts(db, search = "") {
+  function queryProducts(db, search = "", filters = {}) {
     return db.products
       .filter((product) => product.active !== false)
+      .filter((product) => {
+        if (!filters.stockType) {
+          return true;
+        }
+        return normalizeStockType(product.stockType, "COMMON") === normalizeStockType(filters.stockType, "COMMON");
+      })
       .filter((product) => {
         if (!search) {
           return true;
@@ -998,6 +1291,7 @@
         name: product.name,
         unit: product.unit,
         barcode: product.barcode || "",
+        stockType: normalizeStockType(product.stockType, "COMMON"),
         minStock: Number(product.minStock || 0),
         currentStock: Number(product.currentStock || 0),
         defaultCost: Number(product.defaultCost || 0),
@@ -1052,7 +1346,14 @@
   function queryInventoryMovements(db, filters = {}) {
     return db.inventoryMovements
       .filter((movement) => {
+        const product = db.products.find((item) => Number(item.id) === Number(movement.productId));
         if (filters.productId && Number(movement.productId) !== Number(filters.productId)) {
+          return false;
+        }
+        if (
+          filters.stockType &&
+          normalizeStockType(product?.stockType, "COMMON") !== normalizeStockType(filters.stockType, "COMMON")
+        ) {
           return false;
         }
         if (filters.from && String(movement.occurredAt || "") < String(filters.from)) {
@@ -1084,6 +1385,7 @@
           productId: Number(movement.productId),
           productName: product?.name || "Produto removido",
           productUnit: product?.unit || "UN",
+          productStockType: normalizeStockType(product?.stockType, "COMMON"),
           type: movement.type,
           quantity: Number(movement.quantity || 0),
           balanceAfter: Number(movement.balanceAfter || 0),
@@ -1093,6 +1395,9 @@
           fuelKind: movement.fuelKind || "",
           unitCost: Number(movement.unitCost || 0),
           totalCost: Number(movement.totalCost || 0),
+          sourceType: movement.sourceType || "",
+          sourceId:
+            movement.sourceId === null || movement.sourceId === undefined ? null : Number(movement.sourceId),
           notes: movement.notes || "",
           occurredAt: movement.occurredAt,
           createdAt: movement.createdAt,
@@ -1153,6 +1458,9 @@
         id: Number(storage.id),
         name: storage.name,
         fuelKind: storage.fuelKind,
+        productId: storage.productId ? Number(storage.productId) : null,
+        productName:
+          db.products.find((item) => Number(item.id) === Number(storage.productId))?.name || "",
         currentBalance: Number(storage.currentBalance || 0),
         minBalance: Number(storage.minBalance || 0),
         active: storage.active !== false,
@@ -1566,11 +1874,21 @@
 
     const filterSet = {
       productId,
+      stockType: normalizeStockType(filters.stockType || filters.reportType || filters.category, "COMMON"),
       branchName: normalizeText(filters.branchName || filters.branch || filters.unitName),
       fuelKind: normalizeFuelKind(filters.fuelKind, ""),
       document: normalizeText(filters.document),
       supplierName: normalizeText(filters.supplierName || filters.supplier),
     };
+
+    const productStockType = normalizeStockType(product.stockType, "COMMON");
+    if (productStockType !== filterSet.stockType) {
+      throw new ApiError(400, "O produto selecionado nao pertence ao tipo de Kardex informado.");
+    }
+
+    if (filterSet.stockType !== "FUEL") {
+      filterSet.fuelKind = "";
+    }
 
     const matchesFilters = (movement) => {
       if (Number(movement.productId) !== productId) {
@@ -1654,16 +1972,21 @@
 
     return {
       companyName: "HORIZON",
-      reportName: "Ficha Kardex - Movimento do Estoque",
+      reportName:
+        filterSet.stockType === "FUEL"
+          ? "Ficha Kardex - Combustivel"
+          : "Ficha Kardex - Almoxarifado",
       issuedAt: nowIso(),
       period: { from, to },
       product: {
         id: Number(product.id),
         name: product.name,
         unit: product.unit,
+        stockType: productStockType,
         defaultCost: Number(product.defaultCost || 0),
       },
       filters: {
+        stockType: filterSet.stockType,
         branchName: filterSet.branchName || "",
         fuelKind: filterSet.fuelKind || "",
         document: filterSet.document || "",
@@ -2048,6 +2371,10 @@
         shouldPersist = true;
       }
 
+      if (ensureFuelProductsLinkedToStorages(db)) {
+        shouldPersist = true;
+      }
+
       if (shouldPersist) {
         saveDb(db);
       }
@@ -2206,7 +2533,7 @@
         const sentFinanceNotes = db.notes.filter((item) => item.status === "SENT_FINANCE").length;
         const fuelOverview = queryFuelOverview(db);
         const fuelAnalytics = queryFuelAnalytics(db, { days: periodDays, plate: selectedPlate }, fuelOverview);
-        const lowStock = queryProducts(db).filter((item) => item.lowStock);
+        const lowStock = queryProducts(db, "", { stockType: "COMMON" }).filter((item) => item.lowStock);
         const todaySchedules = querySchedules(db, todayDate());
         const agingNotes = db.notes
           .filter((item) => item.status === "NEW" || item.status === "PENDING_ACK")
@@ -2483,14 +2810,22 @@
 
       if (path === "/api/products" && method === "GET") {
         requireAuth(user);
-        return { items: queryProducts(db, query.search || "") };
+        return {
+          items: queryProducts(db, query.search || "", {
+            stockType: query.stockType,
+          }),
+        };
       }
 
       if (path.startsWith("/api/products/barcode/") && method === "GET") {
         requireAuth(user);
         const barcode = decodeURIComponent(path.slice("/api/products/barcode/".length));
         const product = db.products.find(
-          (item) => item.active !== false && normalizeText(item.barcode) === normalizeText(barcode)
+          (item) =>
+            item.active !== false &&
+            normalizeText(item.barcode) === normalizeText(barcode) &&
+            (!query.stockType ||
+              normalizeStockType(item.stockType, "COMMON") === normalizeStockType(query.stockType, "COMMON"))
         );
         if (!product) {
           throw new ApiError(404, "Produto nao encontrado para este codigo de barras.");
@@ -2501,6 +2836,7 @@
             name: product.name,
             unit: product.unit,
             barcode: product.barcode || "",
+            stockType: normalizeStockType(product.stockType, "COMMON"),
             minStock: Number(product.minStock || 0),
             currentStock: Number(product.currentStock || 0),
           },
@@ -2512,12 +2848,17 @@
         const name = normalizeText(body.name);
         const unit = normalizeText(body.unit || "UN").toUpperCase();
         const barcode = normalizeText(body.barcode);
+        const stockType = normalizeStockType(body.stockType || body.category || body.inventoryType, "");
         const minStock = toNumber(body.minStock);
         const initialStock = toNumber(body.initialStock);
         const defaultCost = toNumber(body.defaultCost);
 
         if (!name) {
           throw new ApiError(400, "Nome do produto e obrigatorio.");
+        }
+
+        if (!stockType) {
+          throw new ApiError(400, "Informe a classificacao do item: comum ou combustivel.");
         }
 
         const barcodeInUse = barcode
@@ -2534,6 +2875,7 @@
           name,
           unit,
           barcode: barcode || "",
+          stockType,
           minStock,
           currentStock: initialStock,
           defaultCost,
@@ -2544,33 +2886,37 @@
         });
 
         if (initialStock > 0) {
-          db.inventoryMovements.push({
-            id: nextId(db, "inventoryMovements"),
+          const linkedStorage = stockType === "FUEL" ? getFuelStorageByProductId(db, productId) : null;
+          createInventoryMovementRecord(db, {
             productId,
             type: "IN",
             quantity: initialStock,
             balanceAfter: initialStock,
-            document: "SALDO-INICIAL",
-            branchName: "",
-            supplierName: "",
-            fuelKind: "",
+            document: stockType === "FUEL" ? "SALDO-INICIAL-COMBUSTIVEL" : "SALDO-INICIAL",
+            fuelKind: linkedStorage?.fuelKind || "",
             unitCost: defaultCost,
             totalCost: defaultCost * initialStock,
-            notes: "Saldo inicial do produto",
+            notes: stockType === "FUEL" ? "Saldo inicial do combustivel" : "Saldo inicial do produto",
             occurredAt: timestamp,
             createdBy: currentUser.id,
             createdAt: timestamp,
           });
+
+          if (linkedStorage) {
+            linkedStorage.currentBalance = initialStock;
+            linkedStorage.updatedAt = timestamp;
+          }
         }
 
         logAction(db, currentUser, "CREATE_PRODUCT", "PRODUCT", productId, {
           name,
           barcode,
+          stockType,
           initialStock,
           defaultCost,
         });
         maybePersist(db);
-        return { item: queryProducts(db).find((item) => item.id === productId) || null };
+        return { item: queryProducts(db, "", { stockType }).find((item) => item.id === productId) || null };
       }
 
       const productId = getPathId(path, "/api/products");
@@ -2584,6 +2930,10 @@
         const name = normalizeText(body.name || existing.name);
         const unit = normalizeText(body.unit || existing.unit).toUpperCase();
         const barcode = normalizeText(body.barcode || existing.barcode);
+        const stockType = normalizeStockType(
+          body.stockType || body.category || body.inventoryType || existing.stockType,
+          "COMMON"
+        );
         const minStock = toNumber(body.minStock ?? existing.minStock);
         const defaultCost = toNumber(body.defaultCost ?? existing.defaultCost);
 
@@ -2602,6 +2952,7 @@
         existing.name = name;
         existing.unit = unit;
         existing.barcode = barcode || "";
+        existing.stockType = stockType;
         existing.minStock = minStock;
         existing.defaultCost = defaultCost;
         existing.updatedAt = nowIso();
@@ -2609,11 +2960,12 @@
         logAction(db, currentUser, "UPDATE_PRODUCT", "PRODUCT", productId, {
           name,
           barcode,
+          stockType,
           minStock,
           defaultCost,
         });
         maybePersist(db);
-        return { item: queryProducts(db).find((item) => item.id === productId) || null };
+        return { item: queryProducts(db, "", { stockType }).find((item) => item.id === productId) || null };
       }
 
       if (path === "/api/inventory/movements" && method === "GET") {
@@ -2630,11 +2982,11 @@
         const currentUser = requireAuth(user);
         const movementProductId = Number(body.productId);
         const type = normalizeInventoryMovement(body.type, "IN");
+        const requestedStockType = normalizeStockType(body.stockType || body.category || body.inventoryType, "");
         const quantity = toNumber(body.quantity);
         const document = normalizeText(body.document);
         const branchName = normalizeText(body.branchName || body.branch || body.unitName);
         const supplierName = normalizeText(body.supplierName || body.supplier);
-        const fuelKind = normalizeFuelKind(body.fuelKind, "");
         const rawUnitCost = normalizeText(body.unitCost);
         const unitCost = rawUnitCost ? toNumber(rawUnitCost) : null;
         const notes = normalizeText(body.notes);
@@ -2651,6 +3003,18 @@
           throw new ApiError(404, "Produto nao encontrado.");
         }
 
+        const productStockType = normalizeStockType(product.stockType, "COMMON");
+        if (requestedStockType && requestedStockType !== productStockType) {
+          throw new ApiError(400, "O produto selecionado nao pertence a este tipo de estoque.");
+        }
+
+        const linkedFuelStorage =
+          productStockType === "FUEL" ? getFuelStorageByProductId(db, movementProductId) : null;
+        const fuelKind =
+          productStockType === "FUEL"
+            ? normalizeFuelKind(body.fuelKind || linkedFuelStorage?.fuelKind, "")
+            : "";
+
         const currentStock = Number(product.currentStock || 0);
         const nextStock = type === "IN" ? currentStock + quantity : currentStock - quantity;
         const effectiveUnitCost = unitCost === null ? Number(product.defaultCost || 0) : unitCost;
@@ -2662,9 +3026,7 @@
           throw new ApiError(400, "Informe um valor unitario valido.");
         }
 
-        const movementId = nextId(db, "inventoryMovements");
-        db.inventoryMovements.push({
-          id: movementId,
+        const movement = createInventoryMovementRecord(db, {
           productId: movementProductId,
           type,
           quantity,
@@ -2687,8 +3049,14 @@
         }
         product.updatedAt = nowIso();
 
-        logAction(db, currentUser, "CREATE_INVENTORY_MOVEMENT", "INVENTORY", movementId, {
+        if (linkedFuelStorage) {
+          linkedFuelStorage.currentBalance = nextStock;
+          linkedFuelStorage.updatedAt = nowIso();
+        }
+
+        logAction(db, currentUser, "CREATE_INVENTORY_MOVEMENT", "INVENTORY", movement.id, {
           productId: movementProductId,
+          stockType: productStockType,
           type,
           quantity,
           document,
@@ -2702,7 +3070,10 @@
         maybePersist(db);
         return {
           item:
-            queryInventoryMovements(db, { productId: movementProductId }).find((item) => item.id === movementId) ||
+            queryInventoryMovements(db, {
+              productId: movementProductId,
+              stockType: productStockType,
+            }).find((item) => item.id === movement.id) ||
             null,
         };
       }
@@ -2763,6 +3134,13 @@
         const nextBalance = type === "ENTRY" ? currentBalance + quantity : currentBalance - quantity;
         const plate = type === "EXIT" ? normalizePlate(vehicle?.plate) : "";
         const vehicleId = type === "EXIT" ? Number(vehicle?.id || 0) : null;
+        const linkedFuelProduct =
+          storage.productId
+            ? db.products.find((item) => Number(item.id) === Number(storage.productId) && item.active !== false) ||
+              null
+            : null;
+        const mirroredUnitCost = Number(linkedFuelProduct?.defaultCost || 0);
+        const mirroredTotalCost = mirroredUnitCost * quantity;
         if (nextBalance < 0) {
           throw new ApiError(400, `A saida nao pode deixar o estoque ${storage.name} negativo.`);
         }
@@ -2790,9 +3168,38 @@
         storage.currentBalance = nextBalance;
         storage.updatedAt = timestamp;
 
+        if (linkedFuelProduct) {
+          createInventoryMovementRecord(db, {
+            productId: linkedFuelProduct.id,
+            type: type === "ENTRY" ? "IN" : "OUT",
+            quantity,
+            balanceAfter: nextBalance,
+            document:
+              type === "ENTRY"
+                ? "ENTRADA-OPERACIONAL-COMBUSTIVEL"
+                : "ABASTECIMENTO-OPERACIONAL",
+            fuelKind: storage.fuelKind,
+            unitCost: mirroredUnitCost,
+            totalCost: mirroredTotalCost,
+            notes:
+              type === "EXIT"
+                ? [notes, plate ? `Abastecimento operacional da placa ${plate}` : ""].filter(Boolean).join(" | ")
+                : [notes, "Entrada registrada no modulo operacional de combustivel."].filter(Boolean).join(" | "),
+            sourceType: "FUEL_RECORD",
+            sourceId: recordId,
+            occurredAt,
+            createdBy: currentUser.id,
+            createdAt: timestamp,
+          });
+
+          linkedFuelProduct.currentStock = nextBalance;
+          linkedFuelProduct.updatedAt = timestamp;
+        }
+
         logAction(db, currentUser, "CREATE_FUEL_RECORD", "FUEL", recordId, {
           storageId,
           storageName: storage.name,
+          productId: linkedFuelProduct ? Number(linkedFuelProduct.id) : null,
           fuelKind: storage.fuelKind,
           vehicleId,
           type,
