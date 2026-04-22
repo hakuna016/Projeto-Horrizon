@@ -224,8 +224,10 @@ const refs = {
   showLoginButton: $("show-login-button"),
   logoutButton: $("logout-button"),
   refreshAllButton: $("refresh-all-button"),
+  appTopbar: $("app-topbar"),
   topbarUserName: $("topbar-user-name"),
   topbarUserRole: $("topbar-user-role"),
+  topbarThemeSlot: $("topbar-theme-slot"),
   adminNavButton: $("admin-nav-button"),
   dashboardSummary: $("dashboard-summary"),
   dashboardMetrics: $("dashboard-metrics"),
@@ -307,6 +309,7 @@ const refs = {
   scannerVideo: $("scanner-video"),
   scannerStatus: $("scanner-status"),
   scannerCloseButton: $("scanner-close-button"),
+  themeSwitcher: document.querySelector(".theme-switcher"),
   themeLightButton: $("theme-light-button"),
   themeDarkButton: $("theme-dark-button"),
   siteFavicon: $("site-favicon"),
@@ -318,10 +321,12 @@ document.addEventListener("DOMContentLoaded", initialize);
 
 async function initialize() {
   applyTheme(resolveInitialTheme());
+  syncThemeSwitcherPlacement();
   decorateStaticInterface();
   bindEvents();
   switchAuthMode("login");
   applyDefaultFormValues();
+  syncTopbarScrollState();
   await maybeShowBrowserModeNotice();
 
   try {
@@ -451,6 +456,8 @@ function bindEvents() {
   refs.scannerCloseButton.addEventListener("click", closeScanner);
   refs.themeLightButton.addEventListener("click", () => applyTheme("light"));
   refs.themeDarkButton.addEventListener("click", () => applyTheme("dark"));
+  window.addEventListener("scroll", syncTopbarScrollState, { passive: true });
+  window.addEventListener("resize", syncTopbarScrollState);
 
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => setSection(button.dataset.section));
@@ -498,6 +505,30 @@ function applyTheme(theme) {
   if (refs.siteFavicon) {
     refs.siteFavicon.setAttribute("href", nextLogo);
   }
+}
+
+function syncThemeSwitcherPlacement() {
+  if (!refs.themeSwitcher) {
+    return;
+  }
+
+  if (state.user && refs.topbarThemeSlot) {
+    if (refs.themeSwitcher.parentElement !== refs.topbarThemeSlot) {
+      refs.topbarThemeSlot.appendChild(refs.themeSwitcher);
+    }
+    refs.themeSwitcher.dataset.context = "topbar";
+    return;
+  }
+
+  if (refs.authScreen && refs.themeSwitcher.parentElement !== document.body) {
+    document.body.insertBefore(refs.themeSwitcher, refs.authScreen);
+  }
+  refs.themeSwitcher.dataset.context = "floating";
+}
+
+function syncTopbarScrollState() {
+  const shouldCompact = Boolean(state.user) && window.scrollY > 36;
+  document.body.classList.toggle("has-compact-topbar", shouldCompact);
 }
 
 async function api(url, options = {}) {
@@ -1094,6 +1125,8 @@ function setUser(user) {
   refs.authScreen.classList.toggle("hidden", Boolean(user));
   refs.appShell.classList.toggle("hidden", !user);
   refs.adminNavButton.classList.toggle("hidden", !canAccessAdmin);
+  syncThemeSwitcherPlacement();
+  syncTopbarScrollState();
 
   if (!canAccessAdmin) {
     state.adminUsers = [];
@@ -2924,6 +2957,346 @@ async function handleKardexView(event) {
   }
 }
 
+function isBarcodeNotFoundError(error) {
+  return /produto nao encontrado|codigo de barras/i.test(String(error?.message || ""));
+}
+
+function describeScannerError(error) {
+  const code = String(error?.name || error?.code || "").toLowerCase();
+  if (code.includes("notallowed") || code.includes("permission") || code.includes("security")) {
+    return "A camera foi bloqueada. Libere a permissao no navegador e tente novamente.";
+  }
+  if (code.includes("notfound") || code.includes("devicesnotfound")) {
+    return "Nenhuma camera compativel foi encontrada neste dispositivo.";
+  }
+  if (code.includes("notreadable") || code.includes("trackstart")) {
+    return "A camera esta ocupada por outro aplicativo. Feche o outro app e tente novamente.";
+  }
+  if (code.includes("overconstrained")) {
+    return "Nao foi possivel usar a camera traseira. Tente novamente ou use a digitacao manual.";
+  }
+  return error?.message || "Nao foi possivel iniciar a leitura por camera.";
+}
+
+function getScannerFallbackReader() {
+  return window.ZXingBrowser?.BrowserMultiFormatReader || null;
+}
+
+async function waitForScannerVideoReady() {
+  if (!refs.scannerVideo) {
+    return;
+  }
+
+  if (refs.scannerVideo.readyState >= 2) {
+    return;
+  }
+
+  await new Promise((resolve) => {
+    const handleReady = () => {
+      refs.scannerVideo.removeEventListener("loadedmetadata", handleReady);
+      refs.scannerVideo.removeEventListener("canplay", handleReady);
+      resolve();
+    };
+
+    refs.scannerVideo.addEventListener("loadedmetadata", handleReady, { once: true });
+    refs.scannerVideo.addEventListener("canplay", handleReady, { once: true });
+  });
+}
+
+async function lookupProductByBarcodeValue(barcode, options = {}) {
+  const trimmedBarcode = String(barcode || "").trim();
+  const stockType = options.stockType || "COMMON";
+
+  if (!trimmedBarcode) {
+    throw new Error("Informe um codigo de barras.");
+  }
+
+  const response = await api(
+    `/api/products/barcode/${encodeURIComponent(trimmedBarcode)}?${new URLSearchParams({ stockType }).toString()}`
+  );
+
+  if (stockType === "COMMON" && refs.movementProductSelect) {
+    refs.movementBarcodeInput.value = trimmedBarcode;
+    refs.movementProductSelect.value = String(response.item.id);
+  }
+
+  return response.item;
+}
+
+async function prepareNewProductFromBarcode(barcode) {
+  setSection("inventory");
+  resetProductForm();
+  refs.productForm.elements.stockType.value = "COMMON";
+  refs.productForm.elements.barcode.value = barcode;
+  refs.productForm.elements.name.focus();
+  showToast("Codigo lido. Produto nao encontrado; preencha o cadastro para criar um novo item.", "error");
+}
+
+async function handleBarcodeForProductRegistration(barcode) {
+  try {
+    const item = await lookupProductByBarcodeValue(barcode, { stockType: "COMMON" });
+    if (!state.products.some((product) => Number(product.id) === Number(item.id))) {
+      await refreshProducts();
+    }
+    editProduct(item.id);
+    refs.productForm.elements.barcode.value = barcode;
+    refs.productForm.elements.name.focus();
+    showToast(`Produto encontrado: ${item.name}`);
+  } catch (error) {
+    if (isBarcodeNotFoundError(error)) {
+      await prepareNewProductFromBarcode(barcode);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function handleScannerBarcodeDetected(barcode, sessionId) {
+  const normalizedBarcode = String(barcode || "").trim();
+  if (!normalizedBarcode || state.scanner.sessionId !== sessionId) {
+    return;
+  }
+
+  const lastValue = String(state.scanner.lastValue || "");
+  const lastDetectedAt = Number(state.scanner.lastDetectedAt || 0);
+  if (lastValue === normalizedBarcode && Date.now() - lastDetectedAt < 1200) {
+    return;
+  }
+
+  state.scanner.lastValue = normalizedBarcode;
+  state.scanner.lastDetectedAt = Date.now();
+
+  const targetId = state.scanner.targetId;
+  const input = $(targetId);
+  if (input) {
+    input.value = normalizedBarcode;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  closeScanner();
+
+  try {
+    if (targetId === "movement-barcode-input") {
+      const item = await lookupProductByBarcodeValue(normalizedBarcode, { stockType: "COMMON" });
+      showToast(`Produto encontrado: ${item.name}`);
+      return;
+    }
+
+    if (targetId === "product-barcode-input") {
+      await handleBarcodeForProductRegistration(normalizedBarcode);
+      return;
+    }
+
+    showToast(`Codigo lido: ${normalizedBarcode}`);
+  } catch (error) {
+    if (targetId === "movement-barcode-input" && isBarcodeNotFoundError(error)) {
+      await prepareNewProductFromBarcode(normalizedBarcode);
+      return;
+    }
+    showToast(error.message, "error");
+  }
+}
+
+async function startNativeBarcodeScanner(targetId) {
+  refs.scannerStatus.textContent = "Inicializando camera traseira...";
+  state.scanner.engine = "native";
+  state.scanner.targetId = targetId;
+  state.scanner.detector = new window.BarcodeDetector({
+    formats: ["code_128", "ean_13", "ean_8", "upc_a", "upc_e"],
+  });
+  state.scanner.stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    },
+    audio: false,
+  });
+  refs.scannerVideo.srcObject = state.scanner.stream;
+  await refs.scannerVideo.play().catch(() => {});
+  await waitForScannerVideoReady();
+  refs.scannerStatus.textContent = "Aponte a camera para o codigo de barras.";
+  scanLoop();
+}
+
+async function startFallbackBarcodeScanner(targetId) {
+  const ReaderClass = getScannerFallbackReader();
+  if (!ReaderClass) {
+    throw new Error("Leitura por camera indisponivel neste navegador. Use a digitacao manual.");
+  }
+
+  refs.scannerStatus.textContent = "Inicializando leitor alternativo...";
+  state.scanner.engine = "zxing";
+  state.scanner.targetId = targetId;
+  state.scanner.codeReader = new ReaderClass();
+  const sessionId = state.scanner.sessionId;
+  state.scanner.controls = await state.scanner.codeReader.decodeFromConstraints(
+    {
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+      audio: false,
+    },
+    refs.scannerVideo,
+    async (result, error) => {
+      if (state.scanner.sessionId !== sessionId || state.scanner.isClosing) {
+        return;
+      }
+
+      if (result) {
+        refs.scannerStatus.textContent = "Codigo detectado. Validando item...";
+        await handleScannerBarcodeDetected(result.getText?.() || result.text || "", sessionId);
+        return;
+      }
+
+      if (error?.name && !/notfound/i.test(error.name)) {
+        refs.scannerStatus.textContent = "Camera ativa. Ajuste o foco ou aproxime o codigo.";
+      }
+    }
+  );
+  refs.scannerStatus.textContent = "Aponte a camera para o codigo de barras.";
+}
+
+async function openScanner(targetId) {
+  if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) {
+    showToast("Seu navegador nao permite acesso a camera. Use a digitacao manual.", "error");
+    return;
+  }
+
+  try {
+    closeScanner();
+    refs.scannerModal.classList.remove("hidden");
+    refs.scannerStatus.textContent = "Preparando leitura por camera...";
+    state.scanner = {
+      ...state.scanner,
+      targetId,
+      engine: "",
+      controls: null,
+      codeReader: null,
+      sessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      isClosing: false,
+      lastValue: "",
+      lastDetectedAt: 0,
+    };
+
+    if ("BarcodeDetector" in window) {
+      try {
+        await startNativeBarcodeScanner(targetId);
+        return;
+      } catch (nativeError) {
+        if (getScannerFallbackReader()) {
+          refs.scannerStatus.textContent = "Leitor nativo indisponivel. Ativando modo alternativo...";
+          closeScanner();
+          refs.scannerModal.classList.remove("hidden");
+          state.scanner = {
+            ...state.scanner,
+            targetId,
+            sessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            isClosing: false,
+            lastValue: "",
+            lastDetectedAt: 0,
+          };
+          await startFallbackBarcodeScanner(targetId);
+          return;
+        }
+        throw nativeError;
+      }
+    }
+
+    await startFallbackBarcodeScanner(targetId);
+  } catch (error) {
+    showToast(describeScannerError(error), "error");
+    closeScanner();
+  }
+}
+
+async function scanLoop() {
+  if (
+    state.scanner.engine !== "native" ||
+    !state.scanner.detector ||
+    !refs.scannerVideo?.srcObject ||
+    state.scanner.isClosing
+  ) {
+    return;
+  }
+
+  try {
+    const results = await state.scanner.detector.detect(refs.scannerVideo);
+    if (results.length) {
+      refs.scannerStatus.textContent = "Codigo detectado. Validando item...";
+      await handleScannerBarcodeDetected(results[0].rawValue || "", state.scanner.sessionId);
+      return;
+    }
+  } catch (error) {
+    refs.scannerStatus.textContent = "Camera ativa. Ajuste o foco ou aproxime o codigo.";
+  }
+
+  state.scanner.timer = window.setTimeout(scanLoop, 260);
+}
+
+async function lookupProductByBarcode() {
+  const barcode = refs.movementBarcodeInput.value.trim();
+  if (!barcode) {
+    showToast("Informe um codigo de barras.", "error");
+    return;
+  }
+
+  try {
+    const item = await lookupProductByBarcodeValue(barcode, { stockType: "COMMON" });
+    showToast(`Produto encontrado: ${item.name}`);
+  } catch (error) {
+    if (isBarcodeNotFoundError(error)) {
+      await prepareNewProductFromBarcode(barcode);
+      return;
+    }
+    showToast(error.message, "error");
+  }
+}
+
+function closeScanner() {
+  state.scanner.isClosing = true;
+
+  if (state.scanner.timer) {
+    window.clearTimeout(state.scanner.timer);
+  }
+
+  try {
+    state.scanner.controls?.stop?.();
+  } catch (error) {
+    // Mantem o fluxo de encerramento mesmo se o leitor alternativo ja estiver parado.
+  }
+
+  try {
+    state.scanner.codeReader?.reset?.();
+  } catch (error) {
+    // Nao bloqueia o fechamento.
+  }
+
+  state.scanner.stream?.getTracks?.().forEach((track) => track.stop());
+  if (refs.scannerVideo) {
+    refs.scannerVideo.pause?.();
+    refs.scannerVideo.srcObject = null;
+  }
+  refs.scannerModal.classList.add("hidden");
+  refs.scannerStatus.textContent = "Aguardando camera...";
+  state.scanner = {
+    stream: null,
+    timer: null,
+    targetId: null,
+    detector: null,
+    controls: null,
+    codeReader: null,
+    engine: "",
+    sessionId: null,
+    isClosing: false,
+    lastValue: "",
+    lastDetectedAt: 0,
+  };
+}
+
 async function handleKardexPrint(mode = "print") {
   try {
     const report = await runPrintWorkflow({
@@ -3115,35 +3488,48 @@ async function runPrintWorkflow({ type, mode = "print", placeholderTitle, buildJ
   }
 }
 
-function buildFuelDailySheetRows(vehicles = [], extraRows = 4) {
-  const rows = vehicles.map(
-    (vehicle) => `
-      <tr>
-        <td>${escapeHtml(vehicle.plate)}</td>
-        <td></td>
-        <td></td>
-        <td></td>
+function buildFuelDailySheetRows(vehicles = []) {
+  if (!vehicles.length) {
+    return `
+      <tr class="print-sheet__empty-row">
+        <td colspan="4">Nenhum veiculo cadastrado para este combustivel.</td>
       </tr>
-    `
-  );
-
-  for (let index = 0; index < extraRows; index += 1) {
-    rows.push(`
-      <tr>
-        <td>&nbsp;</td>
-        <td></td>
-        <td></td>
-        <td></td>
-      </tr>
-    `);
+    `;
   }
 
-  return rows.join("");
+  return vehicles
+    .slice()
+    .sort((left, right) => String(left.plate || "").localeCompare(String(right.plate || "")))
+    .map(
+      (vehicle) => `
+        <tr>
+          <td>${escapeHtml(vehicle.plate)}</td>
+          <td></td>
+          <td></td>
+          <td></td>
+        </tr>
+      `
+    )
+    .join("");
 }
 
-function buildFuelDailySheetBlock(title, vehicles, pumpLabel, tankLabel) {
+function resolveFuelDailySheetDensity(groupedVehicles = {}) {
+  const s500Count = Array.isArray(groupedVehicles.s500) ? groupedVehicles.s500.length : 0;
+  const s10Count = Array.isArray(groupedVehicles.s10) ? groupedVehicles.s10.length : 0;
+  const totalRows = s500Count + s10Count;
+
+  if (totalRows >= 32) {
+    return "print-sheet--dense";
+  }
+  if (totalRows >= 22) {
+    return "print-sheet--compact";
+  }
+  return "";
+}
+
+function buildFuelDailySheetBlock(title, vehicles, pumpLabel, tankLabel, extraClass = "") {
   return `
-    <section class="print-sheet__block">
+    <section class="print-sheet__block ${extraClass}">
       <header class="print-sheet__block-header">
         <h2>${escapeHtml(title)}</h2>
       </header>
@@ -3170,26 +3556,53 @@ function buildFuelDailySheetBlock(title, vehicles, pumpLabel, tankLabel) {
 }
 
 function buildFuelDailySheetDocument(groupedVehicles) {
+  const densityClass = resolveFuelDailySheetDensity(groupedVehicles);
+
   return `
     <style>
       body { font-family: Arial, sans-serif; color: #111; margin: 0; }
-      .print-sheet { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 12mm; box-sizing: border-box; }
-      .print-sheet__header { margin-bottom: 8mm; }
-      .print-sheet__header h1 { margin: 0 0 4px; font-size: 18px; }
-      .print-sheet__header p { margin: 0; font-size: 12px; }
-      .print-sheet__block { margin-bottom: 10mm; }
-      .print-sheet__block-header { border-bottom: 1px solid #111; margin-bottom: 4mm; }
-      .print-sheet__block-header h2 { margin: 0 0 4px; font-size: 15px; }
+      .print-sheet { width: 100%; min-height: 100%; margin: 0 auto; padding: 6mm 5mm; box-sizing: border-box; }
+      .print-sheet__header { margin-bottom: 4mm; }
+      .print-sheet__header h1 { margin: 0 0 2px; font-size: 16px; line-height: 1.1; }
+      .print-sheet__header p { margin: 0; font-size: 10px; }
+      .print-sheet__block { margin-bottom: 5mm; break-inside: avoid; page-break-inside: avoid; }
+      .print-sheet__block:last-of-type { margin-bottom: 0; }
+      .print-sheet__block-header { border-bottom: 1px solid #111; margin-bottom: 2mm; padding-bottom: 1mm; }
+      .print-sheet__block-header h2 { margin: 0; font-size: 12px; line-height: 1.1; }
       .print-sheet__table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-      .print-sheet__table th, .print-sheet__table td { border: 1px solid #111; padding: 6px 8px; font-size: 11px; height: 11mm; }
+      .print-sheet__table th, .print-sheet__table td { border: 1px solid #111; padding: 3px 5px; font-size: 9.5px; line-height: 1.15; vertical-align: middle; }
+      .print-sheet__table th { font-weight: 700; }
+      .print-sheet__table tbody td { height: 7mm; }
       .print-sheet__table th:nth-child(1), .print-sheet__table td:nth-child(1) { width: 22%; }
       .print-sheet__table th:nth-child(2), .print-sheet__table td:nth-child(2) { width: 14%; }
       .print-sheet__table th:nth-child(3), .print-sheet__table td:nth-child(3) { width: 14%; }
       .print-sheet__table th:nth-child(4), .print-sheet__table td:nth-child(4) { width: 50%; }
-      .print-sheet__footer { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4mm; font-size: 11px; }
-      @page { size: A4 portrait; margin: 10mm; }
+      .print-sheet__empty-row td { height: auto; padding: 5px; text-align: center; font-style: italic; }
+      .print-sheet__footer { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 2mm; font-size: 9.5px; }
+      .print-sheet--compact { padding: 5mm 4mm; }
+      .print-sheet--compact .print-sheet__header { margin-bottom: 3mm; }
+      .print-sheet--compact .print-sheet__block { margin-bottom: 4mm; }
+      .print-sheet--compact .print-sheet__table th,
+      .print-sheet--compact .print-sheet__table td { padding: 2px 4px; font-size: 8.9px; }
+      .print-sheet--compact .print-sheet__table tbody td { height: 6.2mm; }
+      .print-sheet--compact .print-sheet__footer { margin-top: 1.5mm; font-size: 8.8px; }
+      .print-sheet--dense { padding: 4mm 3.5mm; }
+      .print-sheet--dense .print-sheet__header { margin-bottom: 2.5mm; }
+      .print-sheet--dense .print-sheet__header h1 { font-size: 14px; }
+      .print-sheet--dense .print-sheet__block { margin-bottom: 3.2mm; }
+      .print-sheet--dense .print-sheet__block-header { margin-bottom: 1.5mm; }
+      .print-sheet--dense .print-sheet__block-header h2 { font-size: 11px; }
+      .print-sheet--dense .print-sheet__table th,
+      .print-sheet--dense .print-sheet__table td { padding: 2px 3px; font-size: 8.2px; }
+      .print-sheet--dense .print-sheet__table tbody td { height: 5.4mm; }
+      .print-sheet--dense .print-sheet__footer { gap: 6px; margin-top: 1mm; font-size: 8.1px; }
+      @media print {
+        body { margin: 0; }
+        .print-sheet { width: auto; }
+      }
+      @page { size: A4 portrait; margin: 6mm; }
     </style>
-    <main class="print-sheet">
+    <main class="print-sheet ${densityClass}">
       <header class="print-sheet__header">
         <h1>Controle diario de abastecimento</h1>
         <p>Data de emissao: ${escapeHtml(formatDateOnly(currentLocalDate()))}</p>

@@ -5,12 +5,14 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "admin:reset": "node scripts/reset-admin.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "@zxing/browser": "^0.1.5",
     "express": "^4.21.2",
     "fast-xml-parser": "^4.5.1",
     "sql.js": "^1.12.0",

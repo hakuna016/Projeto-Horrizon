@@ -137,7 +137,7 @@
       </aside>
 
       <main class="main-content">
-        <header class="topbar">
+        <header class="topbar" id="app-topbar">
           <div class="topbar-brand">
             <img
               data-theme-logo
@@ -145,15 +145,16 @@
               src="./assets/horizon-brand-premium.jpeg"
               alt="HORIZON - Gestão que gera resultados"
             />
-            <div>
+            <div class="topbar-user-meta">
               <span class="eyebrow">Usuário conectado</span>
               <h1 id="topbar-user-name">-</h1>
             </div>
           </div>
           <div class="topbar-actions">
-            <span id="topbar-user-role" class="role-chip">-</span>
-            <button id="refresh-all-button" class="ghost-button" type="button">Atualizar</button>
-            <button id="logout-button" class="ghost-button" type="button">Sair</button>
+            <span id="topbar-user-role" class="role-chip topbar-role-chip">-</span>
+            <div id="topbar-theme-slot" class="topbar-theme-slot"></div>
+            <button id="refresh-all-button" class="ghost-button topbar-action-button topbar-action-button--refresh" type="button">Atualizar</button>
+            <button id="logout-button" class="ghost-button topbar-action-button topbar-action-button--logout" type="button">Sair</button>
           </div>
         </header>
 
@@ -1311,6 +1312,7 @@
     </div>
 
     <script src="./vendor/xlsx.full.min.js"></script>
+    <script src="./vendor/zxing-browser.min.js"></script>
     <script src="./local-api.js"></script>
     <script src="./app.js"></script>
   </body>
