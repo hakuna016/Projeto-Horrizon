@@ -6,6 +6,9 @@ const THEME_LOGOS = {
   dark: BRAND_LOGO,
 };
 const BROWSER_MODE_NOTICE_KEY = "horizon-browser-mode-notice-v1";
+const PRINT_JOB_STORAGE_KEY = "horizon-print-jobs-v1";
+const PRINT_JOB_TTL_MS = 15 * 60 * 1000;
+const PRINT_PAGE_FILENAME = "print.html";
 const runtimeState = {
   apiMode: null,
   apiProbe: null,
@@ -2834,10 +2837,17 @@ async function handleKardexView(event) {
 
 async function handleKardexPrint(mode = "print") {
   try {
-    const report = await fetchKardexReport();
-    openPrintDocument({
-      title: `${report.reportName} - ${report.product.name}`,
-      html: buildKardexPrintDocument(report, mode),
+    const report = await runPrintWorkflow({
+      type: "kardex",
+      mode,
+      placeholderTitle: "Preparando Ficha Kardex",
+      buildJob: async () => {
+        const report = await fetchKardexReport();
+        return {
+          title: `${report.reportName} - ${report.product.name}`,
+          html: buildKardexPrintDocument(report, mode),
+        };
+      },
     });
     showToast(mode === "pdf" ? "Na impressao, escolha Salvar como PDF." : "Janela de impressao aberta.");
   } catch (error) {
@@ -2847,19 +2857,26 @@ async function handleKardexPrint(mode = "print") {
 
 async function handleFuelDailySheetPrint() {
   try {
-    if (!state.vehicles.length) {
-      await refreshVehicles();
-    }
+    await runPrintWorkflow({
+      type: "fuel-daily-sheet",
+      mode: "print",
+      placeholderTitle: "Preparando folha diaria",
+      buildJob: async () => {
+        if (!state.vehicles.length) {
+          await refreshVehicles();
+        }
 
-    const activeVehicles = state.vehicles.filter((vehicle) => vehicle.active);
-    const grouped = {
-      s500: activeVehicles.filter((vehicle) => vehicle.supportsS500),
-      s10: activeVehicles.filter((vehicle) => vehicle.supportsS10),
-    };
+        const activeVehicles = state.vehicles.filter((vehicle) => vehicle.active);
+        const grouped = {
+          s500: activeVehicles.filter((vehicle) => vehicle.supportsS500),
+          s10: activeVehicles.filter((vehicle) => vehicle.supportsS10),
+        };
 
-    openPrintDocument({
-      title: `Controle diario de abastecimento - ${currentLocalDate()}`,
-      html: buildFuelDailySheetDocument(grouped),
+        return {
+          title: `Controle diario de abastecimento - ${currentLocalDate()}`,
+          html: buildFuelDailySheetDocument(grouped),
+        };
+      },
     });
     showToast("Folha diaria pronta para impressao.");
   } catch (error) {
@@ -2867,17 +2884,146 @@ async function handleFuelDailySheetPrint() {
   }
 }
 
-function openPrintDocument({ title, html }) {
-  const popup = window.open("", "_blank", "noopener,noreferrer,width=1080,height=900");
-  if (!popup) {
-    throw new Error("Nao foi possivel abrir a janela de impressao.");
+function createPrintJobId(type) {
+  return `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function readStoredPrintJobs() {
+  try {
+    return JSON.parse(window.localStorage.getItem(PRINT_JOB_STORAGE_KEY) || "{}");
+  } catch (error) {
+    return {};
+  }
+}
+
+function writeStoredPrintJobs(jobs) {
+  window.localStorage.setItem(PRINT_JOB_STORAGE_KEY, JSON.stringify(jobs));
+}
+
+function cleanupStoredPrintJobs(existingJobs = readStoredPrintJobs()) {
+  const now = Date.now();
+  const nextJobs = Object.entries(existingJobs).reduce((result, [jobId, job]) => {
+    const updatedAt = Number(job?.updatedAt || 0);
+    if (updatedAt && now - updatedAt <= PRINT_JOB_TTL_MS) {
+      result[jobId] = job;
+    }
+    return result;
+  }, {});
+
+  if (JSON.stringify(nextJobs) !== JSON.stringify(existingJobs)) {
+    writeStoredPrintJobs(nextJobs);
   }
 
-  popup.document.open();
-  popup.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8" /><title>${escapeHtml(
-    title
-  )}</title></head><body>${html}<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},180);});</script></body></html>`);
-  popup.document.close();
+  return nextJobs;
+}
+
+function storePrintJob(job) {
+  const jobs = cleanupStoredPrintJobs();
+  jobs[job.id] = {
+    ...jobs[job.id],
+    ...job,
+    updatedAt: Date.now(),
+  };
+  writeStoredPrintJobs(jobs);
+  return jobs[job.id];
+}
+
+function removeStoredPrintJob(jobId) {
+  const jobs = readStoredPrintJobs();
+  if (!jobs[jobId]) {
+    return;
+  }
+  delete jobs[jobId];
+  writeStoredPrintJobs(jobs);
+}
+
+function buildPrintPageUrl(type, jobId) {
+  const url = new URL(PRINT_PAGE_FILENAME, window.location.href);
+  url.searchParams.set("type", type);
+  url.searchParams.set("job", jobId);
+  return url.toString();
+}
+
+function openPrintWindow(type, jobId) {
+  const popup = window.open(
+    buildPrintPageUrl(type, jobId),
+    `horizon-print-${jobId}`,
+    "width=1080,height=900,resizable=yes,scrollbars=yes"
+  );
+
+  if (!popup || popup.closed) {
+    throw new Error("O navegador bloqueou a janela de impressao. Libere pop-ups para este site e tente novamente.");
+  }
+
+  return popup;
+}
+
+async function runPrintWorkflow({ type, mode = "print", placeholderTitle, buildJob }) {
+  const jobId = createPrintJobId(type);
+  const createdAt = new Date().toISOString();
+
+  storePrintJob({
+    id: jobId,
+    type,
+    mode,
+    title: placeholderTitle,
+    message: "Montando o documento para impressao...",
+    html: "",
+    status: "loading",
+    autoClose: true,
+    createdAt,
+  });
+
+  let popup;
+  try {
+    popup = openPrintWindow(type, jobId);
+  } catch (error) {
+    removeStoredPrintJob(jobId);
+    throw error;
+  }
+
+  try {
+    const result = await buildJob();
+    storePrintJob({
+      id: jobId,
+      type,
+      mode,
+      title: result.title,
+      html: result.html,
+      status: "ready",
+      message: "",
+      autoClose: result.autoClose !== false,
+      createdAt,
+    });
+
+    try {
+      popup.focus();
+    } catch (error) {
+      // Mantem a impressao ativa mesmo se o navegador recusar o foco.
+    }
+
+    return result;
+  } catch (error) {
+    storePrintJob({
+      id: jobId,
+      type,
+      mode,
+      title: placeholderTitle,
+      html: "",
+      status: "error",
+      message: error.message || "Falha ao preparar o documento para impressao.",
+      autoClose: false,
+      createdAt,
+    });
+
+    try {
+      popup.focus();
+    } catch (focusError) {
+      // Mantem o fluxo mesmo se o navegador recusar o foco.
+    }
+
+    throw error;
+  }
 }
 
 function buildFuelDailySheetRows(vehicles = [], extraRows = 4) {

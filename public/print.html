@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HORIZON | Impressao</title>
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="icon" type="image/jpeg" href="./assets/horizon-brand-premium.jpeg" />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: #f3f4f6;
+        color: #111827;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top, rgba(196, 0, 0, 0.08), transparent 22rem),
+          #f3f4f6;
+        color: #111827;
+      }
+
+      .print-shell {
+        width: min(100%, 1180px);
+        margin: 0 auto;
+        padding: 2rem 1.25rem;
+      }
+
+      .print-status {
+        max-width: 34rem;
+        margin: 10vh auto 0;
+        padding: 1.5rem;
+        border-radius: 24px;
+        background: #ffffff;
+        border: 1px solid rgba(17, 24, 39, 0.08);
+        box-shadow: 0 20px 40px rgba(15, 23, 42, 0.1);
+      }
+
+      .print-status[data-state="error"] {
+        border-color: rgba(196, 0, 0, 0.22);
+      }
+
+      .print-status__eyebrow {
+        display: inline-flex;
+        margin-bottom: 0.75rem;
+        padding: 0.28rem 0.58rem;
+        border-radius: 999px;
+        background: rgba(196, 0, 0, 0.1);
+        color: #9f1111;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .print-status h1 {
+        margin: 0 0 0.6rem;
+        font-size: clamp(1.5rem, 2vw, 2rem);
+      }
+
+      .print-status p {
+        margin: 0;
+        color: #4b5563;
+        line-height: 1.6;
+      }
+
+      .print-status__actions {
+        display: flex;
+        gap: 0.75rem;
+        margin-top: 1.25rem;
+      }
+
+      .print-status__button {
+        appearance: none;
+        border: 0;
+        border-radius: 999px;
+        background: #c40000;
+        color: #ffffff;
+        padding: 0.78rem 1.2rem;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .print-root {
+        min-height: 40vh;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      @media print {
+        body {
+          margin: 0;
+          background: #ffffff;
+        }
+
+        .print-shell {
+          width: auto;
+          margin: 0;
+          padding: 0;
+        }
+
+        .print-status,
+        .print-status__actions {
+          display: none !important;
+        }
+      }
+    </style>
+    <script src="./print.js" defer></script>
+  </head>
+  <body>
+    <main class="print-shell">
+      <section id="print-status" class="print-status" data-state="loading">
+        <span class="print-status__eyebrow">HORIZON</span>
+        <h1 id="print-status-title">Preparando impressao</h1>
+        <p id="print-status-description">Montando o documento para impressao...</p>
+        <div class="print-status__actions">
+          <button id="print-status-close" type="button" class="print-status__button">Fechar</button>
+        </div>
+      </section>
+      <section id="print-root" class="print-root hidden"></section>
+    </main>
+  </body>
+</html>
