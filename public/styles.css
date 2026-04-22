@@ -3840,3 +3840,45 @@ body.has-compact-topbar .topbar-theme-slot .theme-toggle-button {
     padding-inline: 0.72rem;
   }
 }
+
+/* Reports section spacing alignment */
+
+#reports-section {
+  gap: 1rem;
+}
+
+#reports-section .section-header {
+  padding-top: 0;
+  gap: 0.7rem 1rem;
+}
+
+#reports-section .section-description {
+  max-width: 41rem;
+}
+
+#reports-section .report-filter-card {
+  gap: 0.95rem;
+  padding: 1rem 1.05rem;
+}
+
+#reports-section .card-title {
+  gap: 0.08rem;
+}
+
+#reports-section .report-filter-grid {
+  gap: 0.8rem 0.9rem;
+}
+
+#reports-section .report-filter-actions {
+  margin-top: 0;
+}
+
+@media (max-width: 780px) {
+  #reports-section {
+    gap: 0.85rem;
+  }
+
+  #reports-section .report-filter-card {
+    padding: 0.92rem;
+  }
+}

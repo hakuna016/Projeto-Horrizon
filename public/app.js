@@ -70,6 +70,7 @@ const SECTION_ICONS = {
   admin: "admin",
 };
 const DASHBOARD_TITLE_ICONS = ["analytics", "efficiency", "vehicle", "fuel", "notes", "alert", "schedules"];
+const COMPACT_TOPBAR_SECTIONS = new Set(["reports"]);
 
 const state = {
   user: null,
@@ -527,7 +528,8 @@ function syncThemeSwitcherPlacement() {
 }
 
 function syncTopbarScrollState() {
-  const shouldCompact = Boolean(state.user) && window.scrollY > 36;
+  const shouldCompact =
+    Boolean(state.user) && (window.scrollY > 36 || COMPACT_TOPBAR_SECTIONS.has(state.section));
   document.body.classList.toggle("has-compact-topbar", shouldCompact);
 }
 
@@ -1163,6 +1165,8 @@ function setSection(section) {
   document.querySelectorAll(".content-section").forEach((panel) => {
     panel.classList.toggle("active", panel.id === `${nextSection}-section`);
   });
+
+  syncTopbarScrollState();
 }
 
 function applyDefaultFormValues() {
