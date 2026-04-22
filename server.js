@@ -118,6 +118,11 @@ const FINE_STATUS_ALIASES = {
   paga: "PAID",
   paid: "PAID",
 };
+const DEFAULT_SCHEDULE_DOCUMENT_TITLE = "ESCALA OPERACIONAL DIARIA";
+const SCHEDULE_DOCUMENT_TITLE_OPTIONS = [
+  DEFAULT_SCHEDULE_DOCUMENT_TITLE,
+  "RELACAO PARA VIAGEM E EMBARQUE",
+];
 
 const CHECKLIST_STATUS_ALIASES = {
   aberto: "OPEN",
@@ -207,6 +212,69 @@ function normalizeFuelKind(value, fallback = "") {
   return normalizeEnum(value, FUEL_KIND_ALIASES, fallback);
 }
 
+function inferFuelKindFromValue(value, fallback = "") {
+  const normalizedFuelKind = normalizeFuelKind(value, "");
+  if (normalizedFuelKind) {
+    return normalizedFuelKind;
+  }
+
+  const normalizedValue = normalizeKey(value);
+  if (!normalizedValue) {
+    return fallback;
+  }
+
+  if (normalizedValue.includes("s500")) {
+    return "S500";
+  }
+
+  if (normalizedValue.includes("s10")) {
+    return "S10";
+  }
+
+  return fallback;
+}
+
+function buildFuelKindSqlExpression(alias = "m", productAlias = "p") {
+  return `
+    CASE
+      WHEN trim(coalesce(${alias}.fuel_kind, '')) <> '' THEN upper(replace(replace(replace(trim(${alias}.fuel_kind), '-', ''), '_', ''), ' ', ''))
+      WHEN lower(replace(replace(replace(coalesce(${productAlias}.name, ''), '-', ''), '_', ''), ' ', '')) LIKE '%s500%' THEN 'S500'
+      WHEN lower(replace(replace(replace(coalesce(${productAlias}.name, ''), '-', ''), '_', ''), ' ', '')) LIKE '%s10%' THEN 'S10'
+      ELSE ''
+    END
+  `;
+}
+
+function resolveFuelProductKind(product) {
+  if (!product) {
+    return "";
+  }
+
+  if (product.id) {
+    const linkedKinds = all(
+      `
+        SELECT DISTINCT fuel_kind
+        FROM fuel_storages
+        WHERE product_id = ? AND active = 1
+        ORDER BY fuel_kind ASC
+      `,
+      [Number(product.id)]
+    )
+      .map((row) => inferFuelKindFromValue(row.fuel_kind, ""))
+      .filter(Boolean);
+
+    if (linkedKinds.length === 1) {
+      return linkedKinds[0];
+    }
+
+    if (linkedKinds.length > 1) {
+      return inferFuelKindFromValue(product.name, "");
+    }
+  }
+
+  return inferFuelKindFromValue(product.name, "");
+}
+
 function normalizeStockType(value, fallback = "COMMON") {
   return normalizeEnum(value, STOCK_TYPE_ALIASES, fallback);
 }
@@ -217,6 +285,52 @@ function normalizeVehicleFuelProfile(value, fallback = "S500") {
 
 function normalizePlate(value) {
   return normalizeText(value).toUpperCase();
+}
+
+function normalizePlateKey(value) {
+  return normalizePlate(value).replace(/[^A-Z0-9]/g, "");
+}
+
+function formatSchedulePlate(value) {
+  const normalized = normalizePlateKey(value).slice(0, 7);
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length > 3 ? `${normalized.slice(0, 3)}-${normalized.slice(3)}` : normalized;
+}
+
+function normalizeScheduleTime(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return "";
+  }
+
+  const match = normalized.match(/^(\d{1,2})(?::?(\d{2}))?$/);
+  if (!match) {
+    return "";
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2] || "0");
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return "";
+  }
+
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeScheduleLabel(value) {
+  return normalizeText(value);
+}
+
+function normalizeScheduleDocumentTitle(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return DEFAULT_SCHEDULE_DOCUMENT_TITLE;
+  }
+
+  const existing = SCHEDULE_DOCUMENT_TITLE_OPTIONS.find((option) => normalizeKey(option) === normalizeKey(normalized));
+  return existing || normalized;
 }
 
 function vehicleSupportsFuel(profile, fuelKind) {
@@ -775,7 +889,7 @@ function queryInventoryMovements(filters = {}) {
   }
 
   if (filters.fuelKind) {
-    sql += " AND m.fuel_kind = ?";
+    sql += ` AND ${buildFuelKindSqlExpression("m", "p")} = ?`;
     params.push(normalizeFuelKind(filters.fuelKind, ""));
   }
 
@@ -803,7 +917,7 @@ function queryInventoryMovements(filters = {}) {
     document: row.document || "",
     branchName: row.branch_name || "",
     supplierName: row.supplier_name || "",
-    fuelKind: row.fuel_kind || "",
+    fuelKind: inferFuelKindFromValue(row.fuel_kind || row.product_name, ""),
     unitCost: Number(row.unit_cost || 0),
     totalCost: Number(row.total_cost || 0),
     productDefaultCost: Number(row.product_default_cost || 0),
@@ -1232,35 +1346,424 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
   };
 }
 
-function querySchedules(date) {
-  let sql = `
-    SELECT s.*, u.name AS user_name
-    FROM schedules s
-    LEFT JOIN users u ON u.id = s.created_by
-    WHERE 1 = 1
-  `;
-  const params = [];
-
-  if (date) {
-    sql += " AND s.scheduled_date = ?";
-    params.push(date);
-  }
-
-  sql += " ORDER BY s.scheduled_date ASC, s.id DESC";
-
-  return all(sql, params).map((row) => ({
+function mapScheduleEntryRow(row) {
+  return {
     id: Number(row.id),
+    scheduleDayId: Number(row.schedule_day_id),
+    lineOrder: Number(row.line_order || 0),
     scheduledDate: row.scheduled_date,
     vehicle: row.vehicle,
     location: row.location || "",
     driver: row.driver,
-    assistant: row.assistant,
+    assistant: row.assistant || "",
+    departureTime: row.departure_time || "",
+    notes: row.notes || "",
     responsibleName: row.responsible_name || "",
-    notes: row.notes,
+    documentTitle: row.document_title || DEFAULT_SCHEDULE_DOCUMENT_TITLE,
+    dayNotes: row.general_notes || "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    userName: row.user_name || "",
-  }));
+    userName: row.created_by_name || "",
+  };
+}
+
+function buildScheduleDayFromRow(dayRow, entries = []) {
+  const normalizedEntries = entries
+    .map((entry) =>
+      mapScheduleEntryRow({
+        ...entry,
+        scheduled_date: dayRow.scheduled_date,
+        document_title: dayRow.document_title,
+        responsible_name: dayRow.responsible_name,
+        general_notes: dayRow.general_notes,
+        created_by_name: dayRow.updated_by_name || dayRow.created_by_name,
+      })
+    )
+    .sort((left, right) => (left.lineOrder || 0) - (right.lineOrder || 0) || left.id - right.id);
+  const uniqueVehicles = new Set(normalizedEntries.map((item) => item.vehicle).filter(Boolean));
+  const uniqueDrivers = new Set(normalizedEntries.map((item) => item.driver).filter(Boolean));
+  const assistants = normalizedEntries.filter((item) => item.assistant).length;
+
+  return {
+    id: Number(dayRow.id),
+    scheduledDate: dayRow.scheduled_date,
+    documentTitle: dayRow.document_title || DEFAULT_SCHEDULE_DOCUMENT_TITLE,
+    responsibleName: dayRow.responsible_name || "",
+    generalNotes: dayRow.general_notes || "",
+    createdAt: dayRow.created_at,
+    updatedAt: dayRow.updated_at,
+    createdByName: dayRow.created_by_name || "",
+    updatedByName: dayRow.updated_by_name || dayRow.created_by_name || "",
+    entries: normalizedEntries,
+    totals: {
+      lines: normalizedEntries.length,
+      vehicles: uniqueVehicles.size,
+      drivers: uniqueDrivers.size,
+      assistants,
+    },
+    preview: {
+      vehicles: Array.from(uniqueVehicles).slice(0, 4),
+      drivers: Array.from(uniqueDrivers).slice(0, 3),
+    },
+  };
+}
+
+function queryScheduleEntries(filters = {}) {
+  let sql = `
+    SELECT
+      e.*,
+      d.scheduled_date,
+      d.document_title,
+      d.responsible_name,
+      d.general_notes,
+      u.name AS created_by_name
+    FROM schedule_entries e
+    JOIN schedule_days d ON d.id = e.schedule_day_id
+    LEFT JOIN users u ON u.id = e.created_by
+    WHERE 1 = 1
+  `;
+  const params = [];
+
+  if (filters.scheduleDayId) {
+    sql += " AND e.schedule_day_id = ?";
+    params.push(Number(filters.scheduleDayId));
+  }
+
+  if (filters.date) {
+    sql += " AND d.scheduled_date = ?";
+    params.push(normalizeText(filters.date));
+  }
+
+  if (filters.vehicle) {
+    sql += " AND replace(replace(upper(e.vehicle), '-', ''), ' ', '') = ?";
+    params.push(normalizePlateKey(filters.vehicle));
+  }
+
+  if (filters.driver) {
+    sql += " AND lower(coalesce(e.driver, '')) LIKE ?";
+    params.push(buildLikeSearch(filters.driver));
+  }
+
+  sql += " ORDER BY d.scheduled_date DESC, e.line_order ASC, e.id ASC";
+
+  return all(sql, params).map(mapScheduleEntryRow);
+}
+
+function queryScheduleDayRow(whereSql, params = []) {
+  return get(
+    `
+      SELECT
+        d.*,
+        created_user.name AS created_by_name,
+        updated_user.name AS updated_by_name
+      FROM schedule_days d
+      LEFT JOIN users created_user ON created_user.id = d.created_by
+      LEFT JOIN users updated_user ON updated_user.id = d.updated_by
+      WHERE ${whereSql}
+      LIMIT 1
+    `,
+    params
+  );
+}
+
+function queryScheduleDayById(id) {
+  const dayRow = queryScheduleDayRow("d.id = ?", [Number(id)]);
+  if (!dayRow) {
+    return null;
+  }
+
+  const entries = all("SELECT * FROM schedule_entries WHERE schedule_day_id = ? ORDER BY line_order ASC, id ASC", [
+    Number(dayRow.id),
+  ]);
+  return buildScheduleDayFromRow(dayRow, entries);
+}
+
+function queryScheduleDayByDate(date) {
+  const normalizedDate = normalizeText(date);
+  if (!normalizedDate) {
+    return null;
+  }
+
+  const dayRow = queryScheduleDayRow("d.scheduled_date = ?", [normalizedDate]);
+  if (!dayRow) {
+    return null;
+  }
+
+  const entries = all("SELECT * FROM schedule_entries WHERE schedule_day_id = ? ORDER BY line_order ASC, id ASC", [
+    Number(dayRow.id),
+  ]);
+  return buildScheduleDayFromRow(dayRow, entries);
+}
+
+function queryScheduleHistory(filters = {}) {
+  let sql = `
+    SELECT
+      d.*,
+      created_user.name AS created_by_name,
+      updated_user.name AS updated_by_name
+    FROM schedule_days d
+    LEFT JOIN users created_user ON created_user.id = d.created_by
+    LEFT JOIN users updated_user ON updated_user.id = d.updated_by
+    WHERE 1 = 1
+  `;
+  const params = [];
+
+  if (filters.date) {
+    sql += " AND d.scheduled_date = ?";
+    params.push(normalizeText(filters.date));
+  }
+
+  if (filters.from) {
+    sql += " AND d.scheduled_date >= ?";
+    params.push(normalizeText(filters.from));
+  }
+
+  if (filters.to) {
+    sql += " AND d.scheduled_date <= ?";
+    params.push(normalizeText(filters.to));
+  }
+
+  if (filters.vehicle) {
+    sql += `
+      AND EXISTS (
+        SELECT 1
+        FROM schedule_entries entry_vehicle
+        WHERE entry_vehicle.schedule_day_id = d.id
+          AND replace(replace(upper(entry_vehicle.vehicle), '-', ''), ' ', '') = ?
+      )
+    `;
+    params.push(normalizePlateKey(filters.vehicle));
+  }
+
+  if (filters.driver) {
+    sql += `
+      AND EXISTS (
+        SELECT 1
+        FROM schedule_entries entry_driver
+        WHERE entry_driver.schedule_day_id = d.id
+          AND lower(coalesce(entry_driver.driver, '')) LIKE ?
+      )
+    `;
+    params.push(buildLikeSearch(filters.driver));
+  }
+
+  sql += " ORDER BY d.scheduled_date DESC, d.updated_at DESC LIMIT 120";
+
+  const dayRows = all(sql, params);
+  if (!dayRows.length) {
+    return [];
+  }
+
+  const dayIds = dayRows.map((row) => Number(row.id));
+  const placeholders = dayIds.map(() => "?").join(", ");
+  const entryRows = all(
+    `
+      SELECT *
+      FROM schedule_entries
+      WHERE schedule_day_id IN (${placeholders})
+      ORDER BY line_order ASC, id ASC
+    `,
+    dayIds
+  );
+
+  const entriesByDayId = entryRows.reduce((result, row) => {
+    const dayId = Number(row.schedule_day_id);
+    if (!result.has(dayId)) {
+      result.set(dayId, []);
+    }
+    result.get(dayId).push(row);
+    return result;
+  }, new Map());
+
+  return dayRows.map((dayRow) => buildScheduleDayFromRow(dayRow, entriesByDayId.get(Number(dayRow.id)) || []));
+}
+
+function dedupeScheduleOptions(values = []) {
+  const optionMap = new Map();
+  values.forEach((item) => {
+    const label = normalizeScheduleLabel(item);
+    const key = normalizeKey(label);
+    if (!label || !key || optionMap.has(key)) {
+      return;
+    }
+    optionMap.set(key, label);
+  });
+  return Array.from(optionMap.values()).sort((left, right) => left.localeCompare(right, "pt-BR"));
+}
+
+function queryScheduleSuggestions() {
+  const rows = all(
+    `
+      SELECT vehicle, driver, assistant, location
+      FROM schedule_entries
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 500
+    `
+  );
+  const vehicleSuggestions = queryVehicles({ activeOnly: true }).map((vehicle) => vehicle.plate);
+
+  return {
+    vehicles: dedupeScheduleOptions([
+      ...vehicleSuggestions,
+      ...rows.map((row) => row.vehicle),
+    ]),
+    drivers: dedupeScheduleOptions(rows.map((row) => row.driver)),
+    assistants: dedupeScheduleOptions(rows.map((row) => row.assistant)),
+    locations: dedupeScheduleOptions(rows.map((row) => row.location)),
+    documentTitles: dedupeScheduleOptions(SCHEDULE_DOCUMENT_TITLE_OPTIONS),
+  };
+}
+
+function resolveCanonicalScheduleLabel(value, suggestions = []) {
+  const normalized = normalizeScheduleLabel(value);
+  const normalizedKey = normalizeKey(normalized);
+  if (!normalized || !normalizedKey) {
+    return "";
+  }
+
+  const match = suggestions.find((item) => normalizeKey(item) === normalizedKey);
+  return match || normalized;
+}
+
+function resolveCanonicalScheduleVehicle(value) {
+  const normalizedKey = normalizePlateKey(value);
+  if (!normalizedKey) {
+    return "";
+  }
+
+  const vehicleMatch = queryVehicles({}).find((item) => normalizePlateKey(item.plate) === normalizedKey);
+  return vehicleMatch ? vehicleMatch.plate : formatSchedulePlate(normalizedKey);
+}
+
+function buildScheduleDayPayload(payload, currentUser, existingDay = null) {
+  const suggestions = queryScheduleSuggestions();
+  const scheduledDate = normalizeText(payload.scheduledDate || existingDay?.scheduled_date);
+  const documentTitle = normalizeScheduleDocumentTitle(payload.documentTitle || existingDay?.document_title);
+  const responsibleName = resolveCanonicalScheduleLabel(
+    payload.responsibleName || existingDay?.responsible_name || currentUser?.name || "",
+    [currentUser?.name || "", ...suggestions.drivers]
+  );
+  const generalNotes = normalizeScheduleLabel(payload.generalNotes || payload.notes || existingDay?.general_notes);
+  const rawEntries = Array.isArray(payload.entries)
+    ? payload.entries
+    : payload.vehicle || payload.driver || payload.location || payload.assistant || payload.notes
+      ? [payload]
+      : [];
+
+  if (!scheduledDate) {
+    throw new Error("A data da escala e obrigatoria.");
+  }
+
+  const entries = rawEntries
+    .map((entry, index) => ({
+      lineOrder: index + 1,
+      vehicle: resolveCanonicalScheduleVehicle(entry?.vehicle),
+      location: resolveCanonicalScheduleLabel(entry?.location, suggestions.locations),
+      driver: resolveCanonicalScheduleLabel(entry?.driver, [currentUser?.name || "", ...suggestions.drivers]),
+      assistant: resolveCanonicalScheduleLabel(entry?.assistant, suggestions.assistants),
+      departureTime: normalizeScheduleTime(entry?.departureTime || entry?.time),
+      notes: normalizeScheduleLabel(entry?.notes),
+    }))
+    .filter((entry) => Object.values(entry).some((value) => String(value ?? "").trim() !== ""));
+
+  if (!entries.length) {
+    throw new Error("Adicione ao menos uma linha operacional para salvar a escala.");
+  }
+
+  entries.forEach((entry, index) => {
+    if (!entry.vehicle) {
+      throw new Error(`Informe a placa na linha ${index + 1}.`);
+    }
+
+    if (!entry.driver) {
+      throw new Error(`Informe o motorista na linha ${index + 1}.`);
+    }
+  });
+
+  return {
+    scheduledDate,
+    documentTitle,
+    responsibleName,
+    generalNotes,
+    entries,
+  };
+}
+
+function saveScheduleDay(payload, currentUser, existingDay = null) {
+  const normalized = buildScheduleDayPayload(payload, currentUser, existingDay);
+  const timestamp = nowIso();
+  let scheduleDayId = existingDay ? Number(existingDay.id) : 0;
+
+  transaction(() => {
+    if (!existingDay) {
+      scheduleDayId = insert(
+        `
+          INSERT INTO schedule_days (
+            scheduled_date, document_title, responsible_name, general_notes, created_by, updated_by, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          normalized.scheduledDate,
+          normalized.documentTitle,
+          normalized.responsibleName,
+          normalized.generalNotes,
+          currentUser.id,
+          currentUser.id,
+          timestamp,
+          timestamp,
+        ]
+      );
+    } else {
+      write(
+        `
+          UPDATE schedule_days
+          SET scheduled_date = ?, document_title = ?, responsible_name = ?, general_notes = ?, updated_by = ?, updated_at = ?
+          WHERE id = ?
+        `,
+        [
+          normalized.scheduledDate,
+          normalized.documentTitle,
+          normalized.responsibleName,
+          normalized.generalNotes,
+          currentUser.id,
+          timestamp,
+          scheduleDayId,
+        ]
+      );
+      write("DELETE FROM schedule_entries WHERE schedule_day_id = ?", [scheduleDayId]);
+    }
+
+    normalized.entries.forEach((entry) => {
+      insert(
+        `
+          INSERT INTO schedule_entries (
+            schedule_day_id, line_order, vehicle, location, driver, assistant, departure_time, notes, created_by, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          scheduleDayId,
+          entry.lineOrder,
+          entry.vehicle,
+          entry.location,
+          entry.driver,
+          entry.assistant,
+          entry.departureTime,
+          entry.notes,
+          currentUser.id,
+          timestamp,
+          timestamp,
+        ]
+      );
+    });
+  });
+
+  return queryScheduleDayById(scheduleDayId);
+}
+
+function querySchedules(date) {
+  return queryScheduleEntries(date ? { date } : {});
 }
 
 function queryFines() {
@@ -1350,7 +1853,7 @@ function buildInventoryMovementFilters(filters = {}, alias = "m", productAlias =
   if (filters.fuelKind) {
     const fuelKind = normalizeFuelKind(filters.fuelKind, "");
     if (fuelKind) {
-      clauses.push(`${alias}.fuel_kind = ?`);
+      clauses.push(`${buildFuelKindSqlExpression(alias, productAlias)} = ?`);
       params.push(fuelKind);
     }
   }
@@ -1389,22 +1892,31 @@ function buildKardexReport(filters = {}) {
     throw new Error("Produto nao encontrado.");
   }
 
+  const productStockType = normalizeStockType(product.stock_type, "COMMON");
+  const requestedStockType = normalizeStockType(
+    filters.stockType || filters.reportType || filters.category,
+    productStockType
+  );
+  if (requestedStockType !== productStockType) {
+    throw new Error("O produto selecionado nao pertence ao tipo de Kardex informado.");
+  }
+
   const filterSet = {
     productId,
-    stockType: normalizeStockType(filters.stockType || filters.reportType || filters.category, "COMMON"),
+    stockType: productStockType,
     branchName: normalizeText(filters.branchName || filters.branch || filters.unitName),
     fuelKind: normalizeFuelKind(filters.fuelKind, ""),
     document: normalizeText(filters.document),
     supplierName: normalizeText(filters.supplierName || filters.supplier),
   };
 
-  const productStockType = normalizeStockType(product.stock_type, "COMMON");
-  if (productStockType !== filterSet.stockType) {
-    throw new Error("O produto selecionado nao pertence ao tipo de Kardex informado.");
-  }
-
   if (filterSet.stockType !== "FUEL") {
     filterSet.fuelKind = "";
+  } else {
+    const productFuelKind = resolveFuelProductKind(product);
+    if (filterSet.fuelKind && productFuelKind && filterSet.fuelKind !== productFuelKind) {
+      throw new Error("O produto selecionado nao corresponde ao combustivel filtrado.");
+    }
   }
 
   const where = buildInventoryMovementFilters(filterSet, "m", "p");
@@ -1481,7 +1993,7 @@ function buildKardexReport(filters = {}) {
       notes: row.notes || "",
       supplierName: row.supplier_name || "",
       branchName: row.branch_name || "",
-      fuelKind: row.fuel_kind || "",
+      fuelKind: inferFuelKindFromValue(row.fuel_kind || product.name, ""),
       userName: row.user_name || "",
     };
   });
@@ -1525,12 +2037,12 @@ function buildKardexReport(filters = {}) {
       finalBalance: runningBalance,
     },
     lastPurchase: lastPurchase
-      ? {
+        ? {
           id: Number(lastPurchase.id),
           document: lastPurchase.document || "",
           supplierName: lastPurchase.supplier_name || "",
           branchName: lastPurchase.branch_name || "",
-          fuelKind: lastPurchase.fuel_kind || "",
+          fuelKind: inferFuelKindFromValue(lastPurchase.fuel_kind || product.name, ""),
           unitCost: Number(lastPurchase.unit_cost || 0),
           totalCost: Number(lastPurchase.total_cost || 0),
           date: lastPurchase.occurred_at,
@@ -2723,97 +3235,95 @@ async function start() {
   });
 
   app.get("/api/schedules", requireAuth, (req, res) => {
-    res.json({ items: querySchedules(req.query.date || "") });
-  });
-
-  app.post("/api/schedules", requireAuth, (req, res) => {
-    const scheduledDate = normalizeText(req.body.scheduledDate);
-    const vehicle = normalizeText(req.body.vehicle);
-    const location = normalizeText(req.body.location);
-    const driver = normalizeText(req.body.driver);
-    const assistant = normalizeText(req.body.assistant);
-    const responsibleName = normalizeText(req.body.responsibleName || req.user.name);
-    const notes = normalizeText(req.body.notes);
-
-    if (!scheduledDate || !vehicle || !driver) {
-      return sendError(res, 400, "Data, veiculo e motorista sao obrigatorios.");
-    }
-
-    const scheduleId = insert(
-      `
-        INSERT INTO schedules (
-          scheduled_date, vehicle, location, driver, assistant, responsible_name, notes, created_by, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        scheduledDate,
-        vehicle,
-        location,
-        driver,
-        assistant,
-        responsibleName,
-        notes,
-        req.user.id,
-        nowIso(),
-        nowIso(),
-      ]
-    );
-
-    logAction(req.user, "CREATE_SCHEDULE", "SCHEDULE", scheduleId, {
-      scheduledDate,
-      vehicle,
-      location,
-      driver,
-      responsibleName,
+    const selectedDate = normalizeText(req.query.date || todayDate());
+    const day = queryScheduleDayByDate(selectedDate);
+    const history = queryScheduleHistory({
+      date: req.query.historyDate,
+      from: req.query.historyFrom,
+      to: req.query.historyTo,
+      vehicle: req.query.plate,
+      driver: req.query.driver,
     });
 
-    const createdSchedule =
-      querySchedules().find((item) => String(item.id) === String(scheduleId)) ||
-      querySchedules().find(
-        (item) => item.scheduledDate === scheduledDate && item.vehicle === vehicle && item.driver === driver
-      ) ||
-      null;
-
-    return res.status(201).json({
-      item: createdSchedule,
+    return res.json({
+      selectedDate,
+      day,
+      items: day?.entries || [],
+      history,
+      suggestions: queryScheduleSuggestions(),
     });
   });
 
-  app.put("/api/schedules/:id", requireAuth, (req, res) => {
-    const scheduleId = Number(req.params.id);
-    const existing = get("SELECT * FROM schedules WHERE id = ?", [scheduleId]);
-
-    if (!existing) {
+  app.get("/api/schedules/:id", requireAuth, (req, res) => {
+    const day = queryScheduleDayById(req.params.id);
+    if (!day) {
       return sendError(res, 404, "Escala nao encontrada.");
     }
 
-    const scheduledDate = normalizeText(req.body.scheduledDate || existing.scheduled_date);
-    const vehicle = normalizeText(req.body.vehicle || existing.vehicle);
-    const location = normalizeText(req.body.location || existing.location);
-    const driver = normalizeText(req.body.driver || existing.driver);
-    const assistant = normalizeText(req.body.assistant || existing.assistant);
-    const responsibleName = normalizeText(req.body.responsibleName || existing.responsible_name);
-    const notes = normalizeText(req.body.notes || existing.notes);
+    return res.json({ day });
+  });
 
-    write(
-      `
-        UPDATE schedules
-        SET scheduled_date = ?, vehicle = ?, location = ?, driver = ?, assistant = ?, responsible_name = ?, notes = ?, updated_at = ?
-        WHERE id = ?
-      `,
-      [scheduledDate, vehicle, location, driver, assistant, responsibleName, notes, nowIso(), scheduleId]
-    );
+  app.post("/api/schedules", requireAuth, (req, res) => {
+    try {
+      const payload = buildScheduleDayPayload(req.body, req.user);
+      const existingDay = queryScheduleDayByDate(payload.scheduledDate);
 
-    logAction(req.user, "UPDATE_SCHEDULE", "SCHEDULE", scheduleId, {
-      scheduledDate,
-      vehicle,
-      location,
-      driver,
-      responsibleName,
-    });
+      if (existingDay) {
+        return res.status(409).json({
+          message: "Ja existe uma escala salva para esta data.",
+          day: existingDay,
+        });
+      }
 
-    return res.json({ item: querySchedules().find((item) => item.id === scheduleId) });
+      const createdDay = saveScheduleDay(req.body, req.user);
+      logAction(req.user, "CREATE_SCHEDULE_DAY", "SCHEDULE_DAY", createdDay.id, {
+        scheduledDate: createdDay.scheduledDate,
+        totalLines: createdDay.totals.lines,
+        totalVehicles: createdDay.totals.vehicles,
+      });
+
+      return res.status(201).json({
+        day: createdDay,
+        items: createdDay.entries,
+      });
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
+  });
+
+  app.put("/api/schedules/:id", requireAuth, (req, res) => {
+    const scheduleDayId = Number(req.params.id);
+    const existing = get("SELECT * FROM schedule_days WHERE id = ?", [scheduleDayId]);
+
+    if (!existing || !scheduleDayId) {
+      return sendError(res, 404, "Escala nao encontrada.");
+    }
+
+    try {
+      const payload = buildScheduleDayPayload(req.body, req.user, existing);
+      const conflictDay = queryScheduleDayByDate(payload.scheduledDate);
+
+      if (conflictDay && Number(conflictDay.id) !== scheduleDayId) {
+        return res.status(409).json({
+          message: "Ja existe outra escala salva para esta data.",
+          day: conflictDay,
+        });
+      }
+
+      const updatedDay = saveScheduleDay(req.body, req.user, existing);
+      logAction(req.user, "UPDATE_SCHEDULE_DAY", "SCHEDULE_DAY", scheduleDayId, {
+        scheduledDate: updatedDay.scheduledDate,
+        totalLines: updatedDay.totals.lines,
+        totalVehicles: updatedDay.totals.vehicles,
+      });
+
+      return res.json({
+        day: updatedDay,
+        items: updatedDay.entries,
+      });
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
   });
 
   app.get("/api/fines", requireAuth, (req, res) => {

@@ -59,6 +59,11 @@ MASTER_ADMIN_PASSWORD=defina-uma-senha-forte
 11. Faca um `Redeploy`.
 12. Abra a URL publica e use apenas credenciais internas configuradas pelo ambiente.
 
+Observacao:
+
+- com essas variaveis definidas, a conta mestra passa a ser sincronizada no startup mesmo se o volume SQLite ja existir
+- isso ajuda a recuperar acesso em deploys Railway com banco persistido antigo
+
 ### Como o banco funciona na Railway
 
 - se existir `DB_PATH`, o sistema usa esse valor
@@ -128,6 +133,18 @@ DB_PATH=./data/logistica.db
 COOKIE_SECURE=false
 APP_URL=https://seu-dominio-publico.aqui
 ```
+
+## Recuperar administrador
+
+Se voce perder o acesso ao administrador em um ambiente com SQLite persistido:
+
+```bash
+npm run admin:reset -- --email admin@empresa.com --password sua-senha-forte --name "Administrador"
+```
+
+Voce tambem pode usar as variaveis `MASTER_ADMIN_EMAIL`, `MASTER_ADMIN_PASSWORD` e `MASTER_ADMIN_NAME`.
+
+Em Railway, execute esse comando no ambiente que enxerga o mesmo volume do app para atualizar o banco persistido.
 
 ## Observacoes importantes
 

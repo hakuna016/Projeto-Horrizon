@@ -263,14 +263,14 @@
             </div>
           </div>
 
-          <div class="two-column-grid">
+          <div class="schedule-workspace-grid">
             <form id="note-form" class="panel form-card">
               <input type="hidden" name="id" />
               <div class="card-title">
                 <span class="eyebrow">Cadastro manual</span>
                 <h3>Nova nota</h3>
               </div>
-              <div class="form-grid">
+              <div class="schedule-meta-grid">
                 <label>
                   <span>Fornecedor</span>
                   <input type="text" name="supplierName" required />
@@ -372,14 +372,14 @@
             </div>
           </div>
 
-          <div class="two-column-grid">
+          <div class="schedule-workspace-grid">
             <form id="product-form" class="panel form-card">
               <input type="hidden" name="id" />
               <div class="card-title">
                 <span class="eyebrow">Produto</span>
                 <h3>Cadastro</h3>
               </div>
-              <div class="form-grid">
+              <div class="schedule-meta-grid">
                 <label>
                   <span>Produto</span>
                   <input type="text" name="name" required />
@@ -485,7 +485,7 @@
             </form>
           </div>
 
-          <div class="two-column-grid">
+          <div class="schedule-workspace-grid">
             <div class="panel table-panel">
               <div class="card-title">
                 <span class="eyebrow">Produtos</span>
@@ -552,7 +552,7 @@
                 <span class="eyebrow">Cadastro</span>
                 <h3>Veiculo operacional</h3>
               </div>
-              <div class="form-grid">
+              <div class="schedule-meta-grid">
                 <label>
                   <span>Placa</span>
                   <input type="text" name="plate" required maxlength="8" placeholder="ABC1D23" />
@@ -907,64 +907,115 @@
           </div>
         </section>
 
-        <section id="schedules-section" class="content-section">
+        <section id="schedules-section" class="content-section module-section">
           <div class="section-header">
             <div>
               <span class="eyebrow">Planejamento</span>
               <h2>Escala</h2>
-              <p class="section-description">Controle diario de veiculos, motoristas e ajudantes.</p>
+              <p class="section-description">Cadastre a escala operacional do dia, gere o documento padronizado e consulte o historico salvo por data.</p>
+            </div>
+            <div class="header-actions schedule-header-actions">
+              <button type="button" id="schedule-duplicate-previous-button" class="ghost-button">Duplicar dia anterior</button>
+              <button type="button" id="schedule-export-excel-button" class="ghost-button">Exportar Excel</button>
+              <button type="button" id="schedule-export-pdf-button" class="ghost-button">Salvar PDF</button>
             </div>
           </div>
-          <div class="two-column-grid">
-            <form id="schedule-form" class="panel form-card operations-form-card">
+          <div class="schedule-workspace-grid">
+            <form id="schedule-form" class="panel form-card operations-form-card schedule-form-card" autocomplete="off">
               <input type="hidden" name="id" />
-              <div class="form-grid">
+              <div class="schedule-meta-grid">
                 <label>
-                  <span>Data</span>
+                  <span>Data da escala</span>
                   <input id="schedule-date-filter" type="date" name="scheduledDate" required />
+                </label>
+                <label>
+                  <span>Titulo do documento</span>
+                  <input type="text" name="documentTitle" list="schedule-document-title-list" placeholder="ESCALA OPERACIONAL DIARIA" />
                 </label>
                 <label>
                   <span>Responsavel</span>
                   <input type="text" name="responsibleName" />
                 </label>
                 <label>
-                  <span>Veículo</span>
-                  <input type="text" name="vehicle" required />
-                </label>
-                <label>
-                  <span>Local / rota</span>
-                  <input type="text" name="location" />
-                </label>
-                <label>
-                  <span>Motorista</span>
-                  <input type="text" name="driver" required />
-                </label>
-                <label>
-                  <span>Ajudante</span>
-                  <input type="text" name="assistant" />
+                  <span>Modo do documento</span>
+                  <select id="schedule-document-mode" name="documentMode">
+                    <option value="filled">Auto preenchido</option>
+                    <option value="blank">Em branco</option>
+                  </select>
                 </label>
               </div>
-              <div class="form-actions">
+              <label class="full-width">
+                <span>Observacao geral da escala</span>
+                <textarea name="generalNotes" rows="4" placeholder="Recados de embarque, orientacoes da rota, observacoes internas..."></textarea>
+              </label>
+              <div class="schedule-form-toolbar">
+                <button type="button" id="schedule-add-line-button" class="secondary-button">Adicionar linha</button>
                 <button type="submit" class="primary-button">Salvar escala</button>
+                <button type="button" id="schedule-generate-document-button" class="ghost-button">Gerar documento</button>
+                <button type="button" id="schedule-print-button" class="ghost-button">Imprimir</button>
                 <button type="button" id="schedule-reset-button" class="ghost-button">Limpar</button>
               </div>
+              <div class="schedule-lines-panel">
+                <div class="card-title">
+                  <span class="eyebrow">Lancamento rapido</span>
+                  <h3>Linhas da escala</h3>
+                </div>
+                <div class="schedule-lines-head">
+                  <span>Linha</span>
+                  <span>Placa</span>
+                  <span>Relacao / rota</span>
+                  <span>Motorista</span>
+                  <span>Ajudante</span>
+                  <span>Hora</span>
+                  <span>Acoes</span>
+                </div>
+                <div id="schedule-lines-container" class="schedule-lines-container"></div>
+              </div>
+              <datalist id="schedule-vehicle-list"></datalist>
+              <datalist id="schedule-driver-list"></datalist>
+              <datalist id="schedule-assistant-list"></datalist>
+              <datalist id="schedule-location-list"></datalist>
+              <datalist id="schedule-document-title-list">
+                <option value="ESCALA OPERACIONAL DIARIA"></option>
+                <option value="RELACAO PARA VIAGEM E EMBARQUE"></option>
+              </datalist>
             </form>
 
-            <div class="panel table-panel">
-              <div class="table-wrapper">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Data</th>
-                      <th>Veículo</th>
-                      <th>Motorista</th>
-                      <th>Ajudante</th>
-                      <th>Ações</th>
-                    </tr>
-                  </thead>
-                  <tbody id="schedules-table-body"></tbody>
-                </table>
-              </div>
+            <div class="schedule-side-stack">
+              <article class="panel table-panel schedule-table-panel">
+                <div class="card-title">
+                  <span class="eyebrow">Visualizacao</span>
+                  <h3>Escala do dia</h3>
+                </div>
+                <div class="table-wrapper">
+                  <table class="schedule-preview-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Placa</th>
+                        <th>Local / rota</th>
+                        <th>Motorista</th>
+                        <th>Ajudante</th>
+                        <th>Hora</th>
+                      </tr>
+                    </thead>
+                    <tbody id="schedules-table-body"></tbody>
+                  </table>
+                </div>
+              </article>
+
+              <article class="panel schedule-document-panel">
+                <div class="card-title">
+                  <span class="eyebrow">Documento</span>
+                  <h3>Preview para impressao</h3>
+                </div>
+                <div id="schedule-document-preview" class="schedule-document-preview">
+                  <div class="dashboard-empty">
+                    <strong>Documento ainda nao gerado</strong>
+                    <p class="muted">Preencha a escala e gere o documento para revisar o layout antes de imprimir.</p>
+                  </div>
+                </div>
+              </article>
             </div>
           </div>
           <div class="operations-chart-grid">
@@ -978,12 +1029,49 @@
 
             <article class="panel">
               <div class="card-title">
-                <span class="eyebrow">Observacoes gerais</span>
-                <h3>Notas da escala</h3>
+                <span class="eyebrow">Observacoes</span>
+                <h3>Pontos operacionais</h3>
               </div>
               <div id="schedule-notes-feed" class="stack-list"></div>
             </article>
           </div>
+          <article class="panel schedule-history-panel">
+            <div class="section-header schedule-history-header">
+              <div>
+                <span class="eyebrow">Consulta</span>
+                <h3>Historico de escalas</h3>
+              </div>
+              <div class="header-actions schedule-history-actions">
+                <label>
+                  <span>Data</span>
+                  <input id="schedule-history-date" type="date" />
+                </label>
+                <label>
+                  <span>Placa</span>
+                  <input id="schedule-history-plate" type="text" placeholder="ABC-1D23" />
+                </label>
+                <label>
+                  <span>Motorista</span>
+                  <input id="schedule-history-driver" type="text" placeholder="Buscar motorista" />
+                </label>
+                <button type="button" id="schedule-history-clear-button" class="ghost-button">Limpar filtros</button>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table class="schedule-history-table">
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Documento</th>
+                    <th>Resumo</th>
+                    <th>Atualizado por</th>
+                    <th>Acoes</th>
+                  </tr>
+                </thead>
+                <tbody id="schedule-history-table-body"></tbody>
+              </table>
+            </div>
+          </article>
         </section>
 
         <section id="fines-section" class="content-section">

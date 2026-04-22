@@ -559,6 +559,175 @@ function migrateFuelSchema() {
 function migrateOperationalSchema() {
   ensureColumn("schedules", "location", "TEXT");
   ensureColumn("schedules", "responsible_name", "TEXT");
+  runScript(`
+    CREATE TABLE IF NOT EXISTS schedule_days (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scheduled_date TEXT NOT NULL UNIQUE,
+      document_title TEXT NOT NULL DEFAULT 'ESCALA OPERACIONAL DIARIA',
+      responsible_name TEXT,
+      general_notes TEXT,
+      created_by INTEGER,
+      updated_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(created_by) REFERENCES users(id),
+      FOREIGN KEY(updated_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS schedule_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      schedule_day_id INTEGER NOT NULL,
+      legacy_source_id INTEGER UNIQUE,
+      line_order INTEGER NOT NULL DEFAULT 1,
+      vehicle TEXT NOT NULL,
+      location TEXT,
+      driver TEXT NOT NULL,
+      assistant TEXT,
+      departure_time TEXT,
+      notes TEXT,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(schedule_day_id) REFERENCES schedule_days(id) ON DELETE CASCADE,
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_schedule_days_date ON schedule_days(scheduled_date);
+    CREATE INDEX IF NOT EXISTS idx_schedule_entries_day_order ON schedule_entries(schedule_day_id, line_order, id);
+    CREATE INDEX IF NOT EXISTS idx_schedule_entries_vehicle ON schedule_entries(vehicle);
+    CREATE INDEX IF NOT EXISTS idx_schedule_entries_driver ON schedule_entries(driver);
+  `);
+
+  ensureColumn("schedule_days", "document_title", "TEXT NOT NULL DEFAULT 'ESCALA OPERACIONAL DIARIA'");
+  ensureColumn("schedule_days", "responsible_name", "TEXT");
+  ensureColumn("schedule_days", "general_notes", "TEXT");
+  ensureColumn("schedule_days", "updated_by", "INTEGER");
+  ensureColumn("schedule_entries", "legacy_source_id", "INTEGER");
+  ensureColumn("schedule_entries", "line_order", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("schedule_entries", "location", "TEXT");
+  ensureColumn("schedule_entries", "assistant", "TEXT");
+  ensureColumn("schedule_entries", "departure_time", "TEXT");
+  ensureColumn("schedule_entries", "notes", "TEXT");
+  migrateLegacySchedulesToDailyScale();
+}
+
+function migrateLegacySchedulesToDailyScale() {
+  const legacyRows = all(
+    `
+      SELECT s.*
+      FROM schedules s
+      LEFT JOIN schedule_entries se ON se.legacy_source_id = s.id
+      WHERE se.id IS NULL
+      ORDER BY s.scheduled_date ASC, s.id ASC
+    `
+  );
+
+  if (!legacyRows.length) {
+    return;
+  }
+
+  const fallbackAdmin = get("SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1");
+  const dayCache = new Map();
+  const lineCounterByDate = new Map();
+
+  transaction(() => {
+    legacyRows.forEach((row) => {
+      const scheduledDate = normalizeText(row.scheduled_date);
+      if (!scheduledDate) {
+        return;
+      }
+
+      let scheduleDay = dayCache.get(scheduledDate);
+      if (!scheduleDay) {
+        scheduleDay = get("SELECT * FROM schedule_days WHERE scheduled_date = ? LIMIT 1", [scheduledDate]);
+      }
+
+      const createdAt = normalizeText(row.created_at) || nowIso();
+      const updatedAt = normalizeText(row.updated_at) || createdAt;
+      const responsibleName = normalizeText(row.responsible_name);
+      const createdBy = Number(row.created_by || fallbackAdmin?.id || 0) || null;
+
+      if (!scheduleDay) {
+        const scheduleDayId = insert(
+          `
+            INSERT INTO schedule_days (
+              scheduled_date, document_title, responsible_name, general_notes, created_by, updated_by, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            scheduledDate,
+            "ESCALA OPERACIONAL DIARIA",
+            responsibleName,
+            "",
+            createdBy,
+            createdBy,
+            createdAt,
+            updatedAt,
+          ]
+        );
+        scheduleDay = get("SELECT * FROM schedule_days WHERE id = ? LIMIT 1", [scheduleDayId]);
+      } else {
+        const nextResponsibleName = normalizeText(scheduleDay.responsible_name) || responsibleName;
+        const nextCreatedAt = normalizeText(scheduleDay.created_at) || createdAt;
+        const nextUpdatedAt =
+          normalizeText(scheduleDay.updated_at) && normalizeText(scheduleDay.updated_at) > updatedAt
+            ? normalizeText(scheduleDay.updated_at)
+            : updatedAt;
+
+        write(
+          `
+            UPDATE schedule_days
+            SET responsible_name = ?,
+                created_by = coalesce(created_by, ?),
+                updated_by = ?,
+                created_at = ?,
+                updated_at = ?
+            WHERE id = ?
+          `,
+          [nextResponsibleName, createdBy, createdBy, nextCreatedAt, nextUpdatedAt, scheduleDay.id]
+        );
+        scheduleDay = get("SELECT * FROM schedule_days WHERE id = ? LIMIT 1", [scheduleDay.id]);
+      }
+
+      dayCache.set(scheduledDate, scheduleDay);
+
+      const currentOrder =
+        lineCounterByDate.has(scheduledDate)
+          ? Number(lineCounterByDate.get(scheduledDate) || 0)
+          : Number(
+              get(
+                "SELECT COALESCE(MAX(line_order), 0) AS total FROM schedule_entries WHERE schedule_day_id = ?",
+                [scheduleDay.id]
+              )?.total || 0
+            );
+      const nextOrder = currentOrder + 1;
+      lineCounterByDate.set(scheduledDate, nextOrder);
+
+      insert(
+        `
+          INSERT INTO schedule_entries (
+            schedule_day_id, legacy_source_id, line_order, vehicle, location, driver, assistant, departure_time, notes, created_by, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          scheduleDay.id,
+          Number(row.id),
+          nextOrder,
+          normalizeText(row.vehicle),
+          normalizeText(row.location),
+          normalizeText(row.driver),
+          normalizeText(row.assistant),
+          "",
+          normalizeText(row.notes),
+          createdBy,
+          createdAt,
+          updatedAt,
+        ]
+      );
+    });
+  });
 }
 
 function migrateAuthSchema() {

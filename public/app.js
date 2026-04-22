@@ -9,9 +9,12 @@ const BROWSER_MODE_NOTICE_KEY = "horizon-browser-mode-notice-v1";
 const PRINT_JOB_STORAGE_KEY = "horizon-print-jobs-v1";
 const PRINT_JOB_TTL_MS = 15 * 60 * 1000;
 const PRINT_PAGE_FILENAME = "print.html";
+const TOPBAR_COMPACT_SCROLL_THRESHOLD = 60;
 const runtimeState = {
   apiMode: null,
   apiProbe: null,
+  topbarScrollFrame: 0,
+  isTopbarCompact: null,
 };
 const UI_ICONS = {
   dashboard:
@@ -449,6 +452,7 @@ function bindEvents() {
   refs.checklistResetButton.addEventListener("click", resetChecklistForm);
   refs.kardexForm?.addEventListener("submit", handleKardexView);
   refs.kardexStockType?.addEventListener("change", syncKardexFormState);
+  refs.kardexForm?.elements.fuelKind?.addEventListener("change", updateKardexProductSelect);
   refs.kardexPdfButton?.addEventListener("click", () => handleKardexPrint("pdf"));
   refs.kardexPrintButton?.addEventListener("click", () => handleKardexPrint("print"));
   refs.emailForm.addEventListener("submit", handleEmailSubmit);
@@ -457,8 +461,8 @@ function bindEvents() {
   refs.scannerCloseButton.addEventListener("click", closeScanner);
   refs.themeLightButton.addEventListener("click", () => applyTheme("light"));
   refs.themeDarkButton.addEventListener("click", () => applyTheme("dark"));
-  window.addEventListener("scroll", syncTopbarScrollState, { passive: true });
-  window.addEventListener("resize", syncTopbarScrollState);
+  window.addEventListener("scroll", scheduleTopbarScrollStateSync, { passive: true });
+  window.addEventListener("resize", scheduleTopbarScrollStateSync);
 
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => setSection(button.dataset.section));
@@ -527,10 +531,28 @@ function syncThemeSwitcherPlacement() {
   refs.themeSwitcher.dataset.context = "floating";
 }
 
+function scheduleTopbarScrollStateSync() {
+  if (runtimeState.topbarScrollFrame) {
+    return;
+  }
+
+  runtimeState.topbarScrollFrame = window.requestAnimationFrame(() => {
+    runtimeState.topbarScrollFrame = 0;
+    syncTopbarScrollState();
+  });
+}
+
 function syncTopbarScrollState() {
   const shouldCompact =
-    Boolean(state.user) && (window.scrollY > 36 || COMPACT_TOPBAR_SECTIONS.has(state.section));
-  document.body.classList.toggle("has-compact-topbar", shouldCompact);
+    Boolean(state.user) &&
+    (window.scrollY > TOPBAR_COMPACT_SCROLL_THRESHOLD || COMPACT_TOPBAR_SECTIONS.has(state.section));
+
+  if (runtimeState.isTopbarCompact === shouldCompact) {
+    return;
+  }
+
+  runtimeState.isTopbarCompact = shouldCompact;
+  refs.appTopbar?.classList.toggle("is-compact", shouldCompact);
 }
 
 async function api(url, options = {}) {
@@ -902,6 +924,24 @@ function formatFuelKindLabel(value) {
     return "S-500";
   }
   return value || "-";
+}
+
+function normalizeClientFuelKind(value, fallback = "") {
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s_-]+/g, "");
+  if (normalized.includes("S500")) {
+    return "S500";
+  }
+  if (normalized.includes("S10")) {
+    return "S10";
+  }
+  return fallback;
+}
+
+function inferClientFuelKind(value, fallback = "") {
+  return normalizeClientFuelKind(value, fallback);
 }
 
 function formatVehicleFuelProfile(value) {
@@ -1296,6 +1336,8 @@ async function refreshFuel() {
   renderFuel();
   renderFuelStorageOptions();
   renderFuelVehicleOptions();
+  updateFuelStockProductSelect();
+  updateKardexProductSelect();
   syncFuelFormState();
 }
 
@@ -2815,12 +2857,14 @@ function resetChecklistForm() {
 }
 
 function buildKardexRequestPayload() {
+  const stockType = normalizeClientStockType(refs.kardexForm.elements.stockType.value, "COMMON");
   return {
     productId: refs.kardexForm.elements.productId.value,
+    stockType,
     from: refs.kardexForm.elements.from.value ? `${refs.kardexForm.elements.from.value}T00:00:00` : "",
     to: refs.kardexForm.elements.to.value ? `${refs.kardexForm.elements.to.value}T23:59:59` : "",
     branchName: refs.kardexForm.elements.branchName.value,
-    fuelKind: refs.kardexForm.elements.fuelKind.value,
+    fuelKind: stockType === "FUEL" ? normalizeClientFuelKind(refs.kardexForm.elements.fuelKind.value, "") : "",
     document: refs.kardexForm.elements.document.value,
     supplierName: refs.kardexForm.elements.supplierName.value,
   };
@@ -4490,23 +4534,67 @@ function updateMovementProductSelect() {
   }
 }
 
+function getLinkedFuelProducts() {
+  const productMap = new Map();
+
+  state.fuelStorages.forEach((storage) => {
+    const product = state.products.find((item) => String(item.id) === String(storage.productId || ""));
+    if (!product) {
+      return;
+    }
+
+    const productId = String(product.id);
+    const normalizedFuelKind = normalizeClientFuelKind(storage.fuelKind, "");
+    const existing =
+      productMap.get(productId) || {
+        ...product,
+        linkedFuelKinds: [],
+        linkedStorageNames: [],
+      };
+
+    if (normalizedFuelKind && !existing.linkedFuelKinds.includes(normalizedFuelKind)) {
+      existing.linkedFuelKinds.push(normalizedFuelKind);
+    }
+    if (storage.name && !existing.linkedStorageNames.includes(storage.name)) {
+      existing.linkedStorageNames.push(storage.name);
+    }
+
+    productMap.set(productId, existing);
+  });
+
+  return Array.from(productMap.values()).map((product) => ({
+    ...product,
+    linkedFuelKind: product.linkedFuelKinds.length === 1 ? product.linkedFuelKinds[0] : "",
+    linkedStorageName:
+      product.linkedStorageNames.length === 1
+        ? product.linkedStorageNames[0]
+        : product.linkedStorageNames.length
+          ? "Multiplos estoques"
+          : "",
+  }));
+}
+
+function getKardexFuelProducts() {
+  const linkedFuelProducts = getLinkedFuelProducts();
+  const fuelProducts = linkedFuelProducts.length ? linkedFuelProducts : getProductsByStockType("FUEL");
+  const selectedFuelKind = normalizeClientFuelKind(refs.kardexForm?.elements.fuelKind?.value || "", "");
+
+  if (!selectedFuelKind) {
+    return fuelProducts;
+  }
+
+  return fuelProducts.filter((product) => {
+    const productFuelKind = inferClientFuelKind(product.linkedFuelKind || product.fuelKind || product.name, "");
+    return !productFuelKind || productFuelKind === selectedFuelKind;
+  });
+}
+
 function updateFuelStockProductSelect() {
   if (!refs.fuelStockProductSelect) {
     return;
   }
 
-  const linkedFuelProducts = state.fuelStorages
-    .map((storage) => {
-      const product = state.products.find((item) => String(item.id) === String(storage.productId || ""));
-      return product
-        ? {
-            ...product,
-            linkedStorageName: storage.name,
-            linkedFuelKind: storage.fuelKind,
-          }
-        : null;
-    })
-    .filter(Boolean);
+  const linkedFuelProducts = getLinkedFuelProducts();
   const fuelProducts = linkedFuelProducts.length ? linkedFuelProducts : getProductsByStockType("FUEL");
   const currentValue = refs.fuelStockProductSelect.value;
   refs.fuelStockProductSelect.innerHTML = fuelProducts.length
@@ -4576,17 +4664,27 @@ function updateKardexProductSelect() {
   }
 
   const stockType = normalizeClientStockType(refs.kardexStockType?.value || "COMMON", "COMMON");
-  const products = getProductsByStockType(stockType);
+  const products = stockType === "FUEL" ? getKardexFuelProducts() : getProductsByStockType(stockType);
   const currentValue = refs.kardexProductSelect.value;
   const emptyLabel =
-    stockType === "FUEL" ? "Cadastre ou vincule um combustivel primeiro" : "Cadastre um item de almoxarifado primeiro";
+    stockType === "FUEL"
+      ? refs.kardexForm?.elements.fuelKind?.value
+        ? `Nenhum combustivel compativel com ${formatFuelKindLabel(refs.kardexForm.elements.fuelKind.value)}`
+        : "Cadastre ou vincule um combustivel primeiro"
+      : "Cadastre um item de almoxarifado primeiro";
 
   refs.kardexProductSelect.innerHTML = products.length
     ? `<option value="">Selecione um produto</option>${products
         .map(
           (product) => `
             <option value="${product.id}">
-              ${escapeHtml(product.name)} (${escapeHtml(product.unit)})
+              ${escapeHtml(product.name)}
+              ${
+                stockType === "FUEL" && inferClientFuelKind(product.linkedFuelKind || product.fuelKind || product.name, "")
+                  ? ` | ${escapeHtml(formatFuelKindLabel(inferClientFuelKind(product.linkedFuelKind || product.fuelKind || product.name, "")))}`
+                  : ""
+              }
+              (${escapeHtml(product.unit)})
             </option>
           `
         )
@@ -4866,7 +4964,7 @@ function buildKardexRequestPayload() {
     from: refs.kardexForm.elements.from.value ? `${refs.kardexForm.elements.from.value}T00:00:00` : "",
     to: refs.kardexForm.elements.to.value ? `${refs.kardexForm.elements.to.value}T23:59:59` : "",
     branchName: refs.kardexForm.elements.branchName.value,
-    fuelKind: stockType === "FUEL" ? refs.kardexForm.elements.fuelKind.value : "",
+    fuelKind: stockType === "FUEL" ? normalizeClientFuelKind(refs.kardexForm.elements.fuelKind.value, "") : "",
     document: refs.kardexForm.elements.document.value,
     supplierName: refs.kardexForm.elements.supplierName.value,
   };
