@@ -118,6 +118,97 @@
     critical: "CRITICAL",
   };
 
+  const CHECKLIST_CATEGORY_ALIASES = {
+    seguranca: "Seguranca",
+    mecanica: "Mecanica",
+    eletrica: "Eletrica",
+    documentacao: "Documentacao",
+    documentacao_legal: "Documentacao",
+    carroceria: "Carroceria/Bau",
+    bau: "Carroceria/Bau",
+    carroceria_bau: "Carroceria/Bau",
+    conservacao: "Conservacao",
+    outros: "Outros",
+    outro: "Outros",
+  };
+
+  const DEFAULT_COMPANY_SETTINGS = {
+    companyName: "Empresa cliente",
+    logoDataUrl: "",
+    cnpj: "",
+    address: "",
+    phone: "",
+    email: "",
+    primaryColor: "#c40000",
+    documentFooter: "Gerado pelo sistema Horizon",
+  };
+
+  const DEFAULT_CHECKLIST_TEMPLATE = [
+    {
+      itemKey: "freios",
+      name: "Freios",
+      description: "Verificar funcionamento do sistema de freios.",
+      category: "Seguranca",
+      required: true,
+      active: true,
+      sortOrder: 1,
+    },
+    {
+      itemKey: "luzes",
+      name: "Luzes",
+      description: "Farol, seta, luz de freio e re.",
+      category: "Eletrica",
+      required: true,
+      active: true,
+      sortOrder: 2,
+    },
+    {
+      itemKey: "buzina",
+      name: "Buzina",
+      description: "Confirmar acionamento da buzina.",
+      category: "Seguranca",
+      required: true,
+      active: true,
+      sortOrder: 3,
+    },
+    {
+      itemKey: "cinto",
+      name: "Cinto de seguranca",
+      description: "Checar travamento e desgaste.",
+      category: "Seguranca",
+      required: true,
+      active: true,
+      sortOrder: 4,
+    },
+    {
+      itemKey: "pneus",
+      name: "Pneus",
+      description: "Estado geral, sulco e calibragem visual.",
+      category: "Mecanica",
+      required: true,
+      active: true,
+      sortOrder: 5,
+    },
+    {
+      itemKey: "triangulo",
+      name: "Triangulo",
+      description: "Conferir presenca e acesso rapido.",
+      category: "Documentacao",
+      required: true,
+      active: true,
+      sortOrder: 6,
+    },
+    {
+      itemKey: "extintor",
+      name: "Extintor",
+      description: "Usar apenas se exigido pela operacao.",
+      category: "Seguranca",
+      required: false,
+      active: false,
+      sortOrder: 7,
+    },
+  ];
+
   let dbCache = null;
   let dbPromise = null;
 
@@ -406,6 +497,14 @@
     return normalizeEnum(value, CHECKLIST_STATUS_ALIASES, fallback);
   }
 
+  function normalizeChecklistCategory(value, fallback = "Outros") {
+    const normalized = normalizeKey(value);
+    if (!normalized) {
+      return fallback;
+    }
+    return CHECKLIST_CATEGORY_ALIASES[normalized] || normalizeText(value) || fallback;
+  }
+
   function normalizeChecklistItemStatus(value, fallback = "OK") {
     return normalizeEnum(value, CHECKLIST_ITEM_STATUS_ALIASES, fallback);
   }
@@ -454,6 +553,11 @@
         key: normalizeKey(label) || `item_${index + 1}`,
         label,
         description: "",
+        category: "Outros",
+        required: true,
+        active: true,
+        vehicleType: "",
+        notes: "",
         status: "OK",
       };
     }
@@ -463,6 +567,11 @@
       key: normalizeKey(item?.key || label) || `item_${index + 1}`,
       label: label || `Item ${index + 1}`,
       description: normalizeText(item?.description),
+      category: normalizeChecklistCategory(item?.category, "Outros"),
+      required: item?.required === false ? false : true,
+      active: item?.active === false ? false : true,
+      vehicleType: normalizeText(item?.vehicleType || item?.vehicle_type),
+      notes: normalizeText(item?.notes || item?.observation),
       status: normalizeChecklistItemStatus(item?.status, "OK"),
     };
   }
@@ -506,6 +615,7 @@
       driverName: normalizeText(input?.driverName || fallbackMeta.driverName),
       odometerKm,
       signatureName: normalizeText(input?.signatureName || fallbackMeta.signatureName),
+      temporaryIssue: normalizeText(input?.temporaryIssue || fallbackMeta.temporaryIssue),
     };
 
     const summary = itemsDetailed.reduce(
@@ -530,9 +640,41 @@
     };
   }
 
+  function normalizeCompanySettingsInput(input = {}, fallback = {}) {
+    return {
+      companyName: normalizeText(input.companyName || input.name || fallback.companyName || DEFAULT_COMPANY_SETTINGS.companyName),
+      logoDataUrl: normalizeText(input.logoDataUrl || input.logo || fallback.logoDataUrl),
+      cnpj: normalizeText(input.cnpj || fallback.cnpj),
+      address: normalizeText(input.address || fallback.address),
+      phone: normalizeText(input.phone || fallback.phone),
+      email: normalizeText(input.email || fallback.email).toLowerCase(),
+      primaryColor: normalizeText(input.primaryColor || fallback.primaryColor || DEFAULT_COMPANY_SETTINGS.primaryColor),
+      documentFooter:
+        normalizeText(input.documentFooter || input.footer || fallback.documentFooter || DEFAULT_COMPANY_SETTINGS.documentFooter),
+    };
+  }
+
+  function normalizeChecklistTemplateItemConfig(input = {}, index = 0, fallback = {}) {
+    const name = normalizeText(input.name || input.label || fallback.name);
+    const itemKey = normalizeKey(input.itemKey || input.key || name || fallback.itemKey) || `item_${index + 1}`;
+    const sortOrder = Math.max(1, Number.parseInt(String(input.sortOrder ?? fallback.sortOrder ?? index + 1), 10) || index + 1);
+
+    return {
+      itemKey,
+      name: name || `Item ${index + 1}`,
+      description: normalizeText(input.description || fallback.description),
+      category: normalizeChecklistCategory(input.category || fallback.category, "Outros"),
+      required: input.required === false || input.required === "false" ? false : fallback.required === false ? false : true,
+      active: input.active === false || input.active === "false" ? false : fallback.active === false ? false : true,
+      vehicleType: normalizeText(input.vehicleType || input.vehicle_type || fallback.vehicleType),
+      sortOrder,
+    };
+  }
+
   function createEmptyDb() {
     return {
       version: 1,
+      companySettings: { ...DEFAULT_COMPANY_SETTINGS },
       counters: {
         users: 1,
         activationCodes: 1,
@@ -547,6 +689,7 @@
         schedules: 1,
         fines: 1,
         checklists: 1,
+        checklistTemplateItems: 1,
         emails: 1,
         actionLogs: 1,
       },
@@ -563,6 +706,7 @@
       schedules: [],
       fines: [],
       checklists: [],
+      checklistTemplateItems: [],
       emails: [],
       actionLogs: [],
     };
@@ -573,6 +717,7 @@
     const db = {
       ...defaults,
       ...(candidate && typeof candidate === "object" ? candidate : {}),
+      companySettings: normalizeCompanySettingsInput(candidate?.companySettings, defaults.companySettings),
       counters: {
         ...defaults.counters,
         ...(candidate?.counters && typeof candidate.counters === "object" ? candidate.counters : {}),
@@ -593,6 +738,7 @@
       "schedules",
       "fines",
       "checklists",
+      "checklistTemplateItems",
       "emails",
       "actionLogs",
     ];
@@ -615,6 +761,7 @@
       schedules: "schedules",
       fines: "fines",
       checklists: "checklists",
+      checklistTemplateItems: "checklistTemplateItems",
       emails: "emails",
       actionLogs: "actionLogs",
     })) {
@@ -1842,6 +1989,7 @@
               ? null
               : Number(parsed.meta.odometerKm),
           signatureName: normalizeText(parsed.meta.signatureName),
+          temporaryIssue: normalizeText(parsed.meta.temporaryIssue),
           items: parsed.itemsDetailed.map((item) => item.label),
           itemsDetailed: parsed.itemsDetailed,
           itemSummary: summary,
@@ -1852,6 +2000,100 @@
           userName: getUserById(db, checklist.createdBy)?.name || "",
         };
       });
+  }
+
+  function queryCompanySettings(db) {
+    return {
+      ...DEFAULT_COMPANY_SETTINGS,
+      ...normalizeCompanySettingsInput(db.companySettings, DEFAULT_COMPANY_SETTINGS),
+    };
+  }
+
+  function saveCompanySettings(db, input = {}) {
+    db.companySettings = normalizeCompanySettingsInput(input, queryCompanySettings(db));
+    if (!db.companySettings.companyName) {
+      throw new ApiError(400, "Informe o nome da empresa.");
+    }
+    return queryCompanySettings(db);
+  }
+
+  function ensureChecklistTemplateSeeded(db) {
+    if (Array.isArray(db.checklistTemplateItems) && db.checklistTemplateItems.length) {
+      return;
+    }
+
+    const timestamp = nowIso();
+    db.checklistTemplateItems = DEFAULT_CHECKLIST_TEMPLATE.map((item, index) => ({
+      id: nextId(db, "checklistTemplateItems"),
+      ...normalizeChecklistTemplateItemConfig(item, index),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      updatedBy: null,
+    }));
+  }
+
+  function queryChecklistTemplateItems(db) {
+    ensureChecklistTemplateSeeded(db);
+    return db.checklistTemplateItems
+      .slice()
+      .sort((left, right) => Number(left.sortOrder || 0) - Number(right.sortOrder || 0) || Number(left.id) - Number(right.id))
+      .map((item, index) => ({
+        id: Number(item.id),
+        ...normalizeChecklistTemplateItemConfig(item, index),
+        isDefault: false,
+      }));
+  }
+
+  function createChecklistTemplateItem(db, input = {}, currentUser) {
+    const normalized = normalizeChecklistTemplateItemConfig(input, db.checklistTemplateItems.length || 0);
+    if (!normalized.name) {
+      throw new ApiError(400, "Informe o nome do item de checklist.");
+    }
+
+    const duplicate = db.checklistTemplateItems.find((item) => item.itemKey === normalized.itemKey);
+    if (duplicate) {
+      throw new ApiError(400, "Ja existe um item de checklist com esta chave.");
+    }
+
+    const timestamp = nowIso();
+    const item = {
+      id: nextId(db, "checklistTemplateItems"),
+      ...normalized,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      updatedBy: currentUser?.id || null,
+    };
+    db.checklistTemplateItems.push(item);
+    return queryChecklistTemplateItems(db).find((entry) => entry.id === item.id) || null;
+  }
+
+  function updateChecklistTemplateItem(db, itemId, input = {}, currentUser) {
+    ensureChecklistTemplateSeeded(db);
+    const existing = db.checklistTemplateItems.find((item) => Number(item.id) === Number(itemId));
+    if (!existing) {
+      throw new ApiError(404, "Item de checklist nao encontrado.");
+    }
+
+    const normalized = normalizeChecklistTemplateItemConfig(input, Number(existing.sortOrder || 1) - 1, existing);
+    const duplicate = db.checklistTemplateItems.find(
+      (item) => item.itemKey === normalized.itemKey && Number(item.id) !== Number(itemId)
+    );
+    if (duplicate) {
+      throw new ApiError(400, "Ja existe outro item com esta chave.");
+    }
+
+    existing.itemKey = normalized.itemKey;
+    existing.name = normalized.name;
+    existing.description = normalized.description;
+    existing.category = normalized.category;
+    existing.required = normalized.required;
+    existing.active = normalized.active;
+    existing.vehicleType = normalized.vehicleType;
+    existing.sortOrder = normalized.sortOrder;
+    existing.updatedAt = nowIso();
+    existing.updatedBy = currentUser?.id || null;
+
+    return queryChecklistTemplateItems(db).find((item) => item.id === Number(itemId)) || null;
   }
 
   function buildKardexReport(db, filters = {}) {
@@ -1970,8 +2212,11 @@
 
     const currentCost = Number(product.defaultCost || 0) || Number(lastPurchase?.unitCost || 0) || 0;
 
+    const company = queryCompanySettings(db);
+
     return {
-      companyName: "HORIZON",
+      company,
+      companyName: company.companyName,
       reportName:
         filterSet.stockType === "FUEL"
           ? "Ficha Kardex - Combustivel"
@@ -2574,6 +2819,54 @@
           todaySchedules,
           analytics: fuelAnalytics,
         };
+      }
+
+      if (path === "/api/settings/company" && method === "GET") {
+        requireAuth(user);
+        return { item: queryCompanySettings(db) };
+      }
+
+      if (path === "/api/settings/company" && method === "PUT") {
+        const currentUser = requireRoles(user, ["ADMIN"]);
+        const item = saveCompanySettings(db, body);
+        logAction(db, currentUser, "UPDATE_COMPANY_SETTINGS", "COMPANY_SETTINGS", 1, {
+          companyName: item.companyName,
+          hasLogo: Boolean(item.logoDataUrl),
+        });
+        maybePersist(db);
+        return { item };
+      }
+
+      if (path === "/api/checklists/template" && method === "GET") {
+        requireAuth(user);
+        return { items: queryChecklistTemplateItems(db) };
+      }
+
+      if (path === "/api/checklists/template" && method === "POST") {
+        const currentUser = requireRoles(user, ["ADMIN"]);
+        const item = createChecklistTemplateItem(db, body, currentUser);
+        logAction(db, currentUser, "CREATE_CHECKLIST_TEMPLATE_ITEM", "CHECKLIST_TEMPLATE", item?.id || null, {
+          itemKey: item?.itemKey,
+          name: item?.name,
+          category: item?.category,
+          active: item?.active,
+        });
+        maybePersist(db);
+        return { item };
+      }
+
+      const checklistTemplateId = getPathId(path, "/api/checklists/template");
+      if (checklistTemplateId && method === "PUT") {
+        const currentUser = requireRoles(user, ["ADMIN"]);
+        const item = updateChecklistTemplateItem(db, checklistTemplateId, body, currentUser);
+        logAction(db, currentUser, "UPDATE_CHECKLIST_TEMPLATE_ITEM", "CHECKLIST_TEMPLATE", checklistTemplateId, {
+          itemKey: item?.itemKey,
+          name: item?.name,
+          category: item?.category,
+          active: item?.active,
+        });
+        maybePersist(db);
+        return { item };
       }
 
       if (path === "/api/notes" && method === "GET") {

@@ -9,12 +9,15 @@ const BROWSER_MODE_NOTICE_KEY = "horizon-browser-mode-notice-v1";
 const PRINT_JOB_STORAGE_KEY = "horizon-print-jobs-v1";
 const PRINT_JOB_TTL_MS = 15 * 60 * 1000;
 const PRINT_PAGE_FILENAME = "print.html";
-const TOPBAR_COMPACT_SCROLL_THRESHOLD = 60;
+const SIDEBAR_STORAGE_KEY = "horizon-sidebar-mode";
+const SIDEBAR_MOBILE_MAX_WIDTH = 780;
+const SIDEBAR_TABLET_MAX_WIDTH = 1100;
 const runtimeState = {
   apiMode: null,
   apiProbe: null,
-  topbarScrollFrame: 0,
-  isTopbarCompact: null,
+  sidebarViewport: null,
+  sidebarMode: "expanded",
+  sidebarOpen: false,
 };
 const UI_ICONS = {
   dashboard:
@@ -73,12 +76,21 @@ const SECTION_ICONS = {
   admin: "admin",
 };
 const DASHBOARD_TITLE_ICONS = ["analytics", "efficiency", "vehicle", "fuel", "notes", "alert", "schedules"];
-const COMPACT_TOPBAR_SECTIONS = new Set(["reports"]);
 
 const state = {
   user: null,
   section: "dashboard",
   authMode: "login",
+  company: {
+    companyName: "Empresa cliente",
+    logoDataUrl: "",
+    cnpj: "",
+    address: "",
+    phone: "",
+    email: "",
+    primaryColor: "#c40000",
+    documentFooter: "Gerado pelo sistema Horizon",
+  },
   notes: [],
   products: [],
   vehicles: [],
@@ -88,7 +100,9 @@ const state = {
   schedules: [],
   fines: [],
   checklists: [],
+  checklistTemplate: [],
   checklistDraftItems: [],
+  checklistCollapsedCategories: {},
   emails: [],
   adminUsers: [],
   logs: [],
@@ -174,52 +188,89 @@ const CHECKLIST_STATUS_META = {
   CRITICAL: { label: "Critico", className: "status-red" },
 };
 
+const CHECKLIST_CATEGORY_ORDER = [
+  "Seguranca",
+  "Mecanica",
+  "Eletrica",
+  "Documentacao",
+  "Carroceria/Bau",
+  "Conservacao",
+  "Outros",
+];
+
 const DEFAULT_CHECKLIST_TEMPLATE = [
   {
     key: "freios",
     label: "Freios",
     description: "Verificar funcionamento do sistema de freios.",
+    category: "Seguranca",
+    required: true,
+    active: true,
   },
   {
     key: "luzes",
     label: "Luzes",
     description: "Farol, seta, luz de freio e re.",
+    category: "Eletrica",
+    required: true,
+    active: true,
   },
   {
     key: "buzina",
     label: "Buzina",
     description: "Verificar funcionamento da buzina.",
+    category: "Seguranca",
+    required: true,
+    active: true,
   },
   {
     key: "cinto",
     label: "Cinto de seguranca",
     description: "Verificar condicoes do cinto.",
+    category: "Seguranca",
+    required: true,
+    active: true,
   },
   {
     key: "pneus",
     label: "Pneus",
     description: "Estado geral e calibragem visual.",
+    category: "Mecanica",
+    required: true,
+    active: true,
   },
   {
     key: "estepe",
     label: "Estepe",
     description: "Verificar estepe e ferramentas.",
+    category: "Mecanica",
+    required: false,
+    active: true,
   },
   {
     key: "triangulo",
     label: "Triangulo",
     description: "Verificar presenca do triangulo.",
+    category: "Documentacao",
+    required: true,
+    active: true,
   },
   {
     key: "extintor",
     label: "Extintor",
     description: "Verificar validade e pressao.",
+    category: "Seguranca",
+    required: false,
+    active: false,
   },
 ];
 
 const refs = {
   authScreen: $("auth-screen"),
   appShell: $("app-shell"),
+  appSidebar: $("app-sidebar"),
+  sidebarBackdrop: $("sidebar-backdrop"),
+  sidebarToggleButton: $("sidebar-toggle-button"),
   loginCard: $("login-form"),
   activationCard: $("activation-form"),
   loginForm: $("login-form"),
@@ -237,6 +288,7 @@ const refs = {
   dashboardMetrics: $("dashboard-metrics"),
   dashboardConsumptionChart: $("dashboard-consumption-chart"),
   dashboardEfficiencySpotlight: $("dashboard-efficiency-spotlight"),
+  dashboardKmReview: $("dashboard-km-review"),
   dashboardRanking: $("dashboard-ranking"),
   dashboardTopConsumers: $("dashboard-top-consumers"),
   dashboardNoteFlow: $("dashboard-note-flow"),
@@ -292,10 +344,17 @@ const refs = {
   finesTableBody: $("fines-table-body"),
   checklistForm: $("checklist-form"),
   checklistResetButton: $("checklist-reset-button"),
+  checklistMarkAllOkButton: $("checklist-mark-all-ok-button"),
+  checklistTemporaryItemInput: $("checklist-temporary-item-input"),
+  checklistAddTemporaryItemButton: $("checklist-add-temporary-item-button"),
   checklistsTableBody: $("checklists-table-body"),
   checklistItemsBuilder: $("checklist-items-builder"),
   checklistSummaryCards: $("checklist-summary-cards"),
   checklistHistoryFeed: $("checklist-history-feed"),
+  checklistTemplatePanel: $("checklist-template-panel"),
+  checklistTemplateForm: $("checklist-template-form"),
+  checklistTemplateResetButton: $("checklist-template-reset-button"),
+  checklistTemplateTableBody: $("checklist-template-table-body"),
   kardexForm: $("kardex-form"),
   kardexStockType: $("kardex-stock-type"),
   kardexProductSelect: $("kardex-product-select"),
@@ -308,6 +367,11 @@ const refs = {
   adminUserForm: $("admin-user-form"),
   adminUserResetButton: $("admin-user-reset-button"),
   adminUsersTableBody: $("admin-users-table-body"),
+  adminCompanyCard: $("admin-company-card"),
+  adminCompanyForm: $("admin-company-form"),
+  adminCompanyLogoInput: $("admin-company-logo-input"),
+  adminCompanyClearLogoButton: $("admin-company-clear-logo-button"),
+  adminCompanyLogoPreview: $("admin-company-logo-preview"),
   logsTableBody: $("logs-table-body"),
   scannerModal: $("scanner-modal"),
   scannerVideo: $("scanner-video"),
@@ -328,9 +392,9 @@ async function initialize() {
   syncThemeSwitcherPlacement();
   decorateStaticInterface();
   bindEvents();
+  syncSidebarLayout();
   switchAuthMode("login");
   applyDefaultFormValues();
-  syncTopbarScrollState();
   await maybeShowBrowserModeNotice();
 
   try {
@@ -418,6 +482,8 @@ function bindEvents() {
   refs.showLoginButton?.addEventListener("click", () => switchAuthMode("login"));
   refs.logoutButton.addEventListener("click", handleLogout);
   refs.refreshAllButton.addEventListener("click", refreshAll);
+  refs.sidebarToggleButton?.addEventListener("click", toggleSidebar);
+  refs.sidebarBackdrop?.addEventListener("click", closeSidebarOverlay);
   refs.dashboardPlateFilter.addEventListener("change", refreshDashboard);
   refs.dashboardPeriodFilter.addEventListener("change", refreshDashboard);
   refs.noteForm.addEventListener("submit", handleNoteSubmit);
@@ -450,6 +516,8 @@ function bindEvents() {
   refs.fineResetButton.addEventListener("click", resetFineForm);
   refs.checklistForm.addEventListener("submit", handleChecklistSubmit);
   refs.checklistResetButton.addEventListener("click", resetChecklistForm);
+  refs.checklistMarkAllOkButton?.addEventListener("click", markChecklistDraftAsOk);
+  refs.checklistAddTemporaryItemButton?.addEventListener("click", addTemporaryChecklistItem);
   refs.kardexForm?.addEventListener("submit", handleKardexView);
   refs.kardexStockType?.addEventListener("change", syncKardexFormState);
   refs.kardexForm?.elements.fuelKind?.addEventListener("change", updateKardexProductSelect);
@@ -458,11 +526,16 @@ function bindEvents() {
   refs.emailForm.addEventListener("submit", handleEmailSubmit);
   refs.adminUserForm.addEventListener("submit", handleAdminUserSubmit);
   refs.adminUserResetButton?.addEventListener("click", resetAdminUserForm);
+  refs.adminCompanyForm?.addEventListener("submit", handleCompanySettingsSubmit);
+  refs.adminCompanyLogoInput?.addEventListener("change", handleCompanyLogoInputChange);
+  refs.adminCompanyClearLogoButton?.addEventListener("click", clearCompanyLogoSelection);
+  refs.checklistTemplateForm?.addEventListener("submit", handleChecklistTemplateSubmit);
+  refs.checklistTemplateResetButton?.addEventListener("click", resetChecklistTemplateForm);
   refs.scannerCloseButton.addEventListener("click", closeScanner);
   refs.themeLightButton.addEventListener("click", () => applyTheme("light"));
   refs.themeDarkButton.addEventListener("click", () => applyTheme("dark"));
-  window.addEventListener("scroll", scheduleTopbarScrollStateSync, { passive: true });
-  window.addEventListener("resize", scheduleTopbarScrollStateSync);
+  window.addEventListener("resize", syncSidebarLayout);
+  document.addEventListener("keydown", handleGlobalKeydown);
 
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => setSection(button.dataset.section));
@@ -470,6 +543,7 @@ function bindEvents() {
 
   document.body.addEventListener("click", handleRowActions);
   document.body.addEventListener("click", handleInteractivePanels);
+  document.body.addEventListener("input", handleInteractiveInputs);
 
   document.querySelectorAll("[data-scan-target]").forEach((button) => {
     button.addEventListener("click", () => openScanner(button.dataset.scanTarget));
@@ -531,28 +605,99 @@ function syncThemeSwitcherPlacement() {
   refs.themeSwitcher.dataset.context = "floating";
 }
 
-function scheduleTopbarScrollStateSync() {
-  if (runtimeState.topbarScrollFrame) {
-    return;
+function resolveSidebarViewport() {
+  if (window.innerWidth <= SIDEBAR_MOBILE_MAX_WIDTH) {
+    return "mobile";
   }
 
-  runtimeState.topbarScrollFrame = window.requestAnimationFrame(() => {
-    runtimeState.topbarScrollFrame = 0;
-    syncTopbarScrollState();
-  });
+  if (window.innerWidth <= SIDEBAR_TABLET_MAX_WIDTH) {
+    return "tablet";
+  }
+
+  return "desktop";
 }
 
-function syncTopbarScrollState() {
-  const shouldCompact =
-    Boolean(state.user) &&
-    (window.scrollY > TOPBAR_COMPACT_SCROLL_THRESHOLD || COMPACT_TOPBAR_SECTIONS.has(state.section));
+function readStoredSidebarMode(viewport) {
+  const storageKey = `${SIDEBAR_STORAGE_KEY}:${viewport}`;
+  const storedMode = window.localStorage.getItem(storageKey);
+  return storedMode === "compact" || storedMode === "expanded" ? storedMode : null;
+}
 
-  if (runtimeState.isTopbarCompact === shouldCompact) {
+function resolveSidebarModeForViewport(viewport) {
+  if (viewport === "mobile") {
+    return "hidden";
+  }
+
+  return readStoredSidebarMode(viewport) || (viewport === "tablet" ? "compact" : "expanded");
+}
+
+function syncSidebarLayout() {
+  const nextViewport = resolveSidebarViewport();
+  const previousViewport = runtimeState.sidebarViewport;
+
+  runtimeState.sidebarViewport = nextViewport;
+
+  if (nextViewport === "mobile") {
+    runtimeState.sidebarOpen = previousViewport === "mobile" ? runtimeState.sidebarOpen : false;
+    applySidebarLayout();
     return;
   }
 
-  runtimeState.isTopbarCompact = shouldCompact;
-  refs.appTopbar?.classList.toggle("is-compact", shouldCompact);
+  runtimeState.sidebarMode = resolveSidebarModeForViewport(nextViewport);
+  runtimeState.sidebarOpen = false;
+  applySidebarLayout();
+}
+
+function applySidebarLayout() {
+  const viewport = runtimeState.sidebarViewport || resolveSidebarViewport();
+  const mode = viewport === "mobile" ? "hidden" : runtimeState.sidebarMode;
+  const isOverlayOpen = viewport === "mobile" && runtimeState.sidebarOpen;
+  const isExpanded = viewport === "mobile" ? isOverlayOpen : mode === "expanded";
+  const toggleLabel =
+    viewport === "mobile"
+      ? isOverlayOpen
+        ? "Fechar menu lateral"
+        : "Abrir menu lateral"
+      : mode === "expanded"
+        ? "Recolher menu lateral"
+        : "Expandir menu lateral";
+
+  refs.appShell?.setAttribute("data-sidebar-mode", mode);
+  refs.appShell?.setAttribute("data-sidebar-open", isOverlayOpen ? "true" : "false");
+  refs.appShell?.setAttribute("data-sidebar-viewport", viewport);
+  refs.appSidebar?.setAttribute("aria-hidden", viewport === "mobile" && !isOverlayOpen ? "true" : "false");
+  refs.sidebarBackdrop?.setAttribute("aria-hidden", isOverlayOpen ? "false" : "true");
+  refs.sidebarToggleButton?.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+  refs.sidebarToggleButton?.setAttribute("aria-label", toggleLabel);
+  refs.sidebarToggleButton?.setAttribute("title", toggleLabel);
+  document.body.classList.toggle("sidebar-mobile-open", isOverlayOpen);
+}
+
+function toggleSidebar() {
+  if (runtimeState.sidebarViewport === "mobile") {
+    runtimeState.sidebarOpen = !runtimeState.sidebarOpen;
+    applySidebarLayout();
+    return;
+  }
+
+  runtimeState.sidebarMode = runtimeState.sidebarMode === "expanded" ? "compact" : "expanded";
+  window.localStorage.setItem(`${SIDEBAR_STORAGE_KEY}:${runtimeState.sidebarViewport}`, runtimeState.sidebarMode);
+  applySidebarLayout();
+}
+
+function closeSidebarOverlay() {
+  if (runtimeState.sidebarViewport !== "mobile" || !runtimeState.sidebarOpen) {
+    return;
+  }
+
+  runtimeState.sidebarOpen = false;
+  applySidebarLayout();
+}
+
+function handleGlobalKeydown(event) {
+  if (event.key === "Escape") {
+    closeSidebarOverlay();
+  }
 }
 
 async function api(url, options = {}) {
@@ -634,6 +779,15 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Falha ao ler arquivo."));
+    reader.readAsDataURL(file);
+  });
 }
 
 function normalizeClientKey(value) {
@@ -1111,6 +1265,9 @@ function decorateStaticInterface() {
 
     const section = button.dataset.section;
     const label = button.textContent.trim();
+    button.dataset.tooltip = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
     button.innerHTML = `
       <span class="nav-item__icon">${iconMarkup(NAV_ICONS[section] || "dashboard")}</span>
       <span class="nav-item__label">${escapeHtml(label)}</span>
@@ -1164,11 +1321,15 @@ function setUser(user) {
   state.user = user;
   const canAccessAdmin = user && user.role === "ADMIN";
 
+  if (!user) {
+    runtimeState.sidebarOpen = false;
+  }
+
   refs.authScreen.classList.toggle("hidden", Boolean(user));
   refs.appShell.classList.toggle("hidden", !user);
   refs.adminNavButton.classList.toggle("hidden", !canAccessAdmin);
   syncThemeSwitcherPlacement();
-  syncTopbarScrollState();
+  syncSidebarLayout();
 
   if (!canAccessAdmin) {
     state.adminUsers = [];
@@ -1206,7 +1367,7 @@ function setSection(section) {
     panel.classList.toggle("active", panel.id === `${nextSection}-section`);
   });
 
-  syncTopbarScrollState();
+  closeSidebarOverlay();
 }
 
 function applyDefaultFormValues() {
@@ -1226,6 +1387,9 @@ function applyDefaultFormValues() {
   refs.fineForm.elements.fineDate.value = currentLocalDate();
   refs.checklistForm.elements.checklistDate.value = currentLocalDateTime();
   refs.checklistForm.elements.checklistType.value = "PRE_USE";
+  if (refs.checklistForm.elements.temporaryIssue) {
+    refs.checklistForm.elements.temporaryIssue.value = "";
+  }
   refs.emailForm.elements.receivedAt.value = currentLocalDateTime();
   if (refs.kardexForm) {
     refs.kardexForm.elements.stockType.value = "COMMON";
@@ -1233,6 +1397,7 @@ function applyDefaultFormValues() {
     refs.kardexForm.elements.to.value = currentLocalDate();
   }
   resetAdminUserForm();
+  resetChecklistTemplateForm();
   resetVehicleForm();
   state.checklistDraftItems = cloneChecklistTemplate();
   renderChecklistComposer();
@@ -1245,6 +1410,8 @@ async function refreshAll() {
   if (!state.user) {
     return;
   }
+
+  await Promise.all([refreshCompanySettings(), refreshChecklistTemplate()]);
 
   const tasks = [
     refreshDashboard(),
@@ -1308,6 +1475,27 @@ async function refreshProducts() {
   updateMovementProductSelect();
   updateFuelStockProductSelect();
   updateKardexProductSelect();
+}
+
+async function refreshCompanySettings() {
+  const response = await api("/api/settings/company");
+  state.company = {
+    ...state.company,
+    ...(response.item || {}),
+  };
+  renderAdmin();
+}
+
+async function refreshChecklistTemplate() {
+  const response = await api("/api/checklists/template");
+  state.checklistTemplate = Array.isArray(response.items) ? response.items : [];
+  const shouldResetDraft =
+    !state.checklistDraftItems.length ||
+    (state.section !== "checklists" && !refs.checklistForm?.elements?.id?.value);
+  if (shouldResetDraft) {
+    state.checklistDraftItems = cloneChecklistTemplate();
+  }
+  renderChecklists();
 }
 
 async function refreshInventoryMovements() {
@@ -1667,6 +1855,51 @@ function renderDashboard() {
         "Eficiência indisponivel",
         "Preencha o hodometro nas saidas para calcular media km/L real por placa."
       );
+
+  refs.dashboardKmReview.innerHTML = selectedVehicle
+    ? (() => {
+        const segments = (selectedVehicle.segments || []).slice().reverse().slice(0, 4);
+        const reviewCards = segments.length
+          ? segments.map((segment) => {
+              const isHigh = Number(segment.kmPerLiter || 0) >= 8;
+              const isLow = Number(segment.kmPerLiter || 0) > 0 && Number(segment.kmPerLiter || 0) <= 2.5;
+              const toneLabel = isHigh
+                ? "Revisar media alta"
+                : isLow
+                  ? "Revisar media baixa"
+                  : "Faixa operacional";
+
+              return `
+                <article class="stack-item">
+                  <strong>${escapeHtml(`${selectedVehicle.plate} • ${formatShortDate(segment.date)}`)}</strong>
+                  <p class="muted">${escapeHtml(
+                    `${formatDistance(segment.distanceKm)} rodados com ${formatLiters(segment.liters)} L`
+                  )}</p>
+                  <p class="muted">${escapeHtml(`Media apurada: ${formatKmPerLiter(segment.kmPerLiter)} • ${toneLabel}`)}</p>
+                </article>
+              `;
+            })
+          : [
+              `<article class="stack-item"><strong>Sem pares suficientes</strong><p class="muted">Sao necessarios pelo menos dois abastecimentos com KM para conferir a media real.</p></article>`,
+            ];
+
+        const latestRecords = recentVehicleRecords.slice(0, 3).map(
+          (record) => `
+            <article class="stack-item">
+              <strong>${escapeHtml(`${formatFuelKindLabel(record.fuelKind)} • ${formatLiters(record.quantity)} L`)}</strong>
+              <p class="muted">${escapeHtml(formatDateTime(record.occurredAt))}</p>
+              <p class="muted">${escapeHtml(
+                record.odometerKm !== null && record.odometerKm !== undefined
+                  ? `KM informado: ${formatDistance(record.odometerKm)}`
+                  : "KM nao informado neste abastecimento"
+              )}</p>
+            </article>
+          `
+        );
+
+        return [...reviewCards, ...latestRecords].join("");
+      })()
+    : `<article class="stack-item"><strong>Selecione uma placa</strong><p class="muted">Filtre um veiculo para conferir rapidamente as ultimas medias de KM/L.</p></article>`;
 
   refs.dashboardRanking.innerHTML = renderMeterList(
     (analytics.efficiencyRanking || []).slice(0, 5).map((item) => ({
@@ -2122,7 +2355,29 @@ function renderAdmin() {
   if (state.user?.role !== "ADMIN") {
     refs.adminUsersTableBody.innerHTML = emptyRow("Acesso restrito aos administradores.", 6);
     refs.logsTableBody.innerHTML = emptyRow("Acesso restrito aos administradores.", 5);
+    refs.adminCompanyCard?.classList.add("hidden");
+    refs.checklistTemplatePanel?.classList.add("hidden");
     return;
+  }
+
+  refs.adminCompanyCard?.classList.remove("hidden");
+  refs.checklistTemplatePanel?.classList.remove("hidden");
+
+  if (refs.adminCompanyForm) {
+    refs.adminCompanyForm.elements.companyName.value = state.company.companyName || "";
+    refs.adminCompanyForm.elements.cnpj.value = state.company.cnpj || "";
+    refs.adminCompanyForm.elements.address.value = state.company.address || "";
+    refs.adminCompanyForm.elements.phone.value = state.company.phone || "";
+    refs.adminCompanyForm.elements.email.value = state.company.email || "";
+    refs.adminCompanyForm.elements.primaryColor.value = state.company.primaryColor || "#c40000";
+    refs.adminCompanyForm.elements.documentFooter.value = state.company.documentFooter || "";
+    refs.adminCompanyForm.elements.logoDataUrl.value = state.company.logoDataUrl || "";
+  }
+
+  if (refs.adminCompanyLogoPreview) {
+    refs.adminCompanyLogoPreview.innerHTML = state.company.logoDataUrl
+      ? `<img src="${state.company.logoDataUrl}" alt="Logo da empresa" />`
+      : `<span class="muted">Sem logo configurada</span>`;
   }
 
   refs.adminUsersTableBody.innerHTML = state.adminUsers.length
@@ -2199,6 +2454,148 @@ function renderAdminUserCodeState(item) {
   return "Sem codigo pendente";
 }
 
+async function handleCompanySettingsSubmit(event) {
+  event.preventDefault();
+
+  const payload = {
+    companyName: refs.adminCompanyForm.elements.companyName.value,
+    cnpj: refs.adminCompanyForm.elements.cnpj.value,
+    address: refs.adminCompanyForm.elements.address.value,
+    phone: refs.adminCompanyForm.elements.phone.value,
+    email: refs.adminCompanyForm.elements.email.value,
+    primaryColor: refs.adminCompanyForm.elements.primaryColor.value,
+    documentFooter: refs.adminCompanyForm.elements.documentFooter.value,
+    logoDataUrl: refs.adminCompanyForm.elements.logoDataUrl.value,
+  };
+
+  try {
+    await api("/api/settings/company", { method: "PUT", body: payload });
+    await refreshCompanySettings();
+    showToast("Configuracao da empresa salva com sucesso.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleCompanyLogoInputChange(event) {
+  const [file] = Array.from(event.target.files || []);
+  if (!file) {
+    return;
+  }
+
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    if (refs.adminCompanyForm?.elements.logoDataUrl) {
+      refs.adminCompanyForm.elements.logoDataUrl.value = dataUrl;
+    }
+    state.company = {
+      ...state.company,
+      logoDataUrl: dataUrl,
+    };
+    renderAdmin();
+  } catch (error) {
+    showToast("Nao foi possivel carregar a logo selecionada.", "error");
+  }
+}
+
+function clearCompanyLogoSelection() {
+  if (refs.adminCompanyForm?.elements.logoDataUrl) {
+    refs.adminCompanyForm.elements.logoDataUrl.value = "";
+  }
+  if (refs.adminCompanyLogoInput) {
+    refs.adminCompanyLogoInput.value = "";
+  }
+  state.company = {
+    ...state.company,
+    logoDataUrl: "",
+  };
+  renderAdmin();
+}
+
+async function handleChecklistTemplateSubmit(event) {
+  event.preventDefault();
+
+  const id = refs.checklistTemplateForm.elements.id.value;
+  const payload = {
+    name: refs.checklistTemplateForm.elements.name.value,
+    description: refs.checklistTemplateForm.elements.description.value,
+    category: refs.checklistTemplateForm.elements.category.value,
+    required: refs.checklistTemplateForm.elements.required.value === "true",
+    active: refs.checklistTemplateForm.elements.active.value === "true",
+    vehicleType: refs.checklistTemplateForm.elements.vehicleType.value,
+    sortOrder: refs.checklistTemplateForm.elements.sortOrder.value,
+    itemKey: refs.checklistTemplateForm.elements.itemKey.value,
+  };
+
+  try {
+    await api(id ? `/api/checklists/template/${id}` : "/api/checklists/template", {
+      method: id ? "PUT" : "POST",
+      body: payload,
+    });
+    resetChecklistTemplateForm();
+    await refreshChecklistTemplate();
+    showToast(id ? "Item de checklist atualizado com sucesso." : "Item de checklist criado com sucesso.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function resetChecklistTemplateForm() {
+  if (!refs.checklistTemplateForm) {
+    return;
+  }
+
+  refs.checklistTemplateForm.reset();
+  refs.checklistTemplateForm.elements.id.value = "";
+  refs.checklistTemplateForm.elements.required.value = "true";
+  refs.checklistTemplateForm.elements.active.value = "true";
+  refs.checklistTemplateForm.elements.category.value = "Seguranca";
+  refs.checklistTemplateForm.elements.sortOrder.value = String(state.checklistTemplate.length + 1 || 1);
+}
+
+function editChecklistTemplate(id) {
+  const item = state.checklistTemplate.find((entry) => String(entry.id) === String(id));
+  if (!item || !refs.checklistTemplateForm) {
+    return;
+  }
+
+  refs.checklistTemplateForm.elements.id.value = item.id;
+  refs.checklistTemplateForm.elements.name.value = item.name || item.label || "";
+  refs.checklistTemplateForm.elements.itemKey.value = item.itemKey || item.key || "";
+  refs.checklistTemplateForm.elements.description.value = item.description || "";
+  refs.checklistTemplateForm.elements.category.value = item.category || "Outros";
+  refs.checklistTemplateForm.elements.required.value = item.required === false ? "false" : "true";
+  refs.checklistTemplateForm.elements.active.value = item.active === false ? "false" : "true";
+  refs.checklistTemplateForm.elements.vehicleType.value = item.vehicleType || "";
+  refs.checklistTemplateForm.elements.sortOrder.value = item.sortOrder || 1;
+  refs.checklistTemplateForm.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function toggleChecklistTemplate(id) {
+  const item = state.checklistTemplate.find((entry) => String(entry.id) === String(id));
+  if (!item) {
+    return;
+  }
+
+  try {
+    await api(`/api/checklists/template/${id}`, {
+      method: "PUT",
+      body: {
+        ...item,
+        active: item.active === false,
+      },
+    });
+    await refreshChecklistTemplate();
+    if (!refs.checklistForm.elements.id.value) {
+      state.checklistDraftItems = cloneChecklistTemplate();
+      renderChecklistComposer();
+    }
+    showToast(item.active === false ? "Item reativado com sucesso." : "Item desativado com sucesso.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 function formatAdminLogDetails(details) {
   if (!details) {
     return "-";
@@ -2239,6 +2636,8 @@ function handleRowActions(event) {
   if (action === "edit-schedule") editSchedule(id);
   if (action === "edit-fine") editFine(id);
   if (action === "edit-checklist") editChecklist(id);
+  if (action === "edit-checklist-template") editChecklistTemplate(id);
+  if (action === "toggle-checklist-template") toggleChecklistTemplate(id);
   if (action === "edit-user") editAdminUser(id);
   if (action === "issue-user-code") issueAdminUserCode(id, "ACTIVATION");
   if (action === "reset-user-password") issueAdminUserCode(id, "RESET_PASSWORD");
@@ -3595,9 +3994,9 @@ function buildFuelDailySheetBlock(title, vehicles, pumpLabel, tankLabel, extraCl
         </tbody>
       </table>
       <footer class="print-sheet__footer">
-        <div><strong>${escapeHtml(pumpLabel)}:</strong> ____________________</div>
-        <div><strong>${escapeHtml(tankLabel)}:</strong> ____________________</div>
-        <div><strong>KM:</strong> ____________________</div>
+        <div><strong>${escapeHtml(pumpLabel)}:</strong><span aria-hidden="true"></span></div>
+        <div><strong>${escapeHtml(tankLabel)}:</strong><span aria-hidden="true"></span></div>
+        <div><strong>KM:</strong><span aria-hidden="true"></span></div>
       </footer>
     </section>
   `;
@@ -3605,58 +4004,76 @@ function buildFuelDailySheetBlock(title, vehicles, pumpLabel, tankLabel, extraCl
 
 function buildFuelDailySheetDocument(groupedVehicles) {
   const densityClass = resolveFuelDailySheetDensity(groupedVehicles);
+  const company = getDocumentCompany();
 
   return `
     <style>
       body { font-family: Arial, sans-serif; color: #111; margin: 0; }
-      .print-sheet { width: 100%; min-height: 100%; margin: 0 auto; padding: 6mm 5mm; box-sizing: border-box; }
-      .print-sheet__header { margin-bottom: 4mm; }
-      .print-sheet__header h1 { margin: 0 0 2px; font-size: 16px; line-height: 1.1; }
-      .print-sheet__header p { margin: 0; font-size: 10px; }
-      .print-sheet__block { margin-bottom: 5mm; break-inside: avoid; page-break-inside: avoid; }
+      .print-sheet { width: 100%; min-height: 100%; margin: 0 auto; padding: 0; box-sizing: border-box; }
+      .print-brand { margin-bottom: 4.5mm; border-bottom: 1.4px solid #111; padding-bottom: 2.8mm; }
+      .print-brand__identity { display: flex; gap: 10px; align-items: center; }
+      .print-brand__logo { width: 26mm; height: 17mm; border: 1.3px solid #111; display: flex; align-items: center; justify-content: center; padding: 2px; box-sizing: border-box; }
+      .print-brand__logo img { max-width: 100%; max-height: 100%; object-fit: contain; }
+      .print-brand__copy { display: grid; gap: 1px; }
+      .print-brand__copy h1 { margin: 0; font-size: 16.8px; line-height: 1.05; }
+      .print-brand__copy p { margin: 0; font-size: 9.7px; }
+      .print-sheet__block { margin-bottom: 5.2mm; break-inside: avoid; page-break-inside: avoid; }
       .print-sheet__block:last-of-type { margin-bottom: 0; }
-      .print-sheet__block-header { border-bottom: 1px solid #111; margin-bottom: 2mm; padding-bottom: 1mm; }
-      .print-sheet__block-header h2 { margin: 0; font-size: 12px; line-height: 1.1; }
+      .print-sheet__block-header { border-bottom: 1.2px solid #111; margin-bottom: 2.3mm; padding-bottom: 1.2mm; }
+      .print-sheet__block-header h2 { margin: 0; font-size: 12.4px; line-height: 1.1; }
       .print-sheet__table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-      .print-sheet__table th, .print-sheet__table td { border: 1px solid #111; padding: 3px 5px; font-size: 9.5px; line-height: 1.15; vertical-align: middle; }
-      .print-sheet__table th { font-weight: 700; }
-      .print-sheet__table tbody td { height: 7mm; }
-      .print-sheet__table th:nth-child(1), .print-sheet__table td:nth-child(1) { width: 22%; }
-      .print-sheet__table th:nth-child(2), .print-sheet__table td:nth-child(2) { width: 14%; }
-      .print-sheet__table th:nth-child(3), .print-sheet__table td:nth-child(3) { width: 14%; }
-      .print-sheet__table th:nth-child(4), .print-sheet__table td:nth-child(4) { width: 50%; }
+      .print-sheet__table th, .print-sheet__table td { border: 1.7px solid #111; padding: 3.5px 5px; font-size: 9.8px; line-height: 1.15; vertical-align: middle; }
+      .print-sheet__table th { background: #ececec; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
+      .print-sheet__table tbody td { height: 10.5mm; }
+      .print-sheet__table th:nth-child(1), .print-sheet__table td:nth-child(1) { width: 19%; }
+      .print-sheet__table th:nth-child(2), .print-sheet__table td:nth-child(2) { width: 25%; font-size: 11.5px; font-weight: 700; text-align: center; }
+      .print-sheet__table th:nth-child(3), .print-sheet__table td:nth-child(3) { width: 25%; font-size: 11.5px; font-weight: 700; text-align: center; }
+      .print-sheet__table th:nth-child(4), .print-sheet__table td:nth-child(4) { width: 31%; }
       .print-sheet__empty-row td { height: auto; padding: 5px; text-align: center; font-style: italic; }
-      .print-sheet__footer { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 2mm; font-size: 9.5px; }
-      .print-sheet--compact { padding: 5mm 4mm; }
-      .print-sheet--compact .print-sheet__header { margin-bottom: 3mm; }
-      .print-sheet--compact .print-sheet__block { margin-bottom: 4mm; }
+      .print-sheet__footer { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 2.4mm; font-size: 9.7px; }
+      .print-sheet__footer div { display: flex; align-items: center; gap: 6px; }
+      .print-sheet__footer strong { white-space: nowrap; }
+      .print-sheet__footer span { flex: 1; border-bottom: 1.6px solid #111; height: 0; }
+      .print-sheet__document-footer { margin-top: 3.6mm; display: flex; justify-content: space-between; gap: 10px; font-size: 8.9px; }
+      .print-sheet--compact .print-sheet__block { margin-bottom: 4.1mm; }
       .print-sheet--compact .print-sheet__table th,
-      .print-sheet--compact .print-sheet__table td { padding: 2px 4px; font-size: 8.9px; }
-      .print-sheet--compact .print-sheet__table tbody td { height: 6.2mm; }
-      .print-sheet--compact .print-sheet__footer { margin-top: 1.5mm; font-size: 8.8px; }
-      .print-sheet--dense { padding: 4mm 3.5mm; }
-      .print-sheet--dense .print-sheet__header { margin-bottom: 2.5mm; }
+      .print-sheet--compact .print-sheet__table td { padding: 2.5px 4px; font-size: 8.9px; }
+      .print-sheet--compact .print-sheet__table tbody td { height: 8mm; }
+      .print-sheet--compact .print-sheet__table th:nth-child(2),
+      .print-sheet--compact .print-sheet__table td:nth-child(2),
+      .print-sheet--compact .print-sheet__table th:nth-child(3),
+      .print-sheet--compact .print-sheet__table td:nth-child(3) { font-size: 10.4px; }
+      .print-sheet--compact .print-sheet__footer { margin-top: 1.8mm; font-size: 8.9px; }
+      .print-sheet--dense .print-sheet__block { margin-bottom: 3.4mm; }
       .print-sheet--dense .print-sheet__header h1 { font-size: 14px; }
-      .print-sheet--dense .print-sheet__block { margin-bottom: 3.2mm; }
-      .print-sheet--dense .print-sheet__block-header { margin-bottom: 1.5mm; }
+      .print-sheet--dense .print-sheet__block-header { margin-bottom: 1.6mm; }
       .print-sheet--dense .print-sheet__block-header h2 { font-size: 11px; }
       .print-sheet--dense .print-sheet__table th,
-      .print-sheet--dense .print-sheet__table td { padding: 2px 3px; font-size: 8.2px; }
-      .print-sheet--dense .print-sheet__table tbody td { height: 5.4mm; }
-      .print-sheet--dense .print-sheet__footer { gap: 6px; margin-top: 1mm; font-size: 8.1px; }
+      .print-sheet--dense .print-sheet__table td { padding: 2px 3px; font-size: 8.1px; }
+      .print-sheet--dense .print-sheet__table tbody td { height: 6.8mm; }
+      .print-sheet--dense .print-sheet__table th:nth-child(2),
+      .print-sheet--dense .print-sheet__table td:nth-child(2),
+      .print-sheet--dense .print-sheet__table th:nth-child(3),
+      .print-sheet--dense .print-sheet__table td:nth-child(3) { font-size: 9.3px; }
+      .print-sheet--dense .print-sheet__footer { gap: 6px; margin-top: 1.2mm; font-size: 8.1px; }
       @media print {
         body { margin: 0; }
         .print-sheet { width: auto; }
       }
-      @page { size: A4 portrait; margin: 6mm; }
+      @page { size: A4 portrait; margin: 10mm; }
     </style>
     <main class="print-sheet ${densityClass}">
-      <header class="print-sheet__header">
-        <h1>Controle diario de abastecimento</h1>
-        <p>Data de emissao: ${escapeHtml(formatDateOnly(currentLocalDate()))}</p>
-      </header>
+      ${buildPrintableCompanyHeader(
+        company,
+        "Controle diario de abastecimento",
+        `Data de emissao: ${formatDateOnly(currentLocalDate())}`
+      )}
       ${buildFuelDailySheetBlock("Bloco 1 - Diesel S-500", groupedVehicles.s500 || [], "Bomba S-500", "Litros tanque")}
       ${buildFuelDailySheetBlock("Bloco 2 - Diesel S-10", groupedVehicles.s10 || [], "Bomba S-10", "Litros tanque")}
+      <footer class="print-sheet__document-footer">
+        <span>${escapeHtml(company.documentFooter)}</span>
+        <span>Documento pronto para preenchimento manual.</span>
+      </footer>
     </main>
   `;
 }
@@ -3754,9 +4171,38 @@ function buildKardexPrintDocument(report, mode) {
   `;
 }
 
+function getChecklistTemplateSource(includeInactive = false) {
+  const source = (state.checklistTemplate.length ? state.checklistTemplate : DEFAULT_CHECKLIST_TEMPLATE).map(
+    (item, index) => ({
+      id: item.id ?? null,
+      key: item.key || item.itemKey || normalizeClientKey(item.label || item.name || `item_${index + 1}`),
+      label: item.label || item.name || `Item ${index + 1}`,
+      description: item.description || "",
+      category: item.category || "Outros",
+      required: item.required !== false,
+      active: item.active !== false,
+      vehicleType: item.vehicleType || item.vehicle_type || "",
+      sortOrder: Number(item.sortOrder || index + 1),
+    })
+  );
+
+  const visibleItems = includeInactive ? source : source.filter((item) => item.active !== false);
+  return visibleItems.sort((left, right) => {
+    const leftCategoryIndex = CHECKLIST_CATEGORY_ORDER.indexOf(left.category);
+    const rightCategoryIndex = CHECKLIST_CATEGORY_ORDER.indexOf(right.category);
+    const safeLeftIndex = leftCategoryIndex === -1 ? CHECKLIST_CATEGORY_ORDER.length : leftCategoryIndex;
+    const safeRightIndex = rightCategoryIndex === -1 ? CHECKLIST_CATEGORY_ORDER.length : rightCategoryIndex;
+    if (safeLeftIndex !== safeRightIndex) {
+      return safeLeftIndex - safeRightIndex;
+    }
+    return Number(left.sortOrder || 0) - Number(right.sortOrder || 0) || left.label.localeCompare(right.label);
+  });
+}
+
 function cloneChecklistTemplate() {
-  return DEFAULT_CHECKLIST_TEMPLATE.map((item) => ({
+  return getChecklistTemplateSource().map((item) => ({
     ...item,
+    notes: "",
     status: "OK",
   }));
 }
@@ -3775,6 +4221,11 @@ function buildChecklistDraftFromRecord(record) {
       key,
       label: item.label || `Item ${index + 1}`,
       description: item.description || "",
+      category: item.category || "Outros",
+      required: item.required !== false,
+      active: item.active !== false,
+      vehicleType: item.vehicleType || item.vehicle_type || "",
+      notes: item.notes || item.observation || "",
       status:
         item.status === "CRITICAL" || item.status === "ATTENTION" || item.status === "OK"
           ? item.status
@@ -3783,7 +4234,7 @@ function buildChecklistDraftFromRecord(record) {
     return map;
   }, new Map());
 
-  const result = baseItems.map((item) => merged.get(item.key) || item);
+  const result = baseItems.map((item) => ({ ...item, ...(merged.get(item.key) || {}) }));
   const extras = Array.from(merged.values()).filter((item) => !result.some((current) => current.key === item.key));
   return [...result, ...extras];
 }
@@ -3814,42 +4265,148 @@ function ensureChecklistDraft() {
   return state.checklistDraftItems;
 }
 
+function groupChecklistDraftItems(items) {
+  const grouped = items.reduce((map, item) => {
+    const category = item.category || "Outros";
+    const current = map.get(category) || [];
+    current.push(item);
+    map.set(category, current);
+    return map;
+  }, new Map());
+
+  return Array.from(grouped.entries())
+    .sort((left, right) => {
+      const leftIndex = CHECKLIST_CATEGORY_ORDER.indexOf(left[0]);
+      const rightIndex = CHECKLIST_CATEGORY_ORDER.indexOf(right[0]);
+      const safeLeftIndex = leftIndex === -1 ? CHECKLIST_CATEGORY_ORDER.length : leftIndex;
+      const safeRightIndex = rightIndex === -1 ? CHECKLIST_CATEGORY_ORDER.length : rightIndex;
+      return safeLeftIndex - safeRightIndex || left[0].localeCompare(right[0]);
+    })
+    .map(([category, categoryItems]) => ({
+      category,
+      items: categoryItems,
+    }));
+}
+
+function renderChecklistTemplateTable() {
+  if (!refs.checklistTemplateTableBody) {
+    return;
+  }
+
+  refs.checklistTemplateTableBody.innerHTML = state.checklistTemplate.length
+    ? state.checklistTemplate
+        .map(
+          (item) => `
+            <tr>
+              <td>
+                <strong>${escapeHtml(item.name || item.label)}</strong>
+                <div class="muted">${escapeHtml(item.description || "Sem descricao operacional.")}</div>
+              </td>
+              <td>${escapeHtml(item.category || "Outros")}</td>
+              <td>${item.required === false ? "Opcional" : "Obrigatorio"}</td>
+              <td>${statusBadge(item.active === false ? "BLOCKED" : "ACTIVE")}</td>
+              <td>${escapeHtml(item.vehicleType || "-")}</td>
+              <td>${escapeHtml(formatNumber(item.sortOrder || 0))}</td>
+              <td>
+                <div class="row-actions">
+                  ${buildRowActionButton("edit-checklist-template", item.id, "Editar item", "&#9998;")}
+                  ${buildRowActionButton(
+                    "toggle-checklist-template",
+                    item.id,
+                    item.active === false ? "Ativar item" : "Desativar item",
+                    item.active === false ? "&#10003;" : "&#10005;"
+                  )}
+                </div>
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhum item de checklist configurado.", 7);
+}
+
 function renderChecklistComposer() {
   const items = ensureChecklistDraft();
   const summary = summarizeChecklistDraft(items);
+  const groupedItems = groupChecklistDraftItems(items);
   refs.checklistForm.elements.items.value = items.map((item) => item.label).join("\n");
   refs.checklistForm.elements.status.value = deriveChecklistOverallStatus(items);
+  renderChecklistTemplateTable();
 
-  refs.checklistItemsBuilder.innerHTML = items
-    .map(
-      (item) => `
-        <article class="checklist-item-card">
-          <div class="checklist-item-card__body">
-            <strong>${escapeHtml(item.label)}</strong>
-            <p class="muted">${escapeHtml(item.description || "Verificacao operacional padrao.")}</p>
-          </div>
-          <div class="checklist-status-row">
-            ${["OK", "ATTENTION", "CRITICAL"]
-              .map((status) => {
-                const meta = CHECKLIST_STATUS_META[status];
-                const activeClass = item.status === status ? "is-active" : "";
-                return `
-                  <button
-                    type="button"
-                    class="checklist-status-button ${meta.className} ${activeClass}"
-                    data-checklist-status-button="true"
-                    data-checklist-key="${escapeHtml(item.key)}"
-                    data-checklist-status="${status}"
-                  >
-                    ${escapeHtml(meta.label)}
-                  </button>
-                `;
-              })
+  refs.checklistItemsBuilder.innerHTML = groupedItems
+    .map(({ category, items: categoryItems }) => {
+      const collapsed = state.checklistCollapsedCategories[category] === true;
+      return `
+        <section class="checklist-category-card ${collapsed ? "is-collapsed" : ""}">
+          <header class="checklist-category-card__header">
+            <div>
+              <strong>${escapeHtml(category)}</strong>
+              <p class="muted">${escapeHtml(`${categoryItems.length} item(ns) para conferencia rapida.`)}</p>
+            </div>
+            <button
+              type="button"
+              class="ghost-button"
+              data-checklist-category-toggle="${escapeHtml(category)}"
+            >
+              ${collapsed ? "Expandir" : "Recolher"}
+            </button>
+          </header>
+          <div class="checklist-category-card__items">
+            ${categoryItems
+              .map(
+                (item) => `
+                  <article class="checklist-item-card">
+                    <div class="checklist-item-card__header">
+                      <div class="checklist-item-card__body">
+                        <strong>${escapeHtml(item.label)}</strong>
+                        <p class="muted">${escapeHtml(item.description || "Verificacao operacional padrao.")}</p>
+                      </div>
+                      <div class="checklist-item-card__chips">
+                        <span class="status-badge ${item.required === false ? "status-gray" : "status-red"}">
+                          ${escapeHtml(item.required === false ? "Opcional" : "Obrigatorio")}
+                        </span>
+                        ${
+                          item.vehicleType
+                            ? `<span class="status-badge status-gray">${escapeHtml(item.vehicleType)}</span>`
+                            : ""
+                        }
+                      </div>
+                    </div>
+                    <div class="checklist-status-row">
+                      ${["OK", "ATTENTION", "CRITICAL"]
+                        .map((status) => {
+                          const meta = CHECKLIST_STATUS_META[status];
+                          const activeClass = item.status === status ? "is-active" : "";
+                          return `
+                            <button
+                              type="button"
+                              class="checklist-status-button ${meta.className} ${activeClass}"
+                              data-checklist-status-button="true"
+                              data-checklist-key="${escapeHtml(item.key)}"
+                              data-checklist-status="${status}"
+                            >
+                              ${escapeHtml(meta.label)}
+                            </button>
+                          `;
+                        })
+                        .join("")}
+                    </div>
+                    <label class="checklist-item-card__notes">
+                      <span>Observacao do item</span>
+                      <textarea
+                        rows="2"
+                        data-checklist-item-notes="${escapeHtml(item.key)}"
+                        placeholder="Descreva apenas quando houver detalhe relevante."
+                      >${escapeHtml(item.notes || "")}</textarea>
+                    </label>
+                  </article>
+                `
+              )
               .join("")}
           </div>
-        </article>
-      `
-    )
+        </section>
+      `;
+    })
     .join("");
 
   refs.checklistSummaryCards.innerHTML = [
@@ -3895,6 +4452,11 @@ function renderChecklistComposer() {
             <article class="stack-item">
               <strong>${escapeHtml(item.vehicle)}</strong>
               <p class="muted">${escapeHtml(formatDateTime(item.checklistDate))}</p>
+              ${
+                item.temporaryIssue
+                  ? `<p class="muted">${escapeHtml(`Item temporario: ${item.temporaryIssue}`)}</p>`
+                  : ""
+              }
               <p class="muted">${escapeHtml(
                 item.problems || "Sem observacoes criticas registradas."
               )}</p>
@@ -4028,6 +4590,40 @@ function buildFuelSideInsights(analytics) {
   return cards.join("");
 }
 
+function getDocumentCompany(company = {}) {
+  return {
+    companyName: company.companyName || company.name || state.company.companyName || "Empresa cliente",
+    logoDataUrl: company.logoDataUrl || company.logo || state.company.logoDataUrl || "",
+    cnpj: company.cnpj || state.company.cnpj || "",
+    address: company.address || state.company.address || "",
+    phone: company.phone || state.company.phone || "",
+    email: company.email || state.company.email || "",
+    primaryColor: company.primaryColor || state.company.primaryColor || "#c40000",
+    documentFooter: company.documentFooter || state.company.documentFooter || "Gerado pelo sistema Horizon",
+  };
+}
+
+function buildPrintableCompanyHeader(company, title, subtitle = "") {
+  const infoLine = [company.cnpj, company.address, company.phone, company.email].filter(Boolean).join(" | ");
+  return `
+    <header class="print-brand">
+      <div class="print-brand__identity">
+        ${
+          company.logoDataUrl
+            ? `<div class="print-brand__logo"><img src="${company.logoDataUrl}" alt="Logo da empresa" /></div>`
+            : ""
+        }
+        <div class="print-brand__copy">
+          <p>${escapeHtml(company.companyName)}</p>
+          <h1>${escapeHtml(title)}</h1>
+          ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
+          ${infoLine ? `<p>${escapeHtml(infoLine)}</p>` : ""}
+        </div>
+      </div>
+    </header>
+  `;
+}
+
 function handleInteractivePanels(event) {
   const shortcut = event.target.closest("[data-fuel-shortcut]");
   if (shortcut) {
@@ -4064,6 +4660,17 @@ function handleInteractivePanels(event) {
     return;
   }
 
+  const categoryToggle = event.target.closest("[data-checklist-category-toggle]");
+  if (categoryToggle) {
+    const category = categoryToggle.dataset.checklistCategoryToggle;
+    state.checklistCollapsedCategories = {
+      ...state.checklistCollapsedCategories,
+      [category]: !state.checklistCollapsedCategories[category],
+    };
+    renderChecklistComposer();
+    return;
+  }
+
   const checklistStatusButton = event.target.closest("[data-checklist-status-button]");
   if (!checklistStatusButton) {
     return;
@@ -4073,6 +4680,60 @@ function handleInteractivePanels(event) {
   state.checklistDraftItems = ensureChecklistDraft().map((item) =>
     item.key === checklistKey ? { ...item, status: checklistStatus } : item
   );
+  renderChecklistComposer();
+}
+
+function handleInteractiveInputs(event) {
+  const notesField = event.target.closest("[data-checklist-item-notes]");
+  if (!notesField) {
+    return;
+  }
+
+  const checklistKey = notesField.dataset.checklistItemNotes;
+  state.checklistDraftItems = ensureChecklistDraft().map((item) =>
+    item.key === checklistKey ? { ...item, notes: notesField.value } : item
+  );
+}
+
+function markChecklistDraftAsOk() {
+  state.checklistDraftItems = ensureChecklistDraft().map((item) => ({
+    ...item,
+    status: "OK",
+  }));
+  renderChecklistComposer();
+}
+
+function addTemporaryChecklistItem() {
+  const label = refs.checklistTemporaryItemInput?.value?.trim() || "";
+  if (!label) {
+    showToast("Informe o problema ou item temporario que deseja acompanhar.", "error");
+    return;
+  }
+
+  const key = normalizeClientKey(label);
+  const alreadyExists = ensureChecklistDraft().some((item) => item.key === key);
+  if (alreadyExists) {
+    showToast("Esse item temporario ja esta na conferencia atual.", "error");
+    return;
+  }
+
+  state.checklistDraftItems = [
+    ...ensureChecklistDraft(),
+    {
+      key,
+      label,
+      description: "Item temporario adicionado para a conferencia atual.",
+      category: "Outros",
+      required: false,
+      active: true,
+      vehicleType: "",
+      notes: "",
+      status: "ATTENTION",
+    },
+  ];
+  if (refs.checklistTemporaryItemInput) {
+    refs.checklistTemporaryItemInput.value = "";
+  }
   renderChecklistComposer();
 }
 
@@ -4310,6 +4971,7 @@ function renderChecklists() {
     : emptyRow("Nenhum checklist cadastrado.", 5);
 
   renderChecklistComposer();
+  renderChecklistTemplateTable();
 }
 
 async function refreshSchedules() {
@@ -4384,6 +5046,7 @@ async function handleChecklistSubmit(event) {
     driverName: refs.checklistForm.elements.driverName.value,
     odometerKm: refs.checklistForm.elements.odometerKm.value,
     signatureName: refs.checklistForm.elements.signatureName.value,
+    temporaryIssue: refs.checklistForm.elements.temporaryIssue?.value || "",
     status: deriveChecklistOverallStatus(itemsDetailed),
     items: itemsDetailed.map((item) => item.label).join("\n"),
     itemsDetailed,
@@ -4414,6 +5077,9 @@ function editChecklist(id) {
   refs.checklistForm.elements.driverName.value = item.driverName || "";
   refs.checklistForm.elements.odometerKm.value = item.odometerKm ?? "";
   refs.checklistForm.elements.signatureName.value = item.signatureName || "";
+  if (refs.checklistForm.elements.temporaryIssue) {
+    refs.checklistForm.elements.temporaryIssue.value = item.temporaryIssue || "";
+  }
   refs.checklistForm.elements.status.value = item.status;
   refs.checklistForm.elements.items.value = item.items.join("\n");
   refs.checklistForm.elements.problems.value = item.problems || "";
@@ -4429,6 +5095,9 @@ function resetChecklistForm() {
   refs.checklistForm.elements.checklistType.value = "PRE_USE";
   refs.checklistForm.elements.status.value = "OK";
   refs.checklistForm.elements.signatureName.value = "";
+  if (refs.checklistForm.elements.temporaryIssue) {
+    refs.checklistForm.elements.temporaryIssue.value = "";
+  }
   state.checklistDraftItems = cloneChecklistTemplate();
   renderChecklistComposer();
 }
@@ -5093,6 +5762,7 @@ function buildKardexPrintDocument(report, mode) {
     report.filters?.stockType || report.product?.stockType || "COMMON",
     "COMMON"
   );
+  const company = getDocumentCompany(report.company || { companyName: report.companyName });
   const fuelFilterBlock =
     reportStockType === "FUEL"
       ? `<div><strong>Combustivel:</strong> ${escapeHtml(report.filters.fuelKind ? formatFuelKindLabel(report.filters.fuelKind) : "Todos")}</div>`
@@ -5102,13 +5772,17 @@ function buildKardexPrintDocument(report, mode) {
     <style>
       body { font-family: Arial, sans-serif; color: #111; margin: 0; }
       .print-report { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 12mm; box-sizing: border-box; }
-      .print-report__header { display: grid; gap: 4px; margin-bottom: 6mm; }
-      .print-report__header h1 { margin: 0; font-size: 18px; }
-      .print-report__header p { margin: 0; font-size: 11px; }
+      .print-brand { margin-bottom: 6mm; border-bottom: 1px solid #111; padding-bottom: 3mm; }
+      .print-brand__identity { display: flex; gap: 12px; align-items: center; }
+      .print-brand__logo { width: 28mm; height: 18mm; border: 1px solid #111; display: flex; align-items: center; justify-content: center; padding: 2px; box-sizing: border-box; }
+      .print-brand__logo img { max-width: 100%; max-height: 100%; object-fit: contain; }
+      .print-brand__copy { display: grid; gap: 2px; }
+      .print-brand__copy h1 { margin: 0; font-size: 18px; }
+      .print-brand__copy p { margin: 0; font-size: 10.5px; }
       .print-report__meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; margin: 4mm 0 6mm; font-size: 11px; }
       .print-report__hint { margin-bottom: 4mm; font-size: 11px; }
       .print-report__table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-      .print-report__table th, .print-report__table td { border: 1px solid #111; padding: 5px 6px; font-size: 10px; vertical-align: top; }
+      .print-report__table th, .print-report__table td { border: 1.2px solid #111; padding: 5px 6px; font-size: 10px; vertical-align: top; }
       .print-report__table th:nth-child(1), .print-report__table td:nth-child(1) { width: 14%; }
       .print-report__table th:nth-child(2), .print-report__table td:nth-child(2) { width: 14%; }
       .print-report__table th:nth-child(3), .print-report__table td:nth-child(3) { width: 10%; }
@@ -5118,15 +5792,15 @@ function buildKardexPrintDocument(report, mode) {
       .print-report__table th:nth-child(7), .print-report__table td:nth-child(7) { width: 12%; }
       .print-report__table th:nth-child(8), .print-report__table td:nth-child(8) { width: 16%; }
       .print-report__footer { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 6mm; font-size: 11px; }
+      .print-report__footer-note { margin-top: 3mm; font-size: 9px; text-align: right; }
       @page { size: A4 portrait; margin: 10mm; }
     </style>
     <main class="print-report">
-      <header class="print-report__header">
-        <p>${escapeHtml(report.companyName || "HORIZON")}</p>
-        <h1>${escapeHtml(report.reportName)}</h1>
-        <p>Periodo: ${escapeHtml(formatDateOnly(report.period.from))} a ${escapeHtml(formatDateOnly(report.period.to))}</p>
-        <p>Emissao: ${escapeHtml(formatDateTime(report.issuedAt))}</p>
-      </header>
+      ${buildPrintableCompanyHeader(
+        company,
+        report.reportName,
+        `Periodo: ${formatDateOnly(report.period.from)} a ${formatDateOnly(report.period.to)} | Emissao: ${formatDateTime(report.issuedAt)}`
+      )}
       <div class="print-report__meta">
         <div><strong>Produto:</strong> ${escapeHtml(report.product.name)}</div>
         <div><strong>Tipo de estoque:</strong> ${escapeHtml(formatStockTypeLabel(reportStockType))}</div>
@@ -5188,6 +5862,7 @@ function buildKardexPrintDocument(report, mode) {
         <div><strong>Total saidas:</strong> ${escapeHtml(formatNumber(report.totals.exits || 0, 2, 2))}</div>
         <div><strong>Saldo final:</strong> ${escapeHtml(`${formatNumber(report.totals.finalBalance || 0, 2, 2)} ${report.product.unit}`)}</div>
       </footer>
+      <div class="print-report__footer-note">${escapeHtml(company.documentFooter)}</div>
     </main>
   `;
 }

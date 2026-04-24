@@ -107,8 +107,8 @@
       </div>
     </section>
 
-    <div id="app-shell" class="app-shell hidden">
-      <aside class="sidebar">
+    <div id="app-shell" class="app-shell hidden" data-sidebar-mode="expanded" data-sidebar-open="false">
+      <aside id="app-sidebar" class="sidebar" aria-label="Navegação principal">
         <div class="sidebar-brand">
           <img
             data-theme-logo
@@ -135,10 +135,27 @@
           <button class="nav-item hidden" id="admin-nav-button" data-section="admin">Gestão</button>
         </nav>
       </aside>
+      <button
+        id="sidebar-backdrop"
+        class="sidebar-backdrop"
+        type="button"
+        aria-label="Fechar menu lateral"
+        aria-hidden="true"
+      ></button>
 
       <main class="main-content">
         <header class="topbar" id="app-topbar">
           <div class="topbar-brand">
+            <button
+              id="sidebar-toggle-button"
+              class="sidebar-toggle-button"
+              type="button"
+              aria-label="Alternar menu lateral"
+              aria-controls="app-sidebar"
+              aria-expanded="true"
+            >
+              <span aria-hidden="true">&#9776;</span>
+            </button>
             <img
               data-theme-logo
               class="topbar-logo"
@@ -196,6 +213,14 @@
                 <h3>KM/L por placa</h3>
               </div>
               <div id="dashboard-efficiency-spotlight"></div>
+            </article>
+
+            <article class="panel dashboard-panel dashboard-panel-wide">
+              <div class="card-title">
+                <span class="eyebrow">Conferencia operacional</span>
+                <h3>Analise de KM/L por veiculo</h3>
+              </div>
+              <div id="dashboard-km-review" class="stack-list"></div>
             </article>
 
             <article class="panel dashboard-panel">
@@ -544,7 +569,6 @@
               <p class="section-description">Cadastro unico de placas para reduzir erro humano nos abastecimentos.</p>
             </div>
           </div>
-
           <div class="two-column-grid">
             <form id="vehicle-form" class="panel form-card">
               <input type="hidden" name="id" />
@@ -1188,6 +1212,27 @@
                   <span>Itens</span>
                   <textarea name="items" class="hidden" rows="6" placeholder="Um item por linha" required></textarea>
                 </label>
+                <label class="full-width">
+                  <span>Problema temporario da semana</span>
+                  <input
+                    type="text"
+                    name="temporaryIssue"
+                    placeholder="Ex.: lona do bau rasgada, lanterna aguardando troca"
+                  />
+                </label>
+                <div class="checklist-toolbar full-width">
+                  <button type="button" id="checklist-mark-all-ok-button" class="secondary-button">
+                    Marcar tudo como OK
+                  </button>
+                  <input
+                    type="text"
+                    id="checklist-temporary-item-input"
+                    placeholder="Adicionar item temporario na conferencia atual"
+                  />
+                  <button type="button" id="checklist-add-temporary-item-button" class="ghost-button">
+                    Adicionar item
+                  </button>
+                </div>
                 <div id="checklist-items-builder" class="checklist-builder-grid full-width"></div>
                 <label class="full-width">
                   <span>Problemas encontrados</span>
@@ -1234,6 +1279,93 @@
               <div id="checklist-history-feed" class="stack-list"></div>
             </article>
           </div>
+          <section id="checklist-template-panel" class="panel hidden">
+            <div class="section-header checklist-template-header">
+              <div>
+                <span class="eyebrow">Configuracao de checklist</span>
+                <h3>Itens operacionais por categoria</h3>
+                <p class="section-description">
+                  Ajuste o template sem depender de codigo, mantendo apenas os itens ativos em uso.
+                </p>
+              </div>
+            </div>
+            <div class="two-column-grid">
+              <form id="checklist-template-form" class="panel form-card">
+                <input type="hidden" name="id" />
+                <div class="form-grid">
+                  <label>
+                    <span>Nome do item</span>
+                    <input type="text" name="name" placeholder="Ex.: Lacre do tanque" required />
+                  </label>
+                  <label>
+                    <span>Chave tecnica</span>
+                    <input type="text" name="itemKey" placeholder="lacres_tanque" />
+                  </label>
+                  <label>
+                    <span>Categoria</span>
+                    <select name="category">
+                      <option value="Seguranca">Seguranca</option>
+                      <option value="Mecanica">Mecanica</option>
+                      <option value="Eletrica">Eletrica</option>
+                      <option value="Documentacao">Documentacao</option>
+                      <option value="Carroceria/Bau">Carroceria/Bau</option>
+                      <option value="Conservacao">Conservacao</option>
+                      <option value="Outros">Outros</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Obrigatorio</span>
+                    <select name="required">
+                      <option value="true">Sim</option>
+                      <option value="false">Nao</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Status</span>
+                    <select name="active">
+                      <option value="true">Ativo</option>
+                      <option value="false">Inativo</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Tipo de veiculo</span>
+                    <input type="text" name="vehicleType" placeholder="Opcional" />
+                  </label>
+                  <label>
+                    <span>Ordem</span>
+                    <input type="number" name="sortOrder" min="1" step="1" value="1" />
+                  </label>
+                  <label class="full-width">
+                    <span>Descricao</span>
+                    <textarea name="description" rows="3" placeholder="Orientacao curta para o operador"></textarea>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <button type="submit" class="primary-button">Salvar item</button>
+                  <button type="button" id="checklist-template-reset-button" class="ghost-button">Limpar</button>
+                </div>
+              </form>
+
+              <div class="table-panel">
+                <div class="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Item</th>
+                        <th>Categoria</th>
+                        <th>Obrigatorio</th>
+                        <th>Status</th>
+                        <th>Tipo</th>
+                        <th>Ordem</th>
+                        <th>Acoes</th>
+                      </tr>
+                    </thead>
+                    <tbody id="checklist-template-table-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
         </section>
 
         <section id="emails-section" class="content-section">
@@ -1306,6 +1438,58 @@
               <span class="eyebrow">Perfis, ativacao e auditoria</span>
               <h2>Gestão</h2>
             </div>
+          </div>
+          <div id="admin-company-card" class="panel form-card hidden">
+            <div class="card-title">
+              <span class="eyebrow">Identidade do cliente</span>
+              <h3>Empresa nos documentos</h3>
+            </div>
+            <form id="admin-company-form">
+              <input type="hidden" name="logoDataUrl" />
+              <div class="form-grid">
+                <label>
+                  <span>Nome da empresa</span>
+                  <input type="text" name="companyName" placeholder="Nome que aparece no PDF" required />
+                </label>
+                <label>
+                  <span>CNPJ</span>
+                  <input type="text" name="cnpj" placeholder="00.000.000/0000-00" />
+                </label>
+                <label class="full-width">
+                  <span>Endereco</span>
+                  <input type="text" name="address" placeholder="Endereco completo da empresa" />
+                </label>
+                <label>
+                  <span>Telefone</span>
+                  <input type="text" name="phone" placeholder="(00) 00000-0000" />
+                </label>
+                <label>
+                  <span>Email</span>
+                  <input type="email" name="email" placeholder="contato@empresa.com" />
+                </label>
+                <label>
+                  <span>Cor principal</span>
+                  <input type="color" name="primaryColor" value="#c40000" />
+                </label>
+                <label class="full-width">
+                  <span>Rodape dos documentos</span>
+                  <input type="text" name="documentFooter" placeholder="Gerado pelo sistema Horizon" />
+                </label>
+                <div class="company-logo-field full-width">
+                  <div>
+                    <span>Logo da empresa</span>
+                    <input id="admin-company-logo-input" type="file" accept="image/*" />
+                  </div>
+                  <button id="admin-company-clear-logo-button" type="button" class="ghost-button">
+                    Remover logo
+                  </button>
+                </div>
+                <div id="admin-company-logo-preview" class="company-logo-preview full-width"></div>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-button">Salvar empresa</button>
+              </div>
+            </form>
           </div>
           <div class="two-column-grid">
             <form id="admin-user-form" class="panel form-card">

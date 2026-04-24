@@ -438,6 +438,38 @@ function createTables() {
       FOREIGN KEY(created_by) REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS company_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      company_name TEXT NOT NULL DEFAULT 'Empresa cliente',
+      logo_data_url TEXT,
+      cnpj TEXT,
+      address TEXT,
+      phone TEXT,
+      email TEXT,
+      primary_color TEXT,
+      document_footer TEXT NOT NULL DEFAULT 'Gerado pelo sistema Horizon',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by INTEGER,
+      FOREIGN KEY(updated_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS checklist_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_key TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT,
+      category TEXT NOT NULL DEFAULT 'Seguranca',
+      required INTEGER NOT NULL DEFAULT 1,
+      active INTEGER NOT NULL DEFAULT 1,
+      vehicle_type TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by INTEGER,
+      FOREIGN KEY(updated_by) REFERENCES users(id)
+    );
+
     CREATE TABLE IF NOT EXISTS action_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,
@@ -457,6 +489,7 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_fuel_records_occurred_at ON fuel_records(occurred_at);
     CREATE INDEX IF NOT EXISTS idx_fuel_records_plate ON fuel_records(plate, occurred_at);
     CREATE INDEX IF NOT EXISTS idx_schedules_date ON schedules(scheduled_date);
+    CREATE INDEX IF NOT EXISTS idx_checklist_items_category ON checklist_items(category, active, sort_order);
     CREATE INDEX IF NOT EXISTS idx_action_logs_created_at ON action_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_activation_codes_user ON activation_codes(user_id, active, expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_xml_key ON notes(xml_key) WHERE xml_key IS NOT NULL AND xml_key <> '';
@@ -768,6 +801,77 @@ function migrateAuthSchema() {
     `
   );
   write("UPDATE users SET is_system = 1 WHERE invite_code_used = 'SEED-ADMIN'");
+}
+
+function migrateBrandingSchema() {
+  runScript(`
+    CREATE TABLE IF NOT EXISTS company_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      company_name TEXT NOT NULL DEFAULT 'Empresa cliente',
+      logo_data_url TEXT,
+      cnpj TEXT,
+      address TEXT,
+      phone TEXT,
+      email TEXT,
+      primary_color TEXT,
+      document_footer TEXT NOT NULL DEFAULT 'Gerado pelo sistema Horizon',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by INTEGER,
+      FOREIGN KEY(updated_by) REFERENCES users(id)
+    );
+  `);
+
+  ensureColumn("company_settings", "company_name", "TEXT NOT NULL DEFAULT 'Empresa cliente'");
+  ensureColumn("company_settings", "logo_data_url", "TEXT");
+  ensureColumn("company_settings", "cnpj", "TEXT");
+  ensureColumn("company_settings", "address", "TEXT");
+  ensureColumn("company_settings", "phone", "TEXT");
+  ensureColumn("company_settings", "email", "TEXT");
+  ensureColumn("company_settings", "primary_color", "TEXT");
+  ensureColumn(
+    "company_settings",
+    "document_footer",
+    "TEXT NOT NULL DEFAULT 'Gerado pelo sistema Horizon'"
+  );
+  ensureColumn("company_settings", "created_at", "TEXT");
+  ensureColumn("company_settings", "updated_at", "TEXT");
+  ensureColumn("company_settings", "updated_by", "INTEGER");
+}
+
+function migrateChecklistTemplateSchema() {
+  runScript(`
+    CREATE TABLE IF NOT EXISTS checklist_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_key TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT,
+      category TEXT NOT NULL DEFAULT 'Seguranca',
+      required INTEGER NOT NULL DEFAULT 1,
+      active INTEGER NOT NULL DEFAULT 1,
+      vehicle_type TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by INTEGER,
+      FOREIGN KEY(updated_by) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_checklist_items_category
+      ON checklist_items(category, active, sort_order);
+  `);
+
+  ensureColumn("checklist_items", "item_key", "TEXT");
+  ensureColumn("checklist_items", "name", "TEXT");
+  ensureColumn("checklist_items", "description", "TEXT");
+  ensureColumn("checklist_items", "category", "TEXT NOT NULL DEFAULT 'Seguranca'");
+  ensureColumn("checklist_items", "required", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("checklist_items", "active", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("checklist_items", "vehicle_type", "TEXT");
+  ensureColumn("checklist_items", "sort_order", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("checklist_items", "created_at", "TEXT");
+  ensureColumn("checklist_items", "updated_at", "TEXT");
+  ensureColumn("checklist_items", "updated_by", "INTEGER");
 }
 
 function ensureDefaultFuelStorages() {
@@ -1563,6 +1667,8 @@ async function initDatabase() {
   migrateFuelSchema();
   migrateOperationalSchema();
   migrateAuthSchema();
+  migrateBrandingSchema();
+  migrateChecklistTemplateSchema();
   seedDatabase();
   syncMasterAdminFromEnvironment();
   revokeLegacyPublicInvites();

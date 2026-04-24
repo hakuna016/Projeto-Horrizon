@@ -140,6 +140,97 @@ const CHECKLIST_ITEM_STATUS_ALIASES = {
   critical: "CRITICAL",
 };
 
+const CHECKLIST_CATEGORY_ALIASES = {
+  seguranca: "Seguranca",
+  mecanica: "Mecanica",
+  eletrica: "Eletrica",
+  documentacao: "Documentacao",
+  documentacao_legal: "Documentacao",
+  carroceria: "Carroceria/Bau",
+  bau: "Carroceria/Bau",
+  carroceria_bau: "Carroceria/Bau",
+  conservacao: "Conservacao",
+  outros: "Outros",
+  outro: "Outros",
+};
+
+const DEFAULT_COMPANY_SETTINGS = {
+  companyName: "Empresa cliente",
+  logoDataUrl: "",
+  cnpj: "",
+  address: "",
+  phone: "",
+  email: "",
+  primaryColor: "#c40000",
+  documentFooter: "Gerado pelo sistema Horizon",
+};
+
+const DEFAULT_CHECKLIST_TEMPLATE = [
+  {
+    itemKey: "freios",
+    name: "Freios",
+    description: "Verificar funcionamento do sistema de freios.",
+    category: "Seguranca",
+    required: true,
+    active: true,
+    sortOrder: 1,
+  },
+  {
+    itemKey: "luzes",
+    name: "Luzes",
+    description: "Farol, seta, luz de freio e re.",
+    category: "Eletrica",
+    required: true,
+    active: true,
+    sortOrder: 2,
+  },
+  {
+    itemKey: "buzina",
+    name: "Buzina",
+    description: "Confirmar acionamento da buzina.",
+    category: "Seguranca",
+    required: true,
+    active: true,
+    sortOrder: 3,
+  },
+  {
+    itemKey: "cinto",
+    name: "Cinto de seguranca",
+    description: "Checar travamento e desgaste.",
+    category: "Seguranca",
+    required: true,
+    active: true,
+    sortOrder: 4,
+  },
+  {
+    itemKey: "pneus",
+    name: "Pneus",
+    description: "Estado geral, sulco e calibragem visual.",
+    category: "Mecanica",
+    required: true,
+    active: true,
+    sortOrder: 5,
+  },
+  {
+    itemKey: "triangulo",
+    name: "Triangulo",
+    description: "Conferir presenca e acesso rapido.",
+    category: "Documentacao",
+    required: true,
+    active: true,
+    sortOrder: 6,
+  },
+  {
+    itemKey: "extintor",
+    name: "Extintor",
+    description: "Usar apenas se exigido pela operacao.",
+    category: "Seguranca",
+    required: false,
+    active: false,
+    sortOrder: 7,
+  },
+];
+
 function resolvePublicAppInfo(port) {
   const appUrl = normalizeText(process.env.APP_URL).replace(/\/+$/, "");
   if (appUrl) {
@@ -343,6 +434,14 @@ function normalizeFineStatus(value, fallback = "OPEN") {
   return normalizeEnum(value, FINE_STATUS_ALIASES, fallback);
 }
 
+function normalizeChecklistCategory(value, fallback = "Outros") {
+  const normalized = normalizeKey(value);
+  if (!normalized) {
+    return fallback;
+  }
+  return CHECKLIST_CATEGORY_ALIASES[normalized] || normalizeText(value) || fallback;
+}
+
 function normalizeChecklistItemStatus(value, fallback = "OK") {
   return normalizeEnum(value, CHECKLIST_ITEM_STATUS_ALIASES, fallback);
 }
@@ -354,6 +453,11 @@ function normalizeChecklistItem(item, index) {
       key: normalizeKey(label) || `item_${index + 1}`,
       label,
       description: "",
+      category: "Outros",
+      required: true,
+      active: true,
+      vehicleType: "",
+      notes: "",
       status: "OK",
     };
   }
@@ -363,6 +467,11 @@ function normalizeChecklistItem(item, index) {
     key: normalizeKey(item?.key || label) || `item_${index + 1}`,
     label: label || `Item ${index + 1}`,
     description: normalizeText(item?.description),
+    category: normalizeChecklistCategory(item?.category, "Outros"),
+    required: item?.required === false ? false : true,
+    active: item?.active === false ? false : true,
+    vehicleType: normalizeText(item?.vehicleType || item?.vehicle_type),
+    notes: normalizeText(item?.notes || item?.observation),
     status: normalizeChecklistItemStatus(item?.status, "OK"),
   };
 }
@@ -406,6 +515,7 @@ function buildChecklistStoragePayload(input, fallbackRaw = "") {
     driverName: normalizeText(input?.driverName || fallbackMeta.driverName),
     odometerKm,
     signatureName: normalizeText(input?.signatureName || fallbackMeta.signatureName),
+    temporaryIssue: normalizeText(input?.temporaryIssue || fallbackMeta.temporaryIssue),
   };
 
   const summary = itemsDetailed.reduce(
@@ -428,6 +538,289 @@ function buildChecklistStoragePayload(input, fallbackRaw = "") {
     overallStatus,
     storedJson: JSON.stringify({ meta, items: itemsDetailed }),
   };
+}
+
+function normalizeCompanySettingsInput(input = {}, fallback = {}) {
+  return {
+    companyName: normalizeText(input.companyName || input.name || fallback.companyName || DEFAULT_COMPANY_SETTINGS.companyName),
+    logoDataUrl: normalizeText(input.logoDataUrl || input.logo || fallback.logoDataUrl),
+    cnpj: normalizeText(input.cnpj || fallback.cnpj),
+    address: normalizeText(input.address || fallback.address),
+    phone: normalizeText(input.phone || fallback.phone),
+    email: normalizeText(input.email || fallback.email).toLowerCase(),
+    primaryColor: normalizeText(input.primaryColor || fallback.primaryColor || DEFAULT_COMPANY_SETTINGS.primaryColor),
+    documentFooter:
+      normalizeText(input.documentFooter || input.footer || fallback.documentFooter || DEFAULT_COMPANY_SETTINGS.documentFooter),
+  };
+}
+
+function mapCompanySettingsRow(row) {
+  return {
+    companyName: normalizeText(row?.company_name || DEFAULT_COMPANY_SETTINGS.companyName),
+    logoDataUrl: normalizeText(row?.logo_data_url),
+    cnpj: normalizeText(row?.cnpj),
+    address: normalizeText(row?.address),
+    phone: normalizeText(row?.phone),
+    email: normalizeText(row?.email).toLowerCase(),
+    primaryColor: normalizeText(row?.primary_color || DEFAULT_COMPANY_SETTINGS.primaryColor),
+    documentFooter: normalizeText(row?.document_footer || DEFAULT_COMPANY_SETTINGS.documentFooter),
+    createdAt: normalizeText(row?.created_at),
+    updatedAt: normalizeText(row?.updated_at),
+  };
+}
+
+function queryCompanySettings() {
+  const row = get("SELECT * FROM company_settings WHERE id = 1 LIMIT 1");
+  return {
+    ...DEFAULT_COMPANY_SETTINGS,
+    ...mapCompanySettingsRow(row),
+  };
+}
+
+function ensureCompanySettingsSeeded() {
+  const existing = get("SELECT id FROM company_settings WHERE id = 1 LIMIT 1");
+  if (!existing) {
+    saveCompanySettings(DEFAULT_COMPANY_SETTINGS, null);
+  }
+}
+
+function saveCompanySettings(input = {}, user = null) {
+  const existing = get("SELECT * FROM company_settings WHERE id = 1 LIMIT 1");
+  const settings = normalizeCompanySettingsInput(input, mapCompanySettingsRow(existing));
+  const timestamp = nowIso();
+
+  if (!settings.companyName) {
+    throw new Error("Informe o nome da empresa.");
+  }
+
+  if (existing) {
+    write(
+      `
+        UPDATE company_settings
+        SET company_name = ?, logo_data_url = ?, cnpj = ?, address = ?, phone = ?, email = ?,
+            primary_color = ?, document_footer = ?, updated_at = ?, updated_by = ?
+        WHERE id = 1
+      `,
+      [
+        settings.companyName,
+        settings.logoDataUrl || null,
+        settings.cnpj || null,
+        settings.address || null,
+        settings.phone || null,
+        settings.email || null,
+        settings.primaryColor || DEFAULT_COMPANY_SETTINGS.primaryColor,
+        settings.documentFooter || DEFAULT_COMPANY_SETTINGS.documentFooter,
+        timestamp,
+        user?.id || null,
+      ]
+    );
+  } else {
+    insert(
+      `
+        INSERT INTO company_settings (
+          id, company_name, logo_data_url, cnpj, address, phone, email, primary_color,
+          document_footer, created_at, updated_at, updated_by
+        )
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        settings.companyName,
+        settings.logoDataUrl || null,
+        settings.cnpj || null,
+        settings.address || null,
+        settings.phone || null,
+        settings.email || null,
+        settings.primaryColor || DEFAULT_COMPANY_SETTINGS.primaryColor,
+        settings.documentFooter || DEFAULT_COMPANY_SETTINGS.documentFooter,
+        timestamp,
+        timestamp,
+        user?.id || null,
+      ]
+    );
+  }
+
+  return queryCompanySettings();
+}
+
+function normalizeChecklistTemplateItemConfig(input = {}, index = 0, fallback = {}) {
+  const name = normalizeText(input.name || input.label || fallback.name);
+  const itemKey = normalizeKey(input.itemKey || input.key || name || fallback.itemKey) || `item_${index + 1}`;
+  const sortOrder = Math.max(1, Number.parseInt(String(input.sortOrder ?? fallback.sortOrder ?? index + 1), 10) || index + 1);
+
+  return {
+    itemKey,
+    name: name || `Item ${index + 1}`,
+    description: normalizeText(input.description || fallback.description),
+    category: normalizeChecklistCategory(input.category || fallback.category, "Outros"),
+    required: input.required === false || input.required === "false" ? false : fallback.required === false ? false : true,
+    active: input.active === false || input.active === "false" ? false : fallback.active === false ? false : true,
+    vehicleType: normalizeText(input.vehicleType || input.vehicle_type || fallback.vehicleType),
+    sortOrder,
+  };
+}
+
+function queryChecklistTemplateItems() {
+  const rows = all(
+    `
+      SELECT *
+      FROM checklist_items
+      ORDER BY sort_order ASC, id ASC
+    `
+  );
+
+  if (!rows.length) {
+    return DEFAULT_CHECKLIST_TEMPLATE.map((item, index) => ({
+      id: null,
+      ...normalizeChecklistTemplateItemConfig(item, index),
+      isDefault: true,
+    }));
+  }
+
+  return rows.map((row, index) => ({
+    id: Number(row.id),
+    ...normalizeChecklistTemplateItemConfig(
+      {
+        itemKey: row.item_key,
+        name: row.name,
+        description: row.description,
+        category: row.category,
+        required: Number(row.required || 0) === 1,
+        active: Number(row.active || 0) === 1,
+        vehicleType: row.vehicle_type,
+        sortOrder: row.sort_order,
+      },
+      index
+    ),
+    isDefault: false,
+  }));
+}
+
+function ensureChecklistTemplateSeeded() {
+  const existing = get("SELECT id FROM checklist_items LIMIT 1");
+  if (existing) {
+    return;
+  }
+
+  const adminUser = get("SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1");
+  const timestamp = nowIso();
+
+  transaction(() => {
+    DEFAULT_CHECKLIST_TEMPLATE.forEach((item, index) => {
+      const normalized = normalizeChecklistTemplateItemConfig(item, index);
+      insert(
+        `
+          INSERT INTO checklist_items (
+            item_key, name, description, category, required, active, vehicle_type, sort_order,
+            created_at, updated_at, updated_by
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          normalized.itemKey,
+          normalized.name,
+          normalized.description || null,
+          normalized.category,
+          normalized.required ? 1 : 0,
+          normalized.active ? 1 : 0,
+          normalized.vehicleType || null,
+          normalized.sortOrder,
+          timestamp,
+          timestamp,
+          adminUser?.id || null,
+        ]
+      );
+    });
+  });
+}
+
+function createChecklistTemplateItem(input = {}, user) {
+  const existingByKey = get("SELECT id FROM checklist_items WHERE item_key = ? LIMIT 1", [
+    normalizeKey(input.itemKey || input.key || input.name || input.label),
+  ]);
+  if (existingByKey) {
+    throw new Error("Ja existe um item de checklist com esta chave.");
+  }
+
+  const normalized = normalizeChecklistTemplateItemConfig(input, 0);
+  const timestamp = nowIso();
+  const itemId = insert(
+    `
+      INSERT INTO checklist_items (
+        item_key, name, description, category, required, active, vehicle_type, sort_order,
+        created_at, updated_at, updated_by
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      normalized.itemKey,
+      normalized.name,
+      normalized.description || null,
+      normalized.category,
+      normalized.required ? 1 : 0,
+      normalized.active ? 1 : 0,
+      normalized.vehicleType || null,
+      normalized.sortOrder,
+      timestamp,
+      timestamp,
+      user?.id || null,
+    ]
+  );
+
+  return queryChecklistTemplateItems().find((item) => item.id === itemId) || null;
+}
+
+function updateChecklistTemplateItem(itemId, input = {}, user) {
+  const existing = get("SELECT * FROM checklist_items WHERE id = ? LIMIT 1", [Number(itemId)]);
+  if (!existing) {
+    throw new Error("Item de checklist nao encontrado.");
+  }
+
+  const normalized = normalizeChecklistTemplateItemConfig(
+    input,
+    Number(existing.sort_order || 1) - 1,
+    {
+      itemKey: existing.item_key,
+      name: existing.name,
+      description: existing.description,
+      category: existing.category,
+      required: Number(existing.required || 0) === 1,
+      active: Number(existing.active || 0) === 1,
+      vehicleType: existing.vehicle_type,
+      sortOrder: Number(existing.sort_order || 1),
+    }
+  );
+
+  const duplicate = get("SELECT id FROM checklist_items WHERE item_key = ? AND id <> ? LIMIT 1", [
+    normalized.itemKey,
+    Number(itemId),
+  ]);
+  if (duplicate) {
+    throw new Error("Ja existe outro item com esta chave.");
+  }
+
+  write(
+    `
+      UPDATE checklist_items
+      SET item_key = ?, name = ?, description = ?, category = ?, required = ?, active = ?,
+          vehicle_type = ?, sort_order = ?, updated_at = ?, updated_by = ?
+      WHERE id = ?
+    `,
+    [
+      normalized.itemKey,
+      normalized.name,
+      normalized.description || null,
+      normalized.category,
+      normalized.required ? 1 : 0,
+      normalized.active ? 1 : 0,
+      normalized.vehicleType || null,
+      normalized.sortOrder,
+      nowIso(),
+      user?.id || null,
+      Number(itemId),
+    ]
+  );
+
+  return queryChecklistTemplateItems().find((item) => item.id === Number(itemId)) || null;
 }
 
 function normalizeDashboardDays(value) {
@@ -1819,6 +2212,7 @@ function queryChecklists() {
           ? null
           : Number(parsed.meta.odometerKm),
       signatureName: normalizeText(parsed.meta.signatureName),
+      temporaryIssue: normalizeText(parsed.meta.temporaryIssue),
       items: parsed.itemsDetailed.map((item) => item.label),
       itemsDetailed: parsed.itemsDetailed,
       itemSummary: summary,
@@ -2002,9 +2396,11 @@ function buildKardexReport(filters = {}) {
     Number(product.default_cost || 0) ||
     Number(lastPurchase?.unit_cost || 0) ||
     0;
+  const company = queryCompanySettings();
 
   return {
-    companyName: normalizeText(process.env.COMPANY_NAME || "HORIZON"),
+    company,
+    companyName: company.companyName,
     reportName:
       filterSet.stockType === "FUEL"
         ? "Ficha Kardex - Combustivel"
@@ -2224,6 +2620,8 @@ function requireRoles(roles) {
 
 async function start() {
   await initDatabase();
+  ensureChecklistTemplateSeeded();
+  ensureCompanySettingsSeeded();
 
   const app = express();
   const publicDir = path.join(__dirname, "public");
@@ -2496,6 +2894,61 @@ async function start() {
       todaySchedules,
       analytics: fuelAnalytics,
     });
+  });
+
+  app.get("/api/settings/company", requireAuth, (req, res) => {
+    return res.json({ item: queryCompanySettings() });
+  });
+
+  app.put("/api/settings/company", requireRoles(["ADMIN"]), (req, res) => {
+    try {
+      const item = saveCompanySettings(req.body, req.user);
+      logAction(req.user, "UPDATE_COMPANY_SETTINGS", "COMPANY_SETTINGS", 1, {
+        companyName: item.companyName,
+        hasLogo: Boolean(item.logoDataUrl),
+      });
+      return res.json({ item });
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
+  });
+
+  app.get("/api/checklists/template", requireAuth, (req, res) => {
+    return res.json({ items: queryChecklistTemplateItems() });
+  });
+
+  app.post("/api/checklists/template", requireRoles(["ADMIN"]), (req, res) => {
+    try {
+      if (!normalizeText(req.body.name || req.body.label)) {
+        return sendError(res, 400, "Informe o nome do item de checklist.");
+      }
+
+      const item = createChecklistTemplateItem(req.body, req.user);
+      logAction(req.user, "CREATE_CHECKLIST_TEMPLATE_ITEM", "CHECKLIST_TEMPLATE", item?.id || null, {
+        itemKey: item?.itemKey,
+        name: item?.name,
+        category: item?.category,
+        active: item?.active,
+      });
+      return res.status(201).json({ item });
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
+  });
+
+  app.put("/api/checklists/template/:id", requireRoles(["ADMIN"]), (req, res) => {
+    try {
+      const item = updateChecklistTemplateItem(req.params.id, req.body, req.user);
+      logAction(req.user, "UPDATE_CHECKLIST_TEMPLATE_ITEM", "CHECKLIST_TEMPLATE", req.params.id, {
+        itemKey: item?.itemKey,
+        name: item?.name,
+        category: item?.category,
+        active: item?.active,
+      });
+      return res.json({ item });
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
   });
 
   app.get("/api/notes", requireAuth, (req, res) => {

@@ -9,3 +9,4 @@ data/server*.log
 npm-debug.log*
 server.log
 server-error.log
+.tmp/
