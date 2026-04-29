@@ -126,6 +126,7 @@
           <button class="nav-item" data-section="notes">Notas fiscais</button>
           <button class="nav-item" data-section="inventory">Estoque</button>
           <button class="nav-item" data-section="vehicles">Veiculos</button>
+          <button class="nav-item" data-section="dossier">Dossie do Veiculo</button>
             <button class="nav-item" data-section="fuel">Combustivel</button>
           <button class="nav-item" data-section="reports">Relatorios</button>
           <button class="nav-item" data-section="schedules">Escala</button>
@@ -181,32 +182,81 @@
               <span class="eyebrow">Visão rápida</span>
               <h2>Dashboard</h2>
             </div>
-            <div class="header-actions dashboard-filter-bar">
-              <select id="dashboard-period-filter">
-                <option value="7">Ultimos 7 dias</option>
-                <option value="15">Ultimos 15 dias</option>
-                <option value="30" selected>Ultimos 30 dias</option>
-                <option value="60">Ultimos 60 dias</option>
-                <option value="90">Ultimos 90 dias</option>
-              </select>
-              <select id="dashboard-plate-filter">
-                <option value="">Todas as placas</option>
-              </select>
+          </div>
+
+          <div id="dashboard-view-switcher" class="dashboard-view-switcher" role="group" aria-label="Filtros do dashboard">
+            <button type="button" class="dashboard-view-button active" data-dashboard-view="overview" aria-pressed="true">
+              Visao Geral
+            </button>
+            <button type="button" class="dashboard-view-button" data-dashboard-view="vehicle" aria-pressed="false">
+              Por Veiculo
+            </button>
+            <button type="button" class="dashboard-view-button" data-dashboard-view="fuel" aria-pressed="false">
+              Combustivel
+            </button>
+            <button type="button" class="dashboard-view-button" data-dashboard-view="period" aria-pressed="false">
+              Periodo
+            </button>
+            <button type="button" class="dashboard-view-button" data-dashboard-view="alerts" aria-pressed="false">
+              Alertas
+            </button>
+          </div>
+
+          <div class="dashboard-context-bar">
+            <div class="dashboard-context-copy">
+              <span class="eyebrow">Leitura ativa</span>
+              <strong id="dashboard-context-title">Visao Geral</strong>
+              <p id="dashboard-context-description" class="muted">
+                Resumo compacto da operacao com foco nas decisoes do dia.
+              </p>
+            </div>
+            <div class="dashboard-context-toolbar">
+              <label id="dashboard-quick-period-group" class="dashboard-inline-control">
+                <span>Janela</span>
+                <select id="dashboard-period-filter">
+                  <option value="7">Ultimos 7 dias</option>
+                  <option value="15">Ultimos 15 dias</option>
+                  <option value="30" selected>Ultimos 30 dias</option>
+                  <option value="60">Ultimos 60 dias</option>
+                  <option value="90">Ultimos 90 dias</option>
+                </select>
+              </label>
+
+              <label id="dashboard-vehicle-group" class="dashboard-inline-control hidden">
+                <span>Veiculo</span>
+                <select id="dashboard-plate-filter">
+                  <option value="">Selecione um veiculo</option>
+                </select>
+              </label>
+
+              <div id="dashboard-period-range-group" class="dashboard-range-controls hidden">
+                <label class="dashboard-inline-control">
+                  <span>De</span>
+                  <input id="dashboard-date-from" type="date" />
+                </label>
+                <label class="dashboard-inline-control">
+                  <span>Ate</span>
+                  <input id="dashboard-date-to" type="date" />
+                </label>
+              </div>
+
+              <div id="dashboard-period-actions" class="dashboard-period-actions hidden">
+                <button id="dashboard-period-apply-button" type="button" class="secondary-button">
+                  Aplicar periodo
+                </button>
+                <button id="dashboard-period-reset-button" type="button" class="ghost-button">
+                  Voltar aos 30 dias
+                </button>
+              </div>
             </div>
           </div>
 
-          <div id="dashboard-summary" class="dashboard-summary-grid"></div>
-          <div id="dashboard-metrics" class="metric-grid"></div>
+          <div id="dashboard-summary" class="dashboard-summary-grid dashboard-summary-grid--decision"></div>
+          <section id="dashboard-primary" class="panel dashboard-block dashboard-block--primary"></section>
+          <section id="dashboard-detail" class="panel dashboard-block dashboard-block--detail hidden"></section>
 
-          <div class="dashboard-grid dashboard-analytics-grid">
-            <article class="panel dashboard-panel dashboard-panel-wide">
-              <div class="card-title">
-                <span class="eyebrow">Combustivel</span>
-                <h3>Consumo no periodo</h3>
-              </div>
-              <div id="dashboard-consumption-chart"></div>
-            </article>
 
+          <div class="hidden" aria-hidden="true">
             <article class="panel dashboard-panel">
               <div class="card-title">
                 <span class="eyebrow">Eficiência</span>
@@ -605,6 +655,8 @@
                   <span>Status</span>
                   <select name="status">
                     <option value="ACTIVE">Ativo</option>
+                    <option value="AVAILABLE">Disponivel</option>
+                    <option value="MAINTENANCE">Em manutencao</option>
                     <option value="INACTIVE">Inativo</option>
                   </select>
                 </label>
@@ -640,6 +692,58 @@
                 </table>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section id="dossier-section" class="content-section">
+          <div class="section-header">
+            <div>
+              <span class="eyebrow">Central por placa</span>
+              <h2>Dossie do Veiculo</h2>
+              <p class="section-description">Diagnostico completo do veiculo a partir de uma unica placa cadastrada.</p>
+            </div>
+          </div>
+
+          <section class="panel dossier-search-panel">
+            <form id="dossier-search-form" class="dossier-search-form" autocomplete="off">
+              <label class="dossier-search-field">
+                <span>Buscar placa</span>
+                <input
+                  id="dossier-plate-search"
+                  type="text"
+                  list="dossier-vehicle-list"
+                  placeholder="ABC1D23"
+                  autocomplete="off"
+                />
+              </label>
+              <div class="form-actions dossier-search-actions">
+                <button type="submit" class="primary-button">Carregar dossie</button>
+                <button type="button" id="dossier-clear-button" class="ghost-button">Limpar</button>
+              </div>
+            </form>
+            <datalist id="dossier-vehicle-list"></datalist>
+            <p id="dossier-search-feedback" class="muted dossier-search-feedback">
+              Selecione uma placa cadastrada para abrir o dossie completo do veiculo.
+            </p>
+          </section>
+
+          <section id="dossier-empty-state" class="panel dossier-empty-state">
+            <div class="dashboard-empty">
+              <strong>Dossie pronto para consulta</strong>
+              <p class="muted">Ao selecionar uma placa valida, o sistema consolida escala, combustivel, checklist, multas, manutencao, pneus e historico operacional.</p>
+            </div>
+          </section>
+
+          <div id="dossier-content" class="dossier-content hidden">
+            <section id="dossier-summary-shell" class="panel dossier-summary-shell"></section>
+            <section class="panel dossier-alert-shell">
+              <div class="card-title">
+                <span class="eyebrow">Status rapido</span>
+                <h3>Alertas principais</h3>
+              </div>
+              <div id="dossier-alert-cards" class="dossier-alert-grid"></div>
+            </section>
+            <section id="dossier-sections" class="dossier-sections"></section>
           </div>
         </section>
 
@@ -1125,6 +1229,8 @@
                   <span>Status</span>
                   <select name="status">
                     <option value="OPEN">Aberta</option>
+                    <option value="WAITING_DRIVER">Aguardando condutor</option>
+                    <option value="PENDING_PAYMENT">Pendente de pagamento</option>
                     <option value="CONTESTING">Contestando</option>
                     <option value="PAID">Paga</option>
                   </select>
@@ -1132,6 +1238,18 @@
                 <label>
                   <span>Valor</span>
                   <input type="number" name="amount" min="0" step="0.01" />
+                </label>
+                <label>
+                  <span>Documento</span>
+                  <input type="text" name="documentName" placeholder="Nome ou referencia do anexo" />
+                </label>
+                <label>
+                  <span>Link do anexo</span>
+                  <input type="text" name="documentUrl" placeholder="Opcional" />
+                </label>
+                <label class="full-width">
+                  <span>Observacao</span>
+                  <textarea name="notes" rows="3" placeholder="Detalhes da multa ou tratativa"></textarea>
                 </label>
               </div>
               <div class="form-actions">

@@ -571,6 +571,112 @@ function migrateVehicleSchema() {
   `);
 }
 
+function migrateVehicleDossierSchema() {
+  ensureColumn("vehicles", "operational_status", "TEXT NOT NULL DEFAULT 'ACTIVE'");
+  ensureColumn("fines", "document_name", "TEXT");
+  ensureColumn("fines", "document_url", "TEXT");
+
+  write(
+    `
+      UPDATE vehicles
+      SET operational_status = CASE
+        WHEN trim(COALESCE(operational_status, '')) <> '' THEN operational_status
+        WHEN active = 1 THEN 'ACTIVE'
+        ELSE 'INACTIVE'
+      END
+      WHERE operational_status IS NULL OR trim(COALESCE(operational_status, '')) = ''
+    `
+  );
+
+  runScript(`
+    CREATE TABLE IF NOT EXISTS vehicle_maintenance_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      vehicle_id INTEGER,
+      plate TEXT NOT NULL,
+      maintenance_type TEXT NOT NULL DEFAULT 'PREVENTIVE',
+      title TEXT NOT NULL,
+      performed_at TEXT NOT NULL,
+      odometer_km REAL,
+      interval_km REAL,
+      next_due_km REAL,
+      notes TEXT,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(vehicle_id) REFERENCES vehicles(id),
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS vehicle_tires (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      vehicle_id INTEGER,
+      plate TEXT,
+      tire_code TEXT NOT NULL UNIQUE,
+      tire_type TEXT NOT NULL DEFAULT 'NEW',
+      position TEXT,
+      installed_at TEXT,
+      installed_km REAL,
+      removed_at TEXT,
+      removed_km REAL,
+      estimated_life_km REAL,
+      location_status TEXT NOT NULL DEFAULT 'INSTALLED',
+      status TEXT NOT NULL DEFAULT 'OK',
+      notes TEXT,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(vehicle_id) REFERENCES vehicles(id),
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS vehicle_tire_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tire_id INTEGER NOT NULL,
+      vehicle_id INTEGER,
+      plate TEXT,
+      event_type TEXT NOT NULL DEFAULT 'INSTALL',
+      position_from TEXT,
+      position_to TEXT,
+      odometer_km REAL,
+      occurred_at TEXT NOT NULL,
+      notes TEXT,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(tire_id) REFERENCES vehicle_tires(id) ON DELETE CASCADE,
+      FOREIGN KEY(vehicle_id) REFERENCES vehicles(id),
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS vehicle_odometer_corrections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      vehicle_id INTEGER,
+      plate TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'FUEL',
+      source_id INTEGER,
+      original_km REAL NOT NULL,
+      corrected_km REAL NOT NULL,
+      reason TEXT,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(vehicle_id) REFERENCES vehicles(id),
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_vehicles_operational_status ON vehicles(operational_status, active, plate);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_maintenance_plate ON vehicle_maintenance_records(plate, performed_at, id);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_maintenance_vehicle ON vehicle_maintenance_records(vehicle_id, performed_at, id);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_tires_plate ON vehicle_tires(plate, location_status, status);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_tires_vehicle ON vehicle_tires(vehicle_id, location_status, status);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_tire_events_plate ON vehicle_tire_events(plate, occurred_at, id);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_tire_events_vehicle ON vehicle_tire_events(vehicle_id, occurred_at, id);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_tire_events_tire ON vehicle_tire_events(tire_id, occurred_at, id);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_odometer_corrections_plate ON vehicle_odometer_corrections(plate, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_odometer_corrections_source ON vehicle_odometer_corrections(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS idx_fines_plate_status ON fines(plate, status, fine_date);
+    CREATE INDEX IF NOT EXISTS idx_checklists_vehicle_date ON checklists(vehicle, checklist_date, id);
+  `);
+}
+
 function migrateFuelSchema() {
   ensureColumn("fuel_storages", "product_id", "INTEGER");
   ensureColumn("fuel_records", "storage_id", "INTEGER");
@@ -1664,6 +1770,7 @@ async function initDatabase() {
   createTables();
   migrateInventorySchema();
   migrateVehicleSchema();
+  migrateVehicleDossierSchema();
   migrateFuelSchema();
   migrateOperationalSchema();
   migrateAuthSchema();

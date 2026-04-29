@@ -76,6 +76,28 @@ const SECTION_ICONS = {
   admin: "admin",
 };
 const DASHBOARD_TITLE_ICONS = ["analytics", "efficiency", "vehicle", "fuel", "notes", "alert", "schedules"];
+const DASHBOARD_VIEW_META = {
+  overview: {
+    label: "Visao Geral",
+    description: "Resumo compacto da operacao com foco nas decisoes do dia.",
+  },
+  vehicle: {
+    label: "Por Veiculo",
+    description: "Leitura individual por placa com consumo recente, media KM/L e sinais de inconsistencia.",
+  },
+  fuel: {
+    label: "Combustivel",
+    description: "Comparativo entre S-10 e S-500 para identificar volume, media e distribuicao.",
+  },
+  period: {
+    label: "Periodo",
+    description: "Resumo analitico do intervalo selecionado para apoiar fechamento e conferencia.",
+  },
+  alerts: {
+    label: "Alertas",
+    description: "Fila priorizada de inconsistencias, erros de KM e consumo fora do padrao.",
+  },
+};
 
 const state = {
   user: null,
@@ -107,23 +129,53 @@ const state = {
   adminUsers: [],
   logs: [],
   dashboard: {
+    view: "overview",
+    filters: {
+      quickPeriodDays: 30,
+      selectedPlate: "",
+      useCustomRange: false,
+      dateFrom: "",
+      dateTo: "",
+    },
     metrics: {
       pendingNotes: 0,
       waitingRecognition: 0,
       sentToFinance: 0,
       fuelBalance: 0,
+      periodFuelConsumption: 0,
+      averageDailyConsumption: 0,
+      averageKmPerLiter: 0,
+      activeVehicles: 0,
+      criticalAlertCount: 0,
     },
     analytics: {
       periodDays: 30,
+      periodStart: "",
+      periodEnd: "",
+      isCustomRange: false,
       selectedPlate: "",
       availablePlates: [],
       consumptionSeries: [],
       efficiencyRanking: [],
+      efficiencySummary: {
+        totalDistanceKm: 0,
+        totalLiters: 0,
+        vehicleCount: 0,
+        averageKmPerLiter: 0,
+      },
       selectedVehicle: null,
       topConsumers: [],
       recentFuelRecords: [],
       noteStatuses: [],
       fuelMix: [],
+      operationalAlerts: [],
+      alertSummary: {
+        total: 0,
+        critical: 0,
+        kmErrors: 0,
+        outliers: 0,
+        missingOdometer: 0,
+      },
       odometerCoverage: {
         totalRecords: 0,
         withOdometer: 0,
@@ -284,18 +336,22 @@ const refs = {
   topbarUserRole: $("topbar-user-role"),
   topbarThemeSlot: $("topbar-theme-slot"),
   adminNavButton: $("admin-nav-button"),
+  dashboardViewSwitcher: $("dashboard-view-switcher"),
+  dashboardContextTitle: $("dashboard-context-title"),
+  dashboardContextDescription: $("dashboard-context-description"),
   dashboardSummary: $("dashboard-summary"),
-  dashboardMetrics: $("dashboard-metrics"),
-  dashboardConsumptionChart: $("dashboard-consumption-chart"),
-  dashboardEfficiencySpotlight: $("dashboard-efficiency-spotlight"),
-  dashboardKmReview: $("dashboard-km-review"),
-  dashboardRanking: $("dashboard-ranking"),
-  dashboardTopConsumers: $("dashboard-top-consumers"),
-  dashboardNoteFlow: $("dashboard-note-flow"),
-  dashboardAlerts: $("dashboard-alerts"),
-  dashboardSchedules: $("dashboard-schedules"),
+  dashboardPrimary: $("dashboard-primary"),
+  dashboardDetail: $("dashboard-detail"),
+  dashboardQuickPeriodGroup: $("dashboard-quick-period-group"),
+  dashboardVehicleGroup: $("dashboard-vehicle-group"),
+  dashboardPeriodRangeGroup: $("dashboard-period-range-group"),
+  dashboardPeriodActions: $("dashboard-period-actions"),
   dashboardPlateFilter: $("dashboard-plate-filter"),
   dashboardPeriodFilter: $("dashboard-period-filter"),
+  dashboardDateFrom: $("dashboard-date-from"),
+  dashboardDateTo: $("dashboard-date-to"),
+  dashboardPeriodApplyButton: $("dashboard-period-apply-button"),
+  dashboardPeriodResetButton: $("dashboard-period-reset-button"),
   noteForm: $("note-form"),
   noteResetButton: $("note-reset-button"),
   notesSearch: $("notes-search"),
@@ -484,8 +540,11 @@ function bindEvents() {
   refs.refreshAllButton.addEventListener("click", refreshAll);
   refs.sidebarToggleButton?.addEventListener("click", toggleSidebar);
   refs.sidebarBackdrop?.addEventListener("click", closeSidebarOverlay);
-  refs.dashboardPlateFilter.addEventListener("change", refreshDashboard);
-  refs.dashboardPeriodFilter.addEventListener("change", refreshDashboard);
+  refs.dashboardViewSwitcher?.addEventListener("click", handleDashboardViewSwitch);
+  refs.dashboardPlateFilter?.addEventListener("change", handleDashboardPlateFilterChange);
+  refs.dashboardPeriodFilter?.addEventListener("change", handleDashboardQuickPeriodChange);
+  refs.dashboardPeriodApplyButton?.addEventListener("click", handleDashboardPeriodApply);
+  refs.dashboardPeriodResetButton?.addEventListener("click", handleDashboardPeriodReset);
   refs.noteForm.addEventListener("submit", handleNoteSubmit);
   refs.noteResetButton.addEventListener("click", () => resetNoteForm());
   refs.xmlImportButton.addEventListener("click", handleXmlImport);
@@ -1207,6 +1266,20 @@ function currentLocalDate() {
   return toLocalDateTimeInput(new Date().toISOString()).slice(0, 10);
 }
 
+function shiftDateString(value, offsetDays) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(`${String(value).slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  date.setDate(date.getDate() + Number(offsetDays || 0));
+  return date.toISOString().slice(0, 10);
+}
+
 function statusBadge(value) {
   const meta = statusMeta[value] || { label: value || "-", className: "status-gray" };
   return `<span class="status-badge ${meta.className}">${escapeHtml(meta.label)}</span>`;
@@ -1371,6 +1444,18 @@ function setSection(section) {
 }
 
 function applyDefaultFormValues() {
+  state.dashboard.filters.quickPeriodDays = state.dashboard.filters.quickPeriodDays || 30;
+  state.dashboard.filters.dateTo = state.dashboard.filters.dateTo || currentLocalDate();
+  state.dashboard.filters.dateFrom = state.dashboard.filters.dateFrom || shiftDateString(currentLocalDate(), -29);
+  if (refs.dashboardPeriodFilter) {
+    refs.dashboardPeriodFilter.value = String(state.dashboard.filters.quickPeriodDays || 30);
+  }
+  if (refs.dashboardDateTo) {
+    refs.dashboardDateTo.value = state.dashboard.filters.dateTo;
+  }
+  if (refs.dashboardDateFrom) {
+    refs.dashboardDateFrom.value = state.dashboard.filters.dateFrom;
+  }
   refs.noteForm.elements.status.value = "NEW";
   refs.noteForm.elements.category.value = "LOGISTICS";
   refs.noteForm.elements.issueDate.value = currentLocalDateTime();
@@ -1443,12 +1528,16 @@ async function refreshAll() {
 }
 
 async function refreshDashboard() {
-  const query = new URLSearchParams();
-  if (refs.dashboardPeriodFilter.value) query.set("days", refs.dashboardPeriodFilter.value);
-  if (refs.dashboardPlateFilter.value) query.set("plate", refs.dashboardPlateFilter.value);
+  const query = buildDashboardRequestParams();
   const suffix = query.toString() ? `?${query.toString()}` : "";
   const response = await api(`/api/dashboard${suffix}`);
-  state.dashboard = response;
+  state.dashboard = {
+    ...state.dashboard,
+    metrics: response.metrics || state.dashboard.metrics,
+    analytics: response.analytics || state.dashboard.analytics,
+    alerts: Array.isArray(response.alerts) ? response.alerts : [],
+    todaySchedules: Array.isArray(response.todaySchedules) ? response.todaySchedules : [],
+  };
   renderDashboard();
 }
 
@@ -1975,6 +2064,950 @@ function renderDashboard() {
         )
         .join("")
     : `<div class="stack-item"><strong>Nenhuma escala para hoje</strong><p class="muted">Cadastre a programacao do dia para aparecer aqui.</p></div>`;
+}
+
+function normalizeDashboardView(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return DASHBOARD_VIEW_META[normalized] ? normalized : "overview";
+}
+
+function getDashboardViewMeta(view = state.dashboard.view) {
+  return DASHBOARD_VIEW_META[normalizeDashboardView(view)] || DASHBOARD_VIEW_META.overview;
+}
+
+function buildDashboardRequestParams() {
+  const query = new URLSearchParams();
+  const filters = state.dashboard.filters || {};
+
+  if (filters.useCustomRange && filters.dateFrom && filters.dateTo) {
+    query.set("from", filters.dateFrom);
+    query.set("to", filters.dateTo);
+  } else {
+    query.set("days", String(filters.quickPeriodDays || 30));
+  }
+
+  if (normalizeDashboardView(state.dashboard.view) === "vehicle" && filters.selectedPlate) {
+    query.set("plate", filters.selectedPlate);
+  }
+
+  return query;
+}
+
+function syncDashboardDateInputsWithQuickPeriod(days) {
+  const safeDays = Math.max(Number(days || 30), 1);
+  const endDate = currentLocalDate();
+  const startDate = shiftDateString(endDate, -(safeDays - 1));
+  state.dashboard.filters.dateFrom = startDate;
+  state.dashboard.filters.dateTo = endDate;
+
+  if (refs.dashboardDateFrom) {
+    refs.dashboardDateFrom.value = startDate;
+  }
+  if (refs.dashboardDateTo) {
+    refs.dashboardDateTo.value = endDate;
+  }
+}
+
+function syncDashboardFilterInputs() {
+  const view = normalizeDashboardView(state.dashboard.view);
+  const meta = getDashboardViewMeta(view);
+  const analytics = state.dashboard.analytics || {};
+  const filters = state.dashboard.filters || {};
+  const availablePlates = Array.isArray(analytics.availablePlates) ? analytics.availablePlates : [];
+  const selectedPlate = availablePlates.includes(filters.selectedPlate) ? filters.selectedPlate : "";
+
+  state.dashboard.filters.selectedPlate = selectedPlate;
+  refs.dashboardContextTitle.textContent = meta.label;
+  refs.dashboardContextDescription.textContent = meta.description;
+
+  document.querySelectorAll("[data-dashboard-view]").forEach((button) => {
+    const isActive = button.dataset.dashboardView === view;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+
+  if (refs.dashboardPeriodFilter) {
+    refs.dashboardPeriodFilter.value = String(filters.quickPeriodDays || analytics.periodDays || 30);
+  }
+
+  if (refs.dashboardPlateFilter) {
+    refs.dashboardPlateFilter.innerHTML = [
+      `<option value="">Selecione um veiculo</option>`,
+      ...availablePlates.map(
+        (plate) => `<option value="${escapeHtml(plate)}">${escapeHtml(plate)}</option>`
+      ),
+    ].join("");
+    refs.dashboardPlateFilter.value = selectedPlate;
+  }
+
+  const defaultFrom = filters.dateFrom || analytics.periodStart || shiftDateString(currentLocalDate(), -29);
+  const defaultTo = filters.dateTo || analytics.periodEnd || currentLocalDate();
+  if (refs.dashboardDateFrom) {
+    refs.dashboardDateFrom.value = defaultFrom;
+  }
+  if (refs.dashboardDateTo) {
+    refs.dashboardDateTo.value = defaultTo;
+  }
+
+  refs.dashboardQuickPeriodGroup?.classList.toggle("hidden", view === "period");
+  refs.dashboardVehicleGroup?.classList.toggle("hidden", view !== "vehicle");
+  refs.dashboardPeriodRangeGroup?.classList.toggle("hidden", view !== "period");
+  refs.dashboardPeriodActions?.classList.toggle("hidden", view !== "period");
+}
+
+async function setDashboardView(view) {
+  const nextView = normalizeDashboardView(view);
+  state.dashboard.view = nextView;
+
+  if (nextView === "vehicle" && !state.dashboard.filters.selectedPlate) {
+    state.dashboard.filters.selectedPlate =
+      state.dashboard.analytics?.selectedVehicle?.plate ||
+      state.dashboard.analytics?.availablePlates?.[0] ||
+      "";
+  }
+
+  syncDashboardFilterInputs();
+  await refreshDashboard();
+}
+
+async function handleDashboardViewSwitch(event) {
+  const button = event.target.closest("[data-dashboard-view]");
+  if (!button) {
+    return;
+  }
+
+  await setDashboardView(button.dataset.dashboardView);
+}
+
+async function handleDashboardQuickPeriodChange() {
+  state.dashboard.filters.quickPeriodDays = Number(refs.dashboardPeriodFilter?.value || 30);
+  state.dashboard.filters.useCustomRange = false;
+  syncDashboardDateInputsWithQuickPeriod(state.dashboard.filters.quickPeriodDays);
+  await refreshDashboard();
+}
+
+async function handleDashboardPlateFilterChange() {
+  state.dashboard.filters.selectedPlate = refs.dashboardPlateFilter?.value || "";
+  if (!state.dashboard.filters.selectedPlate) {
+    renderDashboard();
+    return;
+  }
+
+  await refreshDashboard();
+}
+
+async function handleDashboardPeriodApply() {
+  const from = refs.dashboardDateFrom?.value || "";
+  const to = refs.dashboardDateTo?.value || "";
+
+  if (!from || !to) {
+    showToast("Informe as duas datas para aplicar o periodo.", "error");
+    return;
+  }
+
+  if (from > to) {
+    showToast("A data inicial precisa ser menor ou igual a data final.", "error");
+    return;
+  }
+
+  state.dashboard.filters.useCustomRange = true;
+  state.dashboard.filters.dateFrom = from;
+  state.dashboard.filters.dateTo = to;
+  await refreshDashboard();
+}
+
+async function handleDashboardPeriodReset() {
+  state.dashboard.filters.quickPeriodDays = 30;
+  state.dashboard.filters.useCustomRange = false;
+  if (refs.dashboardPeriodFilter) {
+    refs.dashboardPeriodFilter.value = "30";
+  }
+  syncDashboardDateInputsWithQuickPeriod(30);
+  await refreshDashboard();
+}
+
+function buildDashboardPeriodLabel(analytics = state.dashboard.analytics) {
+  if (analytics?.isCustomRange && analytics.periodStart && analytics.periodEnd) {
+    return `${formatDateOnly(analytics.periodStart)} a ${formatDateOnly(analytics.periodEnd)}`;
+  }
+
+  return `ultimos ${formatNumber(analytics?.periodDays || state.dashboard.filters.quickPeriodDays || 30)} dias`;
+}
+
+function buildDashboardPanelHeader(eyebrow, title, description = "") {
+  return `
+    <div class="dashboard-block__header">
+      <div>
+        <span class="eyebrow">${escapeHtml(eyebrow)}</span>
+        <h3>${escapeHtml(title)}</h3>
+        ${description ? `<p class="muted">${escapeHtml(description)}</p>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function buildDashboardTable(headers, rows, emptyTitle, emptyDescription) {
+  if (!rows.length) {
+    return renderDashboardEmpty(emptyTitle, emptyDescription);
+  }
+
+  return `
+    <div class="table-wrapper">
+      <table class="dashboard-compact-table">
+        <thead>
+          <tr>
+            ${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              (cells) => `
+                <tr>
+                  ${cells.map((cell) => `<td>${cell}</td>`).join("")}
+                </tr>
+              `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function buildDashboardSeverityBadge(severity) {
+  const normalized = String(severity || "INFO").toUpperCase();
+  const label =
+    normalized === "CRITICAL" ? "Critico" : normalized === "WARNING" ? "Atencao" : "Info";
+  const className =
+    normalized === "CRITICAL" ? "status-red" : normalized === "WARNING" ? "status-yellow" : "status-gray";
+  return `<span class="status-badge ${className}">${escapeHtml(label)}</span>`;
+}
+
+function buildDashboardAlertFeed(alerts, emptyTitle, emptyDescription) {
+  if (!alerts.length) {
+    return renderDashboardEmpty(emptyTitle, emptyDescription);
+  }
+
+  return `
+    <div class="dashboard-alert-feed">
+      ${alerts
+        .map((alert) => {
+          const meta = [
+            alert.plate ? `Placa ${alert.plate}` : "",
+            alert.occurredAt ? formatDateTime(alert.occurredAt) : "",
+          ]
+            .filter(Boolean)
+            .join(" | ");
+
+          return `
+            <article class="dashboard-alert-item">
+              <div class="dashboard-alert-item__top">
+                <strong>${escapeHtml(alert.title || "Alerta operacional")}</strong>
+                ${buildDashboardSeverityBadge(alert.severity)}
+              </div>
+              <p class="muted">${escapeHtml(alert.description || "Sem descricao.")}</p>
+              ${meta ? `<span class="dashboard-alert-item__meta">${escapeHtml(meta)}</span>` : ""}
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function buildDashboardRecentFuelFeed(records, emptyTitle, emptyDescription) {
+  if (!records.length) {
+    return renderDashboardEmpty(emptyTitle, emptyDescription);
+  }
+
+  return `
+    <div class="dashboard-recent-feed">
+      ${records
+        .map(
+          (record) => `
+            <article class="dashboard-recent-feed__item">
+              <div>
+                <strong>${escapeHtml(record.plate || formatFuelKindLabel(record.fuelKind))}</strong>
+                <p class="muted">${escapeHtml(formatDateTime(record.occurredAt))}</p>
+              </div>
+              <div class="dashboard-recent-feed__metric">
+                <strong>${escapeHtml(`${formatLiters(record.quantity || 0)} L`)}</strong>
+                <span>${escapeHtml(formatFuelKindLabel(record.fuelKind))}</span>
+              </div>
+            </article>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function buildDashboardSummaryCards() {
+  const metricsState = state.dashboard.metrics || {};
+  const analytics = state.dashboard.analytics || {};
+  const efficiencySummary = analytics.efficiencySummary || {
+    averageKmPerLiter: 0,
+    vehicleCount: 0,
+  };
+  const alertSummary = analytics.alertSummary || {
+    critical: 0,
+    kmErrors: 0,
+  };
+
+  return [
+    buildStatCard({
+      className: "dashboard-decision-card",
+      label: "Total abastecido",
+      value: `${formatLiters(metricsState.periodFuelConsumption || 0)} L`,
+      note: buildDashboardPeriodLabel(analytics),
+      icon: "fuel",
+      tone: "brand",
+    }),
+    buildStatCard({
+      className: "dashboard-decision-card",
+      label: "Media KM/L",
+      value: formatKmPerLiter(metricsState.averageKmPerLiter || efficiencySummary.averageKmPerLiter || 0),
+      note: `${formatNumber(efficiencySummary.vehicleCount || 0)} veiculo(s) com leitura valida`,
+      icon: "efficiency",
+      tone: efficiencySummary.vehicleCount ? "success" : "warning",
+    }),
+    buildStatCard({
+      className: "dashboard-decision-card",
+      label: "Veiculos ativos",
+      value: formatNumber(metricsState.activeVehicles || 0),
+      note: "Cadastro operacional ativo",
+      icon: "vehicle",
+      tone: "neutral",
+    }),
+    buildStatCard({
+      className: "dashboard-decision-card",
+      label: "Alertas criticos",
+      value: formatNumber(metricsState.criticalAlertCount || alertSummary.critical || 0),
+      note: `${formatNumber(alertSummary.kmErrors || 0)} erro(s) de KM no periodo`,
+      icon: "alert",
+      tone: (metricsState.criticalAlertCount || alertSummary.critical || 0) ? "danger" : "success",
+    }),
+  ].join("");
+}
+
+function buildDashboardOverviewView() {
+  const metricsState = state.dashboard.metrics || {};
+  const analytics = state.dashboard.analytics || {};
+  const bestVehicle = analytics.efficiencyRanking?.[0] || null;
+  const topConsumers = (analytics.topConsumers || []).slice(0, 5);
+
+  const primary = `
+    ${buildDashboardPanelHeader(
+      "Bloco 2",
+      "Resumo geral compacto",
+      "Somente os indicadores que ajudam a entender o periodo atual com rapidez."
+    )}
+    <div class="dashboard-focus-grid">
+      <article class="dashboard-focus-card">
+        <span class="eyebrow">Resumo geral</span>
+        <h4>${escapeHtml(`Consumo consolidado em ${buildDashboardPeriodLabel(analytics)}`)}</h4>
+        <p class="muted">Leitura enxuta para decidir onde agir primeiro.</p>
+        <div class="dashboard-mini-kpi-grid">
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Media diaria",
+            value: `${formatLiters(metricsState.averageDailyConsumption || 0)} L`,
+            note: "Saida media por dia",
+            icon: "analytics",
+            tone: "brand",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Pico do periodo",
+            value: `${formatLiters(analytics.peakConsumption?.total || 0)} L`,
+            note: analytics.peakConsumption?.date ? formatDateOnly(analytics.peakConsumption.date) : "Sem pico",
+            icon: "dashboard",
+            tone: "warning",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Captura de KM",
+            value: formatPercent(analytics.odometerCoverage?.percent || 0, 0),
+            note: `${formatNumber(analytics.odometerCoverage?.withOdometer || 0)} leitura(s) completas`,
+            icon: "vehicle",
+            tone: "neutral",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Melhor media",
+            value: bestVehicle ? formatKmPerLiter(bestVehicle.kmPerLiter) : "-",
+            note: bestVehicle ? `Placa ${bestVehicle.plate}` : "Aguardando leituras validas",
+            icon: "efficiency",
+            tone: bestVehicle ? "success" : "warning",
+          })}
+        </div>
+      </article>
+
+      <article class="dashboard-focus-card">
+        <span class="eyebrow">Ranking simples</span>
+        <h4>${escapeHtml(bestVehicle ? `Melhor resultado atual: ${bestVehicle.plate}` : "Ranking em preparacao")}</h4>
+        <p class="muted">Comparativo direto entre as medias KM/L mais consistentes do periodo.</p>
+        ${renderMeterList(
+          (analytics.efficiencyRanking || []).slice(0, 5).map((item) => ({
+            label: item.plate,
+            value: item.kmPerLiter,
+            totalDistanceKm: item.totalDistanceKm,
+            totalLiters: item.totalLiters,
+            samples: item.samples,
+          })),
+          {
+            emptyTitle: "Sem ranking no momento",
+            emptyDescription: "Assim que houver abastecimentos com KM, o ranking aparece aqui.",
+            valueFormatter: (value) => formatKmPerLiter(value),
+            secondaryFormatter: (item) =>
+              `${formatDistance(item.totalDistanceKm)} | ${formatLiters(item.totalLiters)} L | ${item.samples} leitura(s)`,
+          }
+        )}
+      </article>
+    </div>
+  `;
+
+  const detail =
+    analytics.totalConsumptionLiters > 0
+      ? `
+          ${buildDashboardPanelHeader(
+            "Bloco 3",
+            "Detalhamento",
+            "Grafico e tabela resumida apenas quando ajudam a interpretar o periodo."
+          )}
+          <div class="dashboard-detail-stack">
+            <div class="dashboard-detail-card">
+              ${renderConsumptionChart(analytics)}
+            </div>
+            <div class="dashboard-detail-card">
+              <span class="eyebrow">Tabela resumida</span>
+              <h4>Veiculos com maior consumo</h4>
+              ${buildDashboardTable(
+                ["Placa", "Total", "Lancamentos", "Ultimo abastecimento"],
+                topConsumers.map((item) => [
+                  `<strong>${escapeHtml(item.plate || "-")}</strong>`,
+                  escapeHtml(`${formatLiters(item.totalLiters || 0)} L`),
+                  escapeHtml(formatNumber(item.records || 0)),
+                  escapeHtml(formatDateOnly(item.lastAt)),
+                ]),
+                "Sem detalhamento",
+                "Nao houve saidas registradas no periodo selecionado."
+              )}
+            </div>
+          </div>
+        `
+      : "";
+
+  return { primary, detail };
+}
+
+function buildDashboardVehicleView() {
+  const analytics = state.dashboard.analytics || {};
+  const selectedPlate = state.dashboard.filters.selectedPlate || "";
+  const selectedVehicle = analytics.selectedVehicle || null;
+  const recentRecords = (analytics.recentFuelRecords || []).slice(0, 5);
+  const vehicleAlerts = (analytics.operationalAlerts || [])
+    .filter((alert) => alert.plate === selectedPlate)
+    .slice(0, 5);
+
+  if (!selectedPlate) {
+    return {
+      primary: `
+        ${buildDashboardPanelHeader(
+          "Bloco 2",
+          "Por veiculo",
+          "Selecione uma placa para ver os ultimos abastecimentos, a media KM/L e os alertas associados."
+        )}
+        ${renderDashboardEmpty(
+          "Selecione um veiculo",
+          "Use o campo de selecao acima para carregar a leitura individual da placa."
+        )}
+      `,
+      detail: "",
+    };
+  }
+
+  const primary = `
+    ${buildDashboardPanelHeader(
+      "Bloco 2",
+      `Leitura do veiculo ${selectedPlate}`,
+      "Historico recente, media KM/L e inconsistencias da placa selecionada."
+    )}
+    <div class="dashboard-focus-grid dashboard-focus-grid--vehicle">
+      <article class="dashboard-focus-card">
+        <span class="eyebrow">Media KM/L</span>
+        <h4>${escapeHtml(selectedPlate)}</h4>
+        <p class="muted">Leitura orientada a decisao para revisar consumo e consistencia do KM.</p>
+        <div class="dashboard-mini-kpi-grid">
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Media apurada",
+            value: formatKmPerLiter(selectedVehicle?.kmPerLiter || 0),
+            note: `${formatNumber(selectedVehicle?.samples || 0)} leitura(s) validas`,
+            icon: "efficiency",
+            tone: selectedVehicle?.samples ? "success" : "warning",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Distancia",
+            value: formatDistance(selectedVehicle?.totalDistanceKm || 0),
+            note: "Rodagem consolidada",
+            icon: "vehicle",
+            tone: "neutral",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Litros",
+            value: `${formatLiters(selectedVehicle?.totalLiters || 0)} L`,
+            note: "Volume analisado",
+            icon: "fuel",
+            tone: "brand",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Ultimo KM",
+            value: selectedVehicle?.lastOdometerKm ? formatDistance(selectedVehicle.lastOdometerKm) : "-",
+            note: selectedVehicle?.lastFuelAt ? formatDateOnly(selectedVehicle.lastFuelAt) : "Sem leitura recente",
+            icon: "analytics",
+            tone: "warning",
+          })}
+        </div>
+      </article>
+
+      <article class="dashboard-focus-card">
+        <span class="eyebrow">Ultimos abastecimentos</span>
+        <h4>Janela recente da placa</h4>
+        ${buildDashboardRecentFuelFeed(
+          recentRecords.map((record) => ({ ...record, plate: record.plate || selectedPlate })),
+          "Sem abastecimentos recentes",
+          "Nao foram encontrados lancamentos recentes para esta placa no periodo atual."
+        )}
+      </article>
+    </div>
+
+    <article class="dashboard-subsection-card">
+      <span class="eyebrow">Alertas de inconsistencia</span>
+      <h4>Conferencia rapida da placa</h4>
+      ${buildDashboardAlertFeed(
+        vehicleAlerts,
+        "Sem inconsistencias relevantes",
+        "Nao foram encontrados sinais criticos ou fora do padrao para este veiculo."
+      )}
+    </article>
+  `;
+
+  const segmentRows = (selectedVehicle?.segments || [])
+    .slice()
+    .reverse()
+    .slice(0, 5)
+    .map((segment) => [
+      `<strong>${escapeHtml(formatDateOnly(segment.date))}</strong>`,
+      escapeHtml(formatDistance(segment.distanceKm || 0)),
+      escapeHtml(`${formatLiters(segment.liters || 0)} L`),
+      escapeHtml(formatKmPerLiter(segment.kmPerLiter || 0)),
+    ]);
+  const recordRows = recentRecords.map((record) => [
+    `<strong>${escapeHtml(formatDateTime(record.occurredAt))}</strong>`,
+    escapeHtml(formatFuelKindLabel(record.fuelKind)),
+    escapeHtml(`${formatLiters(record.quantity || 0)} L`),
+    escapeHtml(
+      record.odometerKm === null || record.odometerKm === undefined ? "-" : formatDistance(record.odometerKm)
+    ),
+  ]);
+
+  const detail = `
+    ${buildDashboardPanelHeader(
+      "Bloco 3",
+      "Detalhamento do veiculo",
+      "Tabela resumida com pares de KM/L e os ultimos abastecimentos do veiculo selecionado."
+    )}
+    <div class="dashboard-detail-stack dashboard-detail-stack--split">
+      <div class="dashboard-detail-card">
+        <span class="eyebrow">Tabela resumida</span>
+        <h4>Pares de KM/L</h4>
+        ${buildDashboardTable(
+          ["Data", "Distancia", "Litros", "KM/L"],
+          segmentRows,
+          "Sem pares validos",
+          "Sao necessarios pelo menos dois abastecimentos com KM para gerar a conferencia."
+        )}
+      </div>
+      <div class="dashboard-detail-card">
+        <span class="eyebrow">Tabela resumida</span>
+        <h4>Ultimos lancamentos</h4>
+        ${buildDashboardTable(
+          ["Quando", "Combustivel", "Litros", "KM informado"],
+          recordRows,
+          "Sem lancamentos",
+          "Nao houve abastecimentos suficientes para montar o historico recente."
+        )}
+      </div>
+    </div>
+  `;
+
+  return { primary, detail };
+}
+
+function buildDashboardFuelView() {
+  const metricsState = state.dashboard.metrics || {};
+  const analytics = state.dashboard.analytics || {};
+  const periodDays = Math.max(Number(analytics.periodDays || 0), 1);
+  const fuelMixMap = new Map((analytics.fuelMix || []).map((item) => [item.fuelKind, Number(item.total || 0)]));
+  const s500Total = Number(fuelMixMap.get("S500") || 0);
+  const s10Total = Number(fuelMixMap.get("S10") || 0);
+  const totalConsumption = Number(metricsState.periodFuelConsumption || 0);
+
+  const buildFuelCard = (label, total, tone) => `
+    <article class="dashboard-fuel-card dashboard-fuel-card--${tone}">
+      <span class="eyebrow">${escapeHtml(label)}</span>
+      <strong>${escapeHtml(`${formatLiters(total)} L`)}</strong>
+      <p class="muted">${escapeHtml(`${formatLiters(total / periodDays)} L por dia`)}</p>
+      <div class="dashboard-fuel-card__meta">
+        <span>${escapeHtml(totalConsumption > 0 ? formatPercent((total / totalConsumption) * 100, 0) : "0%")}</span>
+        <span>Participacao no periodo</span>
+      </div>
+    </article>
+  `;
+
+  const primary = `
+    ${buildDashboardPanelHeader(
+      "Bloco 2",
+      "Comparativo por combustivel",
+      "Separacao clara entre S-10 e S-500 para revisar volume total, media e distribuicao."
+    )}
+    <div class="dashboard-fuel-grid">
+      ${buildFuelCard("S-500", s500Total, "s500")}
+      ${buildFuelCard("S-10", s10Total, "s10")}
+      <article class="dashboard-focus-card">
+        <span class="eyebrow">Totais e medias</span>
+        <h4>Leitura consolidada do mix</h4>
+        <div class="dashboard-mini-kpi-grid">
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Total geral",
+            value: `${formatLiters(totalConsumption)} L`,
+            note: buildDashboardPeriodLabel(analytics),
+            icon: "fuel",
+            tone: "brand",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Media diaria",
+            value: `${formatLiters(metricsState.averageDailyConsumption || 0)} L`,
+            note: "Consumo medio",
+            icon: "analytics",
+            tone: "neutral",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Saldo atual",
+            value: `${formatLiters(metricsState.fuelBalance || 0)} L`,
+            note: "Soma dos estoques",
+            icon: "inventory",
+            tone: "warning",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Alertas de estoque",
+            value: formatNumber(metricsState.lowStockCount || 0),
+            note: "Pontos abaixo do minimo",
+            icon: "alert",
+            tone: metricsState.lowStockCount ? "danger" : "success",
+          })}
+        </div>
+      </article>
+    </div>
+  `;
+
+  const detailRows = (analytics.consumptionSeries || [])
+    .filter((item) => Number(item.total || 0) > 0)
+    .map((item) => [
+      `<strong>${escapeHtml(formatDateOnly(item.date))}</strong>`,
+      escapeHtml(`${formatLiters(item.s500 || 0)} L`),
+      escapeHtml(`${formatLiters(item.s10 || 0)} L`),
+      escapeHtml(`${formatLiters(item.total || 0)} L`),
+    ]);
+
+  const detail =
+    totalConsumption > 0
+      ? `
+          ${buildDashboardPanelHeader(
+            "Bloco 3",
+            "Detalhamento do combustivel",
+            "Grafico do periodo e tabela diaria com a distribuicao entre S-10 e S-500."
+          )}
+          <div class="dashboard-detail-stack">
+            <div class="dashboard-detail-card">
+              ${renderConsumptionChart(analytics)}
+            </div>
+            <div class="dashboard-detail-card">
+              <span class="eyebrow">Tabela resumida</span>
+              <h4>Distribuicao diaria</h4>
+              ${buildDashboardTable(
+                ["Data", "S-500", "S-10", "Total"],
+                detailRows,
+                "Sem detalhamento diario",
+                "Nao houve consumo suficiente para compor a distribuicao por dia."
+              )}
+            </div>
+          </div>
+        `
+      : "";
+
+  return { primary, detail };
+}
+
+function buildDashboardPeriodView() {
+  const metricsState = state.dashboard.metrics || {};
+  const analytics = state.dashboard.analytics || {};
+  const topConsumers = (analytics.topConsumers || []).slice(0, 5);
+  const periodLabel = buildDashboardPeriodLabel(analytics);
+
+  const primary = `
+    ${buildDashboardPanelHeader(
+      "Bloco 2",
+      "Resumo do periodo",
+      "Leitura direta do intervalo selecionado para fechamento, conferencia e tomada de decisao."
+    )}
+    <div class="dashboard-focus-grid">
+      <article class="dashboard-focus-card">
+        <span class="eyebrow">Intervalo analisado</span>
+        <h4>${escapeHtml(periodLabel)}</h4>
+        <p class="muted">Ajuste as datas no topo para consolidar um recorte especifico da operacao.</p>
+        <div class="dashboard-mini-kpi-grid">
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Total abastecido",
+            value: `${formatLiters(metricsState.periodFuelConsumption || 0)} L`,
+            note: "Saidas do periodo",
+            icon: "fuel",
+            tone: "brand",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Media diaria",
+            value: `${formatLiters(metricsState.averageDailyConsumption || 0)} L`,
+            note: `${formatNumber(analytics.periodDays || 0)} dia(s) analisado(s)`,
+            icon: "analytics",
+            tone: "neutral",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Pico do periodo",
+            value: `${formatLiters(analytics.peakConsumption?.total || 0)} L`,
+            note: analytics.peakConsumption?.date ? formatDateOnly(analytics.peakConsumption.date) : "Sem pico",
+            icon: "dashboard",
+            tone: "warning",
+          })}
+          ${buildStatCard({
+            className: "dashboard-mini-kpi",
+            label: "Veiculos com leitura",
+            value: formatNumber(analytics.efficiencySummary?.vehicleCount || 0),
+            note: "Base com KM validado",
+            icon: "vehicle",
+            tone: "success",
+          })}
+        </div>
+      </article>
+
+      <article class="dashboard-focus-card">
+        <span class="eyebrow">Resumo operacional</span>
+        <h4>Top consumo no intervalo</h4>
+        ${renderMeterList(
+          topConsumers.map((item) => ({
+            label: item.plate,
+            value: item.totalLiters,
+            records: item.records,
+            lastAt: item.lastAt,
+          })),
+          {
+            emptyTitle: "Sem consumo no intervalo",
+            emptyDescription: "A selecao atual nao retornou lancamentos suficientes para comparacao.",
+            valueFormatter: (value) => `${formatLiters(value)} L`,
+            secondaryFormatter: (item) =>
+              `${formatNumber(item.records || 0)} lancamento(s) | ${formatDateOnly(item.lastAt)}`,
+          }
+        )}
+      </article>
+    </div>
+  `;
+
+  const detailRows = (analytics.consumptionSeries || []).map((item) => [
+    `<strong>${escapeHtml(formatDateOnly(item.date))}</strong>`,
+    escapeHtml(`${formatLiters(item.total || 0)} L`),
+    escapeHtml(`${formatLiters(item.s500 || 0)} L`),
+    escapeHtml(`${formatLiters(item.s10 || 0)} L`),
+  ]);
+
+  const detail = `
+    ${buildDashboardPanelHeader(
+      "Bloco 3",
+      "Detalhamento do periodo",
+      "Curva de consumo e tabela resumida do intervalo escolhido."
+    )}
+    <div class="dashboard-detail-stack">
+      <div class="dashboard-detail-card">
+        ${renderConsumptionChart(analytics)}
+      </div>
+      <div class="dashboard-detail-card">
+        <span class="eyebrow">Tabela resumida</span>
+        <h4>Consumo por dia</h4>
+        ${buildDashboardTable(
+          ["Data", "Total", "S-500", "S-10"],
+          detailRows,
+          "Sem consumo no periodo",
+          "A faixa selecionada nao possui saidas suficientes para detalhamento."
+        )}
+      </div>
+    </div>
+  `;
+
+  return { primary, detail };
+}
+
+function buildDashboardAlertsView() {
+  const analytics = state.dashboard.analytics || {};
+  const allAlerts = Array.isArray(state.dashboard.alerts) ? state.dashboard.alerts : [];
+  const operationalAlerts = Array.isArray(analytics.operationalAlerts) ? analytics.operationalAlerts : [];
+  const kmAlerts = operationalAlerts.filter((item) => item.type === "KM_ERROR");
+  const outlierAlerts = operationalAlerts.filter((item) => item.type === "OUTLIER_CONSUMPTION");
+  const missingAlerts = operationalAlerts.filter((item) => item.type === "MISSING_ODOMETER");
+  const generalAlerts = allAlerts.filter(
+    (item) => !["KM_ERROR", "OUTLIER_CONSUMPTION", "MISSING_ODOMETER"].includes(item.type)
+  );
+
+  const primary = `
+    ${buildDashboardPanelHeader(
+      "Bloco 2",
+      "Fila de alertas",
+      "Inconsistencias organizadas por tipo para facilitar a conferencia rapida do dia."
+    )}
+    <div class="dashboard-mini-kpi-grid dashboard-mini-kpi-grid--alerts">
+      ${buildStatCard({
+        className: "dashboard-mini-kpi",
+        label: "Criticos",
+        value: formatNumber(analytics.alertSummary?.critical || 0),
+        note: "Requer revisao imediata",
+        icon: "alert",
+        tone: (analytics.alertSummary?.critical || 0) ? "danger" : "success",
+      })}
+      ${buildStatCard({
+        className: "dashboard-mini-kpi",
+        label: "Erro de KM",
+        value: formatNumber(analytics.alertSummary?.kmErrors || 0),
+        note: "Leituras regressivas ou iguais",
+        icon: "vehicle",
+        tone: (analytics.alertSummary?.kmErrors || 0) ? "danger" : "neutral",
+      })}
+      ${buildStatCard({
+        className: "dashboard-mini-kpi",
+        label: "Fora do padrao",
+        value: formatNumber(analytics.alertSummary?.outliers || 0),
+        note: "Media alta ou baixa demais",
+        icon: "efficiency",
+        tone: (analytics.alertSummary?.outliers || 0) ? "warning" : "success",
+      })}
+      ${buildStatCard({
+        className: "dashboard-mini-kpi",
+        label: "KM ausente",
+        value: formatNumber(analytics.alertSummary?.missingOdometer || 0),
+        note: "Abastecimentos sem hodometro",
+        icon: "analytics",
+        tone: (analytics.alertSummary?.missingOdometer || 0) ? "warning" : "neutral",
+      })}
+    </div>
+
+    <div class="dashboard-alert-grid">
+      <article class="dashboard-alert-card">
+        <span class="eyebrow">Erro de KM</span>
+        <h4>Veiculos com leitura inconsistente</h4>
+        ${buildDashboardAlertFeed(
+          kmAlerts.slice(0, 5),
+          "Sem erros de KM",
+          "Nenhuma leitura regressiva foi encontrada no periodo atual."
+        )}
+      </article>
+
+      <article class="dashboard-alert-card">
+        <span class="eyebrow">Consumo fora do padrao</span>
+        <h4>Medias que pedem revisao</h4>
+        ${buildDashboardAlertFeed(
+          outlierAlerts.slice(0, 5),
+          "Sem outliers relevantes",
+          "Nao foram encontrados consumos muito acima ou abaixo do esperado."
+        )}
+      </article>
+
+      <article class="dashboard-alert-card">
+        <span class="eyebrow">Pendencias gerais</span>
+        <h4>Ausencia de KM e alertas auxiliares</h4>
+        ${buildDashboardAlertFeed(
+          [...missingAlerts, ...generalAlerts].slice(0, 6),
+          "Sem pendencias abertas",
+          "Nenhuma ausencia de KM ou pendencia auxiliar foi encontrada."
+        )}
+      </article>
+    </div>
+  `;
+
+  const detailRows = allAlerts.map((alert) => [
+    buildDashboardSeverityBadge(alert.severity),
+    `<strong>${escapeHtml(alert.type || "-")}</strong>`,
+    escapeHtml(alert.plate || "-"),
+    escapeHtml(alert.occurredAt ? formatDateTime(alert.occurredAt) : "-"),
+    escapeHtml(alert.title || "-"),
+  ]);
+
+  const detail = `
+    ${buildDashboardPanelHeader(
+      "Bloco 3",
+      "Tabela de alertas",
+      "Lista resumida para revisao rapida e priorizacao das tratativas."
+    )}
+    <div class="dashboard-detail-card">
+      ${buildDashboardTable(
+        ["Severidade", "Tipo", "Placa", "Quando", "Resumo"],
+        detailRows,
+        "Sem alertas ativos",
+        "Nenhuma inconsistencia foi encontrada para o filtro atual."
+      )}
+    </div>
+  `;
+
+  return { primary, detail };
+}
+
+function buildDashboardViewModel() {
+  switch (normalizeDashboardView(state.dashboard.view)) {
+    case "vehicle":
+      return buildDashboardVehicleView();
+    case "fuel":
+      return buildDashboardFuelView();
+    case "period":
+      return buildDashboardPeriodView();
+    case "alerts":
+      return buildDashboardAlertsView();
+    case "overview":
+    default:
+      return buildDashboardOverviewView();
+  }
+}
+
+function renderDashboard() {
+  syncDashboardFilterInputs();
+  refs.dashboardSummary.innerHTML = buildDashboardSummaryCards();
+
+  const viewModel = buildDashboardViewModel();
+  refs.dashboardPrimary.innerHTML = viewModel.primary;
+
+  if (viewModel.detail) {
+    refs.dashboardDetail.classList.remove("hidden");
+    refs.dashboardDetail.innerHTML = viewModel.detail;
+  } else {
+    refs.dashboardDetail.classList.add("hidden");
+    refs.dashboardDetail.innerHTML = "";
+  }
 }
 
 function renderNotes() {
@@ -3075,6 +4108,10 @@ async function lookupProductByBarcode() {
 async function handleFuelSubmit(event) {
   event.preventDefault();
   const isExit = refs.fuelForm.elements.type.value === "EXIT";
+  const selectedVehicle =
+    isExit && refs.fuelForm.elements.vehicleId.value
+      ? state.vehicles.find((item) => String(item.id) === String(refs.fuelForm.elements.vehicleId.value))
+      : null;
 
   const payload = {
     storageId: refs.fuelForm.elements.storageId.value,
@@ -3115,6 +4152,11 @@ async function handleScheduleSubmit(event) {
     });
     resetScheduleForm();
     await Promise.all([refreshSchedules(), refreshDashboard(), maybeRefreshAdmin()]);
+
+    if (state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(payload.vehicle)) {
+      await loadVehicleDossierByPlate(payload.vehicle, { silent: true });
+    }
+
     showToast(id ? "Escala atualizada." : "Escala cadastrada.");
   } catch (error) {
     showToast(error.message, "error");
@@ -3399,6 +4441,1456 @@ async function handleKardexView(event) {
   try {
     await fetchKardexReport();
     showToast("Ficha Kardex atualizada.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleChecklistSubmit(event) {
+  event.preventDefault();
+  const id = refs.checklistForm.elements.id.value;
+  const itemsDetailed = ensureChecklistDraft();
+  const payload = {
+    vehicle: refs.checklistForm.elements.vehicle.value,
+    checklistDate: toIsoDateTime(refs.checklistForm.elements.checklistDate.value),
+    checklistType: refs.checklistForm.elements.checklistType.value,
+    driverName: refs.checklistForm.elements.driverName.value,
+    odometerKm: refs.checklistForm.elements.odometerKm.value,
+    signatureName: refs.checklistForm.elements.signatureName.value,
+    temporaryIssue: refs.checklistForm.elements.temporaryIssue?.value || "",
+    status: deriveChecklistOverallStatus(itemsDetailed),
+    items: itemsDetailed.map((item) => item.label).join("\n"),
+    itemsDetailed,
+    problems: refs.checklistForm.elements.problems.value,
+  };
+
+  try {
+    await api(id ? `/api/checklists/${id}` : "/api/checklists", {
+      method: id ? "PUT" : "POST",
+      body: payload,
+    });
+    resetChecklistForm();
+    await Promise.all([refreshChecklists(), maybeRefreshAdmin()]);
+
+    if (state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(payload.vehicle)) {
+      await loadVehicleDossierByPlate(payload.vehicle, { silent: true });
+    }
+
+    showToast(id ? "Checklist atualizado." : "Checklist cadastrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleFuelSubmit(event) {
+  event.preventDefault();
+  const isExit = refs.fuelForm.elements.type.value === "EXIT";
+  const selectedVehicle =
+    isExit && refs.fuelForm.elements.vehicleId.value
+      ? state.vehicles.find((item) => String(item.id) === String(refs.fuelForm.elements.vehicleId.value))
+      : null;
+
+  const payload = {
+    storageId: refs.fuelForm.elements.storageId.value,
+    type: refs.fuelForm.elements.type.value,
+    vehicleId: isExit ? refs.fuelForm.elements.vehicleId.value : "",
+    quantity: refs.fuelForm.elements.quantity.value,
+    odometerKm: refs.fuelForm.elements.odometerKm.value,
+    occurredAt: toIsoDateTime(refs.fuelForm.elements.occurredAt.value),
+    notes: refs.fuelForm.elements.notes.value,
+  };
+
+  try {
+    await api("/api/fuel", { method: "POST", body: payload });
+    resetFuelForm();
+    await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+
+    if (selectedVehicle && state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(selectedVehicle.plate)) {
+      await loadVehicleDossierByPlate(selectedVehicle.plate, { silent: true });
+    }
+
+    showToast("Abastecimento registrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleChecklistSubmit(event) {
+  event.preventDefault();
+  const id = refs.checklistForm.elements.id.value;
+  const itemsDetailed = ensureChecklistDraft();
+  const payload = {
+    vehicle: refs.checklistForm.elements.vehicle.value,
+    checklistDate: toIsoDateTime(refs.checklistForm.elements.checklistDate.value),
+    checklistType: refs.checklistForm.elements.checklistType.value,
+    driverName: refs.checklistForm.elements.driverName.value,
+    odometerKm: refs.checklistForm.elements.odometerKm.value,
+    signatureName: refs.checklistForm.elements.signatureName.value,
+    temporaryIssue: refs.checklistForm.elements.temporaryIssue?.value || "",
+    status: deriveChecklistOverallStatus(itemsDetailed),
+    items: itemsDetailed.map((item) => item.label).join("\n"),
+    itemsDetailed,
+    problems: refs.checklistForm.elements.problems.value,
+  };
+
+  try {
+    await api(id ? `/api/checklists/${id}` : "/api/checklists", {
+      method: id ? "PUT" : "POST",
+      body: payload,
+    });
+    resetChecklistForm();
+    await Promise.all([refreshChecklists(), maybeRefreshAdmin()]);
+
+    if (state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(payload.vehicle)) {
+      await loadVehicleDossierByPlate(payload.vehicle, { silent: true });
+    }
+
+    showToast(id ? "Checklist atualizado." : "Checklist cadastrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleFuelSubmit(event) {
+  event.preventDefault();
+  const isExit = refs.fuelForm.elements.type.value === "EXIT";
+  const selectedVehicle =
+    isExit && refs.fuelForm.elements.vehicleId.value
+      ? state.vehicles.find((item) => String(item.id) === String(refs.fuelForm.elements.vehicleId.value))
+      : null;
+
+  const payload = {
+    storageId: refs.fuelForm.elements.storageId.value,
+    type: refs.fuelForm.elements.type.value,
+    vehicleId: isExit ? refs.fuelForm.elements.vehicleId.value : "",
+    quantity: refs.fuelForm.elements.quantity.value,
+    odometerKm: refs.fuelForm.elements.odometerKm.value,
+    occurredAt: toIsoDateTime(refs.fuelForm.elements.occurredAt.value),
+    notes: refs.fuelForm.elements.notes.value,
+  };
+
+  try {
+    await api("/api/fuel", { method: "POST", body: payload });
+    resetFuelForm();
+    await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+
+    if (selectedVehicle && state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(selectedVehicle.plate)) {
+      await loadVehicleDossierByPlate(selectedVehicle.plate, { silent: true });
+    }
+
+    showToast("Abastecimento registrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+Object.assign(statusMeta, {
+  INACTIVE: { label: "Inativo", className: "status-gray" },
+  AVAILABLE: { label: "Disponivel", className: "status-green" },
+  MAINTENANCE: { label: "Em manutencao", className: "status-yellow" },
+  WAITING_DRIVER: { label: "Aguardando condutor", className: "status-yellow" },
+  PENDING_PAYMENT: { label: "Pendente de pagamento", className: "status-red" },
+  ATTENTION: { label: "Atencao", className: "status-yellow" },
+  CRITICAL: { label: "Critico", className: "status-red" },
+  OVERDUE: { label: "Vencido", className: "status-red" },
+  REPLACE_RECOMMENDED: { label: "Troca recomendada", className: "status-yellow" },
+  DISCARDED: { label: "Descartado", className: "status-gray" },
+});
+
+Object.assign(NAV_ICONS, {
+  dossier: "vehicle",
+});
+
+Object.assign(SECTION_ICONS, {
+  dossier: "vehicle",
+});
+
+state.dossier = {
+  selectedPlate: "",
+  item: null,
+  isLoading: false,
+  error: "",
+};
+
+Object.assign(refs, {
+  dossierSearchForm: $("dossier-search-form"),
+  dossierPlateSearch: $("dossier-plate-search"),
+  dossierVehicleList: $("dossier-vehicle-list"),
+  dossierClearButton: $("dossier-clear-button"),
+  dossierSearchFeedback: $("dossier-search-feedback"),
+  dossierEmptyState: $("dossier-empty-state"),
+  dossierContent: $("dossier-content"),
+  dossierSummaryShell: $("dossier-summary-shell"),
+  dossierAlertCards: $("dossier-alert-cards"),
+  dossierSections: $("dossier-sections"),
+});
+
+document.addEventListener("DOMContentLoaded", initializeVehicleDossierModule);
+
+function initializeVehicleDossierModule() {
+  refs.dossierSearchForm?.addEventListener("submit", handleVehicleDossierSearchSubmit);
+  refs.dossierPlateSearch?.addEventListener("change", handleVehicleDossierPlateChange);
+  refs.dossierPlateSearch?.addEventListener("input", debounce(handleVehicleDossierPlateInput, 180));
+  refs.dossierClearButton?.addEventListener("click", () => clearVehicleDossier(false));
+  refs.dossierSections?.addEventListener("click", handleVehicleDossierSectionActions);
+  renderVehicleDossierVehicleList();
+  renderVehicleDossier();
+}
+
+function normalizeClientPlateKey(value) {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function findRegisteredVehicleByPlate(value) {
+  const normalizedKey = normalizeClientPlateKey(value);
+  if (!normalizedKey) {
+    return null;
+  }
+  return state.vehicles.find((item) => normalizeClientPlateKey(item.plate) === normalizedKey) || null;
+}
+
+function setVehicleDossierFeedback(message, tone = "muted") {
+  if (!refs.dossierSearchFeedback) {
+    return;
+  }
+  refs.dossierSearchFeedback.textContent = message;
+  refs.dossierSearchFeedback.dataset.tone = tone;
+}
+
+function renderVehicleDossierVehicleList() {
+  if (!refs.dossierVehicleList) {
+    return;
+  }
+
+  refs.dossierVehicleList.innerHTML = state.vehicles
+    .slice()
+    .sort((left, right) => String(left.plate || "").localeCompare(String(right.plate || "")))
+    .map(
+      (vehicle) =>
+        `<option value="${escapeHtml(vehicle.plate)}">${escapeHtml(
+          [vehicle.brand, vehicle.model, vehicle.sector].filter(Boolean).join(" | ") || vehicle.plate
+        )}</option>`
+    )
+    .join("");
+}
+
+function clearVehicleDossier(preserveInput = false, message = "Selecione uma placa cadastrada para abrir o dossie completo do veiculo.") {
+  state.dossier = {
+    ...state.dossier,
+    selectedPlate: "",
+    item: null,
+    isLoading: false,
+    error: "",
+  };
+  if (!preserveInput && refs.dossierPlateSearch) {
+    refs.dossierPlateSearch.value = "";
+  }
+  setVehicleDossierFeedback(message, message === "Veiculo nao cadastrado." ? "error" : "muted");
+  renderVehicleDossier();
+}
+
+function handleVehicleDossierPlateInput() {
+  const rawValue = refs.dossierPlateSearch?.value || "";
+  if (!rawValue.trim()) {
+    setVehicleDossierFeedback("Selecione uma placa cadastrada para abrir o dossie completo do veiculo.", "muted");
+    return;
+  }
+
+  const match = findRegisteredVehicleByPlate(rawValue);
+  setVehicleDossierFeedback(match ? "Placa localizada. O dossie sera carregado ao confirmar a selecao." : "Veiculo nao cadastrado.", match ? "info" : "error");
+}
+
+async function handleVehicleDossierPlateChange() {
+  const rawValue = refs.dossierPlateSearch?.value || "";
+  const match = findRegisteredVehicleByPlate(rawValue);
+  if (!match) {
+    if (rawValue.trim()) {
+      clearVehicleDossier(true, "Veiculo nao cadastrado.");
+    }
+    return;
+  }
+
+  await loadVehicleDossierByPlate(match.plate);
+}
+
+async function handleVehicleDossierSearchSubmit(event) {
+  event.preventDefault();
+  const rawValue = refs.dossierPlateSearch?.value || "";
+  const match = findRegisteredVehicleByPlate(rawValue);
+
+  if (!match) {
+    clearVehicleDossier(true, "Veiculo nao cadastrado.");
+    return;
+  }
+
+  await loadVehicleDossierByPlate(match.plate);
+}
+
+async function loadVehicleDossierByPlate(plate, options = {}) {
+  const match = findRegisteredVehicleByPlate(plate);
+  if (!match) {
+    clearVehicleDossier(true, "Veiculo nao cadastrado.");
+    return null;
+  }
+
+  state.dossier = {
+    ...state.dossier,
+    selectedPlate: match.plate,
+    isLoading: true,
+    error: "",
+  };
+  if (refs.dossierPlateSearch) {
+    refs.dossierPlateSearch.value = match.plate;
+  }
+  if (!options.silent) {
+    setVehicleDossierFeedback("Carregando dossie do veiculo...", "info");
+  }
+  renderVehicleDossier();
+
+  try {
+    const response = await api(`/api/vehicles/dossier/${encodeURIComponent(match.plate)}`);
+    state.dossier = {
+      ...state.dossier,
+      selectedPlate: match.plate,
+      item: response.item || null,
+      isLoading: false,
+      error: "",
+    };
+    setVehicleDossierFeedback(`Dossie atualizado para a placa ${match.plate}.`, "success");
+    renderVehicleDossier();
+    return state.dossier.item;
+  } catch (error) {
+    state.dossier = {
+      ...state.dossier,
+      item: null,
+      isLoading: false,
+      error: error.message,
+    };
+    setVehicleDossierFeedback(error.message || "Falha ao carregar o dossie.", "error");
+    renderVehicleDossier();
+    return null;
+  }
+}
+
+function dossierAlertToneClass(status) {
+  if (status === "CRITICAL" || status === "OVERDUE") {
+    return "dossier-alert-card--critical";
+  }
+  if (status === "ATTENTION") {
+    return "dossier-alert-card--attention";
+  }
+  return "dossier-alert-card--ok";
+}
+
+function buildVehicleDossierEmptyState(title, description) {
+  return `
+    <div class="dashboard-empty">
+      <strong>${escapeHtml(title)}</strong>
+      <p class="muted">${escapeHtml(description)}</p>
+    </div>
+  `;
+}
+
+function formatOptionalDistance(value) {
+  return value === null || value === undefined ? "-" : formatDistance(value);
+}
+
+function formatOptionalDateTime(value) {
+  return value ? formatDateTime(value) : "-";
+}
+
+function formatOptionalDate(value) {
+  return value ? formatDateOnly(value) : "-";
+}
+
+function formatChecklistSnapshot(item) {
+  if (!item) {
+    return "Sem checklist recente.";
+  }
+  return `${item.itemSummary?.ok || 0} OK • ${item.itemSummary?.attention || 0} atencao • ${item.itemSummary?.critical || 0} critico`;
+}
+
+function buildVehicleDossierSummary(dossier) {
+  const summary = dossier.summary || {};
+  const vehicle = dossier.vehicle || {};
+  const scheduleEntry = dossier.todaySchedule?.entries?.[0] || null;
+
+  return `
+    <div class="dossier-summary-top">
+      <div>
+        <span class="eyebrow">Placa consultada</span>
+        <h3>${escapeHtml(vehicle.plate || "-")}</h3>
+        <p class="muted">${escapeHtml(summary.brandModel || "Sem marca/modelo cadastrado.")}</p>
+      </div>
+      <div class="dossier-summary-badges">
+        ${statusBadge(summary.status)}
+        ${
+          summary.isAvailableToday
+            ? `<span class="status-badge status-green">Disponivel hoje</span>`
+            : `<span class="status-badge status-yellow">Nao disponivel hoje</span>`
+        }
+      </div>
+    </div>
+    <div class="dossier-summary-grid">
+      <article class="dossier-summary-card">
+        <span class="eyebrow">Combustivel</span>
+        <strong>${escapeHtml(formatVehicleFuelProfile(summary.fuelProfile))}</strong>
+        <p class="muted">Perfil atual do veiculo</p>
+      </article>
+      <article class="dossier-summary-card">
+        <span class="eyebrow">Setor / operacao</span>
+        <strong>${escapeHtml(summary.sector || "-")}</strong>
+        <p class="muted">Alocacao principal</p>
+      </article>
+      <article class="dossier-summary-card">
+        <span class="eyebrow">Ultimo KM</span>
+        <strong>${escapeHtml(formatOptionalDistance(summary.lastKnownKm))}</strong>
+        <p class="muted">${escapeHtml(summary.lastKmSource ? `Fonte: ${summary.lastKmSource}` : "Sem KM consolidado")}</p>
+      </article>
+      <article class="dossier-summary-card">
+        <span class="eyebrow">Ultima atualizacao</span>
+        <strong>${escapeHtml(formatOptionalDateTime(summary.lastUpdateAt))}</strong>
+        <p class="muted">Ultimo evento consolidado</p>
+      </article>
+      <article class="dossier-summary-card">
+        <span class="eyebrow">Alertas criticos</span>
+        <strong>${escapeHtml(formatNumber(summary.criticalAlertCount || 0))}</strong>
+        <p class="muted">Pendencias que exigem acao</p>
+      </article>
+      <article class="dossier-summary-card">
+        <span class="eyebrow">Escala de hoje</span>
+        <strong>${escapeHtml(scheduleEntry?.driver || "Sem escala")}</strong>
+        <p class="muted">${escapeHtml(scheduleEntry ? `${scheduleEntry.location || "Rota nao informada"}${scheduleEntry.departureTime ? ` • ${scheduleEntry.departureTime}` : ""}` : "Veiculo sem escala para a data atual.")}</p>
+      </article>
+    </div>
+  `;
+}
+
+function buildVehicleDossierAlertCards(dossier) {
+  if (!Array.isArray(dossier.alerts) || !dossier.alerts.length) {
+    return buildVehicleDossierEmptyState("Sem alertas cadastrados", "Os status principais do veiculo aparecem aqui.");
+  }
+
+  return dossier.alerts
+    .map(
+      (alert) => `
+        <article class="dossier-alert-card ${dossierAlertToneClass(alert.status)}">
+          <div class="dossier-alert-card__head">
+            <span class="eyebrow">${escapeHtml(alert.label)}</span>
+            ${statusBadge(alert.status)}
+          </div>
+          <strong>${escapeHtml(alert.summary || "-")}</strong>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function buildVehicleDossierKeyFacts(items = []) {
+  return `
+    <div class="dossier-facts-grid">
+      ${items
+        .map(
+          (item) => `
+            <article class="dossier-fact-card">
+              <span class="eyebrow">${escapeHtml(item.label)}</span>
+              <strong>${escapeHtml(item.value || "-")}</strong>
+              ${item.note ? `<p class="muted">${escapeHtml(item.note)}</p>` : ""}
+            </article>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function buildVehicleDossierTable(headers = [], rowsHtml = "", emptyMessage = "Sem registros.") {
+  return `
+    <div class="table-wrapper dossier-table-wrapper">
+      <table class="dashboard-compact-table">
+        <thead>
+          <tr>
+            ${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml || `<tr><td colspan="${headers.length}" class="muted">${escapeHtml(emptyMessage)}</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function buildVehicleDossierSection(title, description, content, open = false) {
+  return `
+    <details class="dossier-section-panel" ${open ? "open" : ""}>
+      <summary>
+        <div>
+          <strong>${escapeHtml(title)}</strong>
+          <p>${escapeHtml(description)}</p>
+        </div>
+      </summary>
+      <div class="dossier-section-panel__body">
+        ${content}
+      </div>
+    </details>
+  `;
+}
+
+function buildVehicleDossierSummarySection(dossier) {
+  const summary = dossier.summary || {};
+  const checklist = dossier.checklist?.last || null;
+  const lastFine = dossier.fines?.records?.[0] || null;
+  const firstAlert = (dossier.alerts || []).find((item) => item.status === "CRITICAL" || item.status === "OVERDUE") || null;
+
+  return buildVehicleDossierSection(
+    "Resumo",
+    "Leitura geral para responder rapido se o veiculo pode operar hoje.",
+    `
+      ${buildVehicleDossierKeyFacts([
+        {
+          label: "Disponibilidade hoje",
+          value: summary.isAvailableToday ? "Disponivel" : "Com restricao",
+          note: summary.isAvailableToday ? "Sem bloqueio critico e sem escala em aberto." : "Verifique alertas, escala e status operacional.",
+        },
+        {
+          label: "Condutor de hoje",
+          value: dossier.todaySchedule?.entries?.[0]?.driver || "Sem motorista escalado",
+          note: dossier.todaySchedule?.entries?.[0]?.assistant || "Sem ajudante informado",
+        },
+        {
+          label: "Checklist atual",
+          value: formatChecklistSnapshot(checklist),
+          note: checklist ? formatOptionalDateTime(checklist.checklistDate) : "Sem checklist recente.",
+        },
+        {
+          label: "Principal pendencia",
+          value: firstAlert?.label || "Sem criticidade ativa",
+          note: firstAlert?.summary || "Sem bloqueio critico consolidado.",
+        },
+        {
+          label: "Ultima multa",
+          value: lastFine ? statusMeta[lastFine.status]?.label || lastFine.status : "Sem multas",
+          note: lastFine ? `${formatOptionalDate(lastFine.fineDate)} • ${formatCurrency(lastFine.amount || 0)}` : "Sem multas registradas.",
+        },
+        {
+          label: "Consumo medio",
+          value: formatKmPerLiter(dossier.fuel?.averageKmPerLiter || 0),
+          note: `Base do periodo analisado: ${dossier.fuel?.periodDays || 90} dias`,
+        },
+      ])}
+    `,
+    true
+  );
+}
+
+function buildVehicleDossierTodayScheduleSection(dossier) {
+  const entries = dossier.todaySchedule?.entries || [];
+  if (!entries.length) {
+    return buildVehicleDossierSection(
+      "Escala de hoje",
+      "Consulta se o veiculo esta escalado na data atual.",
+      buildVehicleDossierEmptyState("Veiculo sem escala para a data atual.", "Nao ha motorista, ajudante ou rota vinculados para hoje.")
+    );
+  }
+
+  return buildVehicleDossierSection(
+    "Escala de hoje",
+    "Consulta se o veiculo esta escalado na data atual.",
+    `
+      <div class="dossier-card-stack">
+        ${entries
+          .map(
+            (entry) => `
+              <article class="dossier-stack-card">
+                <div class="dossier-stack-card__top">
+                  <strong>${escapeHtml(formatOptionalDate(entry.scheduledDate))}</strong>
+                  <span class="muted">${escapeHtml(entry.departureTime || "Hora nao informada")}</span>
+                </div>
+                <p><strong>Motorista:</strong> ${escapeHtml(entry.driver || "-")}</p>
+                <p><strong>Ajudante:</strong> ${escapeHtml(entry.assistant || "-")}</p>
+                <p><strong>Local / rota:</strong> ${escapeHtml(entry.location || "-")}</p>
+                <p><strong>Observacao:</strong> ${escapeHtml(entry.notes || entry.dayNotes || "-")}</p>
+              </article>
+            `
+          )
+          .join("")}
+      </div>
+    `
+  );
+}
+
+function buildVehicleDossierFuelSection(dossier) {
+  const fuel = dossier.fuel || {};
+  const lastRecord = fuel.lastRecord || null;
+  const fuelWarnings = [];
+
+  if (Number(fuel.inconsistentCount || 0) > 0) {
+    fuelWarnings.push(`${fuel.inconsistentCount} abastecimento(s) com KM inconsistente.`);
+  }
+  if (Number(fuel.outlierCount || 0) > 0) {
+    fuelWarnings.push(`${fuel.outlierCount} media(s) KM/L fora do padrao.`);
+  }
+
+  return buildVehicleDossierSection(
+    "Abastecimento",
+    "Ultimos abastecimentos, media KM/L, KM corrigido e anomalias de consumo.",
+    `
+      ${buildVehicleDossierKeyFacts([
+        {
+          label: "Ultimo abastecimento",
+          value: lastRecord ? formatOptionalDateTime(lastRecord.occurredAt) : "Sem abastecimento registrado",
+          note: lastRecord ? `${formatLiters(lastRecord.quantity)} L de ${formatFuelKindLabel(lastRecord.fuelKind)}` : "Sem historico de abastecimento.",
+        },
+        {
+          label: "KM utilizado",
+          value: lastRecord ? formatOptionalDistance(lastRecord.effectiveKm) : "-",
+          note: lastRecord && lastRecord.correctedKm !== null ? `KM original preservado: ${formatOptionalDistance(lastRecord.originalKm)}` : "Sem correcao de KM neste abastecimento.",
+        },
+        {
+          label: "Media KM/L",
+          value: formatKmPerLiter(fuel.averageKmPerLiter || 0),
+          note: `Periodo consolidado: ${fuel.periodDays || 90} dias`,
+        },
+        {
+          label: "Total abastecido",
+          value: `${formatLiters(fuel.totalPeriodLiters || 0)} L`,
+          note: `${formatOptionalDate(fuel.periodStart)} ate ${formatOptionalDate(fuel.periodEnd)}`,
+        },
+      ])}
+      ${
+        fuelWarnings.length
+          ? `<div class="dossier-inline-notes">${fuelWarnings
+              .map((item) => `<article class="dossier-inline-note">${escapeHtml(item)}</article>`)
+              .join("")}</div>`
+          : ""
+      }
+      ${buildVehicleDossierTable(
+        ["Data", "Combustivel", "Litros", "KM usado", "KM original", "Media KM/L", "Status"],
+        (fuel.records || [])
+          .map(
+            (item) => `
+              <tr>
+                <td>${escapeHtml(formatOptionalDateTime(item.occurredAt))}</td>
+                <td>${escapeHtml(formatFuelKindLabel(item.fuelKind))}</td>
+                <td>${escapeHtml(`${formatLiters(item.quantity)} L`)}</td>
+                <td>${escapeHtml(formatOptionalDistance(item.effectiveKm))}</td>
+                <td>${escapeHtml(formatOptionalDistance(item.originalKm))}</td>
+                <td>${escapeHtml(formatKmPerLiter(item.averageKmPerLiter || 0))}</td>
+                <td>${statusBadge(item.kmInconsistent ? "CRITICAL" : item.averageOutOfPattern ? "ATTENTION" : "OK")}</td>
+              </tr>
+            `
+          )
+          .join(""),
+        "Sem abastecimentos vinculados ao veiculo."
+      )}
+    `
+  );
+}
+
+function buildVehicleDossierMaintenanceSection(dossier) {
+  const maintenance = dossier.maintenance || {};
+  const oilChange = maintenance.oilChange || null;
+  const others = maintenance.others || [];
+
+  return buildVehicleDossierSection(
+    "Manutencao",
+    "Troca de oleo, manutencoes preventivas e distancia restante para vencimento.",
+    `
+      ${buildVehicleDossierKeyFacts([
+        {
+          label: "Ultima troca de oleo",
+          value: oilChange?.performedAt ? formatOptionalDateTime(oilChange.performedAt) : "Sem manutencao registrada",
+          note: oilChange?.odometerKm !== null && oilChange?.odometerKm !== undefined ? `KM da troca: ${formatOptionalDistance(oilChange.odometerKm)}` : oilChange?.message || "Sem manutencao registrada.",
+        },
+        {
+          label: "Proxima troca",
+          value: oilChange?.dueKm !== null && oilChange?.dueKm !== undefined ? formatOptionalDistance(oilChange.dueKm) : "-",
+          note: oilChange?.message || "Sem previsao de troca configurada.",
+        },
+        {
+          label: "KM atual",
+          value: formatOptionalDistance(maintenance.currentKm),
+          note: "Consolidado pelo ultimo KM confiavel do dossie.",
+        },
+        {
+          label: "Status do oleo",
+          value: statusMeta[oilChange?.status || "ATTENTION"]?.label || "Atencao",
+          note: oilChange?.message || "Sem manutencao registrada.",
+        },
+      ])}
+      ${buildVehicleDossierTable(
+        ["Data", "Tipo", "Servico", "KM", "Proximo vencimento", "Status"],
+        others
+          .map(
+            (item) => `
+              <tr>
+                <td>${escapeHtml(formatOptionalDateTime(item.performedAt))}</td>
+                <td>${escapeHtml(item.maintenanceType)}</td>
+                <td>${escapeHtml(item.title || "-")}</td>
+                <td>${escapeHtml(formatOptionalDistance(item.odometerKm))}</td>
+                <td>${escapeHtml(formatOptionalDistance(item.dueKm))}</td>
+                <td>${statusBadge(item.status || "ATTENTION")}</td>
+              </tr>
+            `
+          )
+          .join(""),
+        "Sem outras manutencoes preventivas cadastradas."
+      )}
+    `
+  );
+}
+
+function buildVehicleDossierTireSection(dossier) {
+  const tires = dossier.tires || {};
+  const installed = tires.installed || [];
+
+  return buildVehicleDossierSection(
+    "Pneus",
+    "Controle dos pneus instalados, retirados, em estoque e historico de troca ou rodizio.",
+    `
+      ${
+        installed.length
+          ? `<div class="dossier-card-grid dossier-card-grid--tires">
+              ${installed
+                .map(
+                  (tire) => `
+                    <article class="dossier-tire-card">
+                      <div class="dossier-tire-card__head">
+                        <strong>${escapeHtml(tire.code)}</strong>
+                        ${statusBadge(tire.status)}
+                      </div>
+                      <p><strong>Tipo:</strong> ${escapeHtml(tire.tireType === "RECAP" ? "Recapado" : "Novo")}</p>
+                      <p><strong>Posicao:</strong> ${escapeHtml(tire.position || "-")}</p>
+                      <p><strong>KM instalacao:</strong> ${escapeHtml(formatOptionalDistance(tire.installedKm))}</p>
+                      <p><strong>KM atual:</strong> ${escapeHtml(formatOptionalDistance(tire.currentKm))}</p>
+                      <p><strong>KM rodado:</strong> ${escapeHtml(formatOptionalDistance(tire.kmDriven))}</p>
+                      <p><strong>KM restante:</strong> ${escapeHtml(formatOptionalDistance(tire.estimatedRemainingKm))}</p>
+                    </article>
+                  `
+                )
+                .join("")}
+            </div>`
+          : buildVehicleDossierEmptyState("Sem pneus vinculados.", "Vincule pneus ao veiculo para acompanhar desgaste, troca e rodizio.")
+      }
+      ${buildVehicleDossierTable(
+        ["Data", "Evento", "Pneu", "Origem", "Destino", "KM", "Usuario"],
+        (tires.history || [])
+          .map(
+            (item) => `
+              <tr>
+                <td>${escapeHtml(formatOptionalDateTime(item.occurredAt))}</td>
+                <td>${escapeHtml(item.eventType)}</td>
+                <td>${escapeHtml(item.tireCode || "-")}</td>
+                <td>${escapeHtml(item.positionFrom || "-")}</td>
+                <td>${escapeHtml(item.positionTo || "-")}</td>
+                <td>${escapeHtml(formatOptionalDistance(item.odometerKm))}</td>
+                <td>${escapeHtml(item.userName || "-")}</td>
+              </tr>
+            `
+          )
+          .join(""),
+        "Sem historico de troca ou rodizio."
+      )}
+      ${buildVehicleDossierTable(
+        ["Pneu", "Status", "Saida", "KM remocao"],
+        (tires.removed || [])
+          .map(
+            (item) => `
+              <tr>
+                <td>${escapeHtml(item.code)}</td>
+                <td>${statusBadge(item.status)}</td>
+                <td>${escapeHtml(formatOptionalDateTime(item.removedAt))}</td>
+                <td>${escapeHtml(formatOptionalDistance(item.removedKm))}</td>
+              </tr>
+            `
+          )
+          .join(""),
+        "Sem pneus removidos."
+      )}
+      ${buildVehicleDossierTable(
+        ["Pneu", "Tipo", "Status", "Observacao"],
+        (tires.stock || [])
+          .map(
+            (item) => `
+              <tr>
+                <td>${escapeHtml(item.code)}</td>
+                <td>${escapeHtml(item.tireType === "RECAP" ? "Recapado" : "Novo")}</td>
+                <td>${statusBadge(item.status)}</td>
+                <td>${escapeHtml(item.notes || "-")}</td>
+              </tr>
+            `
+          )
+          .join(""),
+        "Sem pneus em estoque vinculados."
+      )}
+    `
+  );
+}
+
+function buildVehicleDossierChecklistSection(dossier) {
+  const checklist = dossier.checklist?.last || null;
+  const highlights = dossier.checklist?.highlights || [];
+
+  return buildVehicleDossierSection(
+    "Checklist",
+    "Ultima vistoria do veiculo, itens em atencao e observacoes principais.",
+    `
+      ${buildVehicleDossierKeyFacts([
+        {
+          label: "Ultimo checklist",
+          value: checklist ? formatOptionalDateTime(checklist.checklistDate) : "Sem checklist recente",
+          note: checklist ? checklist.driverName || "Motorista nao informado" : "Sem checklist recente.",
+        },
+        {
+          label: "Status geral",
+          value: checklist ? statusMeta[checklist.status]?.label || checklist.status : "-",
+          note: checklist ? `${checklist.checklistType || "PRE_USE"}` : "Sem checklist recente.",
+        },
+        {
+          label: "Itens OK",
+          value: checklist ? formatNumber(checklist.itemSummary?.ok || 0) : "0",
+          note: "Itens aprovados na ultima vistoria",
+        },
+        {
+          label: "Itens em atencao",
+          value: checklist ? formatNumber(checklist.itemSummary?.attention || 0) : "0",
+          note: "Pendencias de media prioridade",
+        },
+        {
+          label: "Itens criticos",
+          value: checklist ? formatNumber(checklist.itemSummary?.critical || 0) : "0",
+          note: "Pendencias com impacto operacional",
+        },
+        {
+          label: "KM informado",
+          value: checklist ? formatOptionalDistance(checklist.odometerKm) : "-",
+          note: checklist?.signatureName || "Sem assinatura registrada.",
+        },
+      ])}
+      ${
+        highlights.length
+          ? `<div class="dossier-inline-notes">
+              ${highlights.map((item) => `<article class="dossier-inline-note">${escapeHtml(item)}</article>`).join("")}
+            </div>`
+          : buildVehicleDossierEmptyState("Sem observacoes criticas.", "O ultimo checklist nao trouxe observacoes adicionais.")
+      }
+    `
+  );
+}
+
+function buildVehicleDossierFinesSection(dossier) {
+  const fines = dossier.fines || {};
+  const summary = fines.summary || {};
+
+  return buildVehicleDossierSection(
+    "Multas",
+    "Pendencias por placa, status financeiro e documentos vinculados quando existirem.",
+    `
+      ${buildVehicleDossierKeyFacts([
+        {
+          label: "Multas abertas",
+          value: formatNumber(summary.openCount || 0),
+          note: "Ocorrencias ainda sem encerramento",
+        },
+        {
+          label: "Aguardando condutor",
+          value: formatNumber(summary.waitingDriverCount || 0),
+          note: "Dependem de identificacao ou retorno do condutor",
+        },
+        {
+          label: "Pendentes de pagamento",
+          value: formatNumber(summary.pendingPaymentCount || 0),
+          note: "Demandam tratativa financeira",
+        },
+      ])}
+      ${buildVehicleDossierTable(
+        ["Data", "Condutor", "Valor", "Status", "Observacao", "Documento"],
+        (fines.records || [])
+          .map(
+            (item) => `
+              <tr>
+                <td>${escapeHtml(formatOptionalDate(item.fineDate))}</td>
+                <td>${escapeHtml(item.driver || "-")}</td>
+                <td>${escapeHtml(formatCurrency(item.amount || 0))}</td>
+                <td>${statusBadge(item.status)}</td>
+                <td>${escapeHtml(item.notes || "-")}</td>
+                <td>${escapeHtml(item.documentName || item.documentUrl || "-")}</td>
+              </tr>
+            `
+          )
+          .join(""),
+        "Sem multas em aberto."
+      )}
+    `
+  );
+}
+
+function buildVehicleDossierTimelineSection(dossier) {
+  const timeline = dossier.timeline || [];
+  return buildVehicleDossierSection(
+    "Historico",
+    "Linha do tempo operacional do veiculo com eventos dos modulos integrados.",
+    timeline.length
+      ? `
+          <div class="dossier-timeline">
+            ${timeline
+              .map(
+                (item) => `
+                  <article class="dossier-timeline__item">
+                    <div class="dossier-timeline__meta">
+                      <strong>${escapeHtml(formatOptionalDateTime(item.occurredAt))}</strong>
+                      <span>${escapeHtml(item.type)}</span>
+                    </div>
+                    <p>${escapeHtml(item.description || "-")}</p>
+                    <span class="muted">${escapeHtml(item.userName || "Sistema")}</span>
+                  </article>
+                `
+              )
+              .join("")}
+          </div>
+        `
+      : buildVehicleDossierEmptyState("Sem historico operacional.", "Os eventos consolidados do veiculo aparecem aqui.")
+  );
+}
+
+function buildVehicleDossierDocumentsSection() {
+  return buildVehicleDossierSection(
+    "Documentos",
+    "Geracao do PDF, impressao do dossie e exportacao do historico do veiculo.",
+    `
+      <div class="dossier-document-actions">
+        <button type="button" class="secondary-button" data-dossier-action="pdf">Gerar PDF do dossie</button>
+        <button type="button" class="ghost-button" data-dossier-action="print">Imprimir dossie</button>
+        <button type="button" class="ghost-button" data-dossier-action="export-history">Exportar historico</button>
+        <button type="button" class="ghost-button" data-dossier-action="related-report">Ver Kardex/relatorio relacionado</button>
+      </div>
+      <p class="muted">O PDF usa a identidade visual configurada da empresa. Na impressao, selecione a opcao Salvar como PDF se quiser o arquivo final.</p>
+    `
+  );
+}
+
+function renderVehicleDossier() {
+  if (!refs.dossierEmptyState || !refs.dossierContent || !refs.dossierSummaryShell || !refs.dossierAlertCards || !refs.dossierSections) {
+    return;
+  }
+
+  if (state.dossier.isLoading) {
+    refs.dossierEmptyState.classList.remove("hidden");
+    refs.dossierEmptyState.innerHTML = buildVehicleDossierEmptyState("Carregando dossie", "Consolidando abastecimento, escala, checklist, multas, manutencao e pneus do veiculo.");
+    refs.dossierContent.classList.add("hidden");
+    return;
+  }
+
+  const dossier = state.dossier.item;
+  if (!dossier) {
+    refs.dossierEmptyState.classList.remove("hidden");
+    refs.dossierEmptyState.innerHTML = buildVehicleDossierEmptyState(
+      state.dossier.error ? "Falha ao carregar o dossie" : "Dossie pronto para consulta",
+      state.dossier.error || "Ao selecionar uma placa valida, o sistema consolida todos os modulos do veiculo em uma unica tela."
+    );
+    refs.dossierContent.classList.add("hidden");
+    refs.dossierSummaryShell.innerHTML = "";
+    refs.dossierAlertCards.innerHTML = "";
+    refs.dossierSections.innerHTML = "";
+    return;
+  }
+
+  refs.dossierEmptyState.classList.add("hidden");
+  refs.dossierContent.classList.remove("hidden");
+  refs.dossierSummaryShell.innerHTML = buildVehicleDossierSummary(dossier);
+  refs.dossierAlertCards.innerHTML = buildVehicleDossierAlertCards(dossier);
+  refs.dossierSections.innerHTML = [
+    buildVehicleDossierSummarySection(dossier),
+    buildVehicleDossierTodayScheduleSection(dossier),
+    buildVehicleDossierFuelSection(dossier),
+    buildVehicleDossierMaintenanceSection(dossier),
+    buildVehicleDossierTireSection(dossier),
+    buildVehicleDossierChecklistSection(dossier),
+    buildVehicleDossierFinesSection(dossier),
+    buildVehicleDossierTimelineSection(dossier),
+    buildVehicleDossierDocumentsSection(dossier),
+  ].join("");
+}
+
+function handleVehicleDossierSectionActions(event) {
+  const button = event.target.closest("[data-dossier-action]");
+  if (!button || !state.dossier.item) {
+    return;
+  }
+
+  const action = button.dataset.dossierAction;
+  if (action === "pdf") {
+    handleVehicleDossierPrint("pdf");
+  }
+  if (action === "print") {
+    handleVehicleDossierPrint("print");
+  }
+  if (action === "export-history") {
+    exportVehicleDossierHistory();
+  }
+  if (action === "related-report") {
+    openVehicleDossierRelatedReport();
+  }
+}
+
+function csvEscape(value) {
+  const text = String(value ?? "");
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function exportVehicleDossierHistory() {
+  const dossier = state.dossier.item;
+  if (!dossier) {
+    showToast("Selecione um veiculo para exportar o historico.", "error");
+    return;
+  }
+
+  const lines = [
+    ["Data/Hora", "Tipo", "Descricao", "Usuario"].map(csvEscape).join(";"),
+    ...(dossier.timeline || []).map((item) =>
+      [
+        formatOptionalDateTime(item.occurredAt),
+        item.type,
+        item.description || "",
+        item.userName || "",
+      ]
+        .map(csvEscape)
+        .join(";")
+    ),
+  ];
+
+  const blob = new Blob(["\ufeff", lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `dossie-${(dossier.vehicle?.plate || "veiculo").toLowerCase()}-historico.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  showToast("Historico exportado em CSV.");
+}
+
+function buildVehicleDossierPrintDocument(dossier) {
+  const company = getDocumentCompany();
+  const vehicle = dossier.vehicle || {};
+  const summary = dossier.summary || {};
+  const fuel = dossier.fuel || {};
+  const maintenance = dossier.maintenance || {};
+  const checklist = dossier.checklist?.last || null;
+  const tires = dossier.tires?.installed || [];
+  const fines = dossier.fines?.records || [];
+  const timeline = (dossier.timeline || []).slice(0, 12);
+
+  return `
+    <style>
+      body { font-family: Arial, sans-serif; color: #111; margin: 0; }
+      .print-report { padding: 14mm 12mm; }
+      .print-report__grid { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 12px; }
+      .print-report__card { border: 1px solid #d4d4d8; border-radius: 12px; padding: 10px 12px; break-inside: avoid; }
+      .print-report__card strong { display: block; margin-bottom: 3px; font-size: 14px; }
+      .print-report__card p { margin: 0; font-size: 11px; line-height: 1.4; }
+      .print-report__section { margin-bottom: 14px; break-inside: avoid; }
+      .print-report__section h2 { margin: 0 0 6px; font-size: 15px; }
+      .print-report__section p { margin: 0 0 4px; font-size: 11px; line-height: 1.45; }
+      .print-report__alerts { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .print-report__alert { border: 1px solid #d4d4d8; border-radius: 12px; padding: 8px 10px; }
+      .print-report__alert strong { display: block; font-size: 12px; margin-bottom: 2px; }
+      .print-report__table { width: 100%; border-collapse: collapse; }
+      .print-report__table th, .print-report__table td { border: 1px solid #d4d4d8; padding: 6px 7px; font-size: 10px; text-align: left; vertical-align: top; }
+      .print-report__table th { background: #f4f4f5; text-transform: uppercase; letter-spacing: 0.04em; }
+      .print-report__footer-note { margin-top: 14px; font-size: 10px; color: #52525b; }
+    </style>
+    <main class="print-report">
+      ${buildPrintableCompanyHeader(company, `Dossie do Veiculo - ${vehicle.plate || "-"}`, `Emitido em ${formatDateTime(new Date().toISOString())}`)}
+      <section class="print-report__section">
+        <h2>Resumo do veiculo</h2>
+        <div class="print-report__grid">
+          <article class="print-report__card">
+            <strong>Veiculo</strong>
+            <p>${escapeHtml(vehicle.plate || "-")}</p>
+            <p>${escapeHtml(summary.brandModel || "Sem marca/modelo cadastrado.")}</p>
+            <p>${escapeHtml(summary.sector || "-")}</p>
+          </article>
+          <article class="print-report__card">
+            <strong>Status operacional</strong>
+            <p>${escapeHtml(statusMeta[summary.status]?.label || summary.status || "-")}</p>
+            <p>Ultimo KM: ${escapeHtml(formatOptionalDistance(summary.lastKnownKm))}</p>
+            <p>Ultima atualizacao: ${escapeHtml(formatOptionalDateTime(summary.lastUpdateAt))}</p>
+          </article>
+        </div>
+      </section>
+      <section class="print-report__section">
+        <h2>Alertas principais</h2>
+        <div class="print-report__alerts">
+          ${(dossier.alerts || [])
+            .map(
+              (item) => `
+                <article class="print-report__alert">
+                  <strong>${escapeHtml(item.label)}</strong>
+                  <p>${escapeHtml(statusMeta[item.status]?.label || item.status)}</p>
+                  <p>${escapeHtml(item.summary || "-")}</p>
+                </article>
+              `
+            )
+            .join("")}
+        </div>
+      </section>
+      <section class="print-report__section">
+        <h2>Abastecimento</h2>
+        <p>Ultimo abastecimento: ${escapeHtml(fuel.lastRecord ? formatOptionalDateTime(fuel.lastRecord.occurredAt) : "Sem abastecimento registrado")}</p>
+        <p>Total do periodo: ${escapeHtml(`${formatLiters(fuel.totalPeriodLiters || 0)} L`)} | Media KM/L: ${escapeHtml(formatKmPerLiter(fuel.averageKmPerLiter || 0))}</p>
+      </section>
+      <section class="print-report__section">
+        <h2>Manutencao e pneus</h2>
+        <p>${escapeHtml(maintenance.oilChange?.message || "Sem manutencao registrada.")}</p>
+        <p>Pneus instalados: ${escapeHtml(formatNumber(tires.length))}</p>
+      </section>
+      <section class="print-report__section">
+        <h2>Checklist e multas</h2>
+        <p>Checklist: ${escapeHtml(checklist ? `${formatOptionalDateTime(checklist.checklistDate)} • ${formatChecklistSnapshot(checklist)}` : "Sem checklist recente.")}</p>
+        <p>Multas registradas: ${escapeHtml(formatNumber(fines.length))}</p>
+      </section>
+      <section class="print-report__section">
+        <h2>Historico resumido</h2>
+        <table class="print-report__table">
+          <thead>
+            <tr>
+              <th>Data/Hora</th>
+              <th>Tipo</th>
+              <th>Descricao</th>
+              <th>Usuario</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              timeline.length
+                ? timeline
+                    .map(
+                      (item) => `
+                        <tr>
+                          <td>${escapeHtml(formatOptionalDateTime(item.occurredAt))}</td>
+                          <td>${escapeHtml(item.type)}</td>
+                          <td>${escapeHtml(item.description || "-")}</td>
+                          <td>${escapeHtml(item.userName || "-")}</td>
+                        </tr>
+                      `
+                    )
+                    .join("")
+                : `<tr><td colspan="4">Sem historico resumido.</td></tr>`
+            }
+          </tbody>
+        </table>
+      </section>
+      <div class="print-report__footer-note">${escapeHtml(company.documentFooter)}</div>
+    </main>
+  `;
+}
+
+async function handleVehicleDossierPrint(mode = "print") {
+  const dossier = state.dossier.item;
+  if (!dossier) {
+    showToast("Selecione uma placa para gerar o dossie.", "error");
+    return;
+  }
+
+  try {
+    await runPrintWorkflow({
+      type: "vehicle-dossier",
+      mode,
+      placeholderTitle: "Preparando Dossie do Veiculo",
+      buildJob: async () => ({
+        title: `Dossie do Veiculo - ${dossier.vehicle?.plate || "-"}`,
+        html: buildVehicleDossierPrintDocument(dossier),
+      }),
+    });
+    showToast(mode === "pdf" ? "Na impressao, escolha Salvar como PDF." : "Dossie aberto para impressao.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function openVehicleDossierRelatedReport() {
+  const plate = state.dossier.item?.vehicle?.plate;
+  if (!plate) {
+    showToast("Selecione um veiculo antes de abrir o relatorio relacionado.", "error");
+    return;
+  }
+
+  setSection("fuel");
+  if (refs.fuelFilterPlate) {
+    refs.fuelFilterPlate.value = plate;
+  }
+  renderFuel();
+  document.getElementById("fuel-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  showToast("Modulo Combustivel filtrado para a placa selecionada.");
+}
+
+function openVehicleDossierFromList(id) {
+  const vehicle = findById(state.vehicles, id);
+  if (!vehicle) {
+    return;
+  }
+  setSection("dossier");
+  loadVehicleDossierByPlate(vehicle.plate);
+}
+
+async function refreshVehicles() {
+  const response = await api("/api/vehicles");
+  state.vehicles = response.items || [];
+  renderVehicles();
+  renderFuelVehicleOptions();
+  renderVehicleDossierVehicleList();
+
+  if (state.dossier.selectedPlate) {
+    const registered = findRegisteredVehicleByPlate(state.dossier.selectedPlate);
+    if (!registered) {
+      clearVehicleDossier(true, "Veiculo nao cadastrado.");
+    } else if (state.section === "dossier") {
+      state.dossier.selectedPlate = registered.plate;
+    }
+  }
+}
+
+function renderVehicles() {
+  refs.vehiclesTableBody.innerHTML = state.vehicles.length
+    ? state.vehicles
+        .map(
+          (vehicle) => `
+            <tr>
+              <td>
+                <strong>${escapeHtml(vehicle.plate)}</strong>
+                <div class="muted">${escapeHtml(vehicle.notes || "-")}</div>
+              </td>
+              <td>${escapeHtml(formatVehicleFuelProfile(vehicle.fuelProfile))}</td>
+              <td>${escapeHtml([vehicle.brand, vehicle.model].filter(Boolean).join(" / ") || "-")}</td>
+              <td>${escapeHtml(vehicle.sector || "-")}</td>
+              <td>${statusBadge(vehicle.status || (vehicle.active ? "ACTIVE" : "INACTIVE"))}</td>
+              <td>
+                <div class="row-actions">
+                  ${buildRowActionButton("open-dossier", vehicle.id, "Abrir dossie do veiculo", "&#128269;")}
+                  ${buildRowActionButton("edit-vehicle", vehicle.id, "Editar veiculo", "&#9998;")}
+                </div>
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhum veiculo cadastrado.", 6);
+}
+
+function handleRowActions(event) {
+  const button = event.target.closest("[data-action]");
+  if (!button) {
+    return;
+  }
+
+  const { action, id } = button.dataset;
+
+  if (action === "edit-note") editNote(id);
+  if (action === "delete-note") deleteNote(id);
+  if (action === "edit-product") editProduct(id);
+  if (action === "edit-vehicle") editVehicle(id);
+  if (action === "open-dossier") openVehicleDossierFromList(id);
+  if (action === "edit-schedule") editSchedule(id);
+  if (action === "edit-fine") editFine(id);
+  if (action === "edit-checklist") editChecklist(id);
+  if (action === "edit-checklist-template") editChecklistTemplate(id);
+  if (action === "toggle-checklist-template") toggleChecklistTemplate(id);
+  if (action === "edit-user") editAdminUser(id);
+  if (action === "issue-user-code") issueAdminUserCode(id, "ACTIVATION");
+  if (action === "reset-user-password") issueAdminUserCode(id, "RESET_PASSWORD");
+  if (action === "block-user") updateAdminUserStatus(id, "BLOCKED");
+  if (action === "unblock-user") updateAdminUserStatus(id, "ACTIVE");
+}
+
+function editVehicle(id) {
+  const vehicle = findById(state.vehicles, id);
+  if (!vehicle) return;
+
+  refs.vehicleForm.elements.id.value = vehicle.id;
+  refs.vehicleForm.elements.plate.value = vehicle.plate;
+  refs.vehicleForm.elements.fuelProfile.value = vehicle.fuelProfile;
+  refs.vehicleForm.elements.brand.value = vehicle.brand || "";
+  refs.vehicleForm.elements.model.value = vehicle.model || "";
+  refs.vehicleForm.elements.sector.value = vehicle.sector || "";
+  refs.vehicleForm.elements.status.value = vehicle.status || (vehicle.active ? "ACTIVE" : "INACTIVE");
+  refs.vehicleForm.elements.notes.value = vehicle.notes || "";
+  setSection("vehicles");
+}
+
+function resetVehicleForm() {
+  if (!refs.vehicleForm) {
+    return;
+  }
+
+  refs.vehicleForm.reset();
+  refs.vehicleForm.elements.id.value = "";
+  refs.vehicleForm.elements.fuelProfile.value = "S500";
+  refs.vehicleForm.elements.status.value = "ACTIVE";
+}
+
+async function handleVehicleSubmit(event) {
+  event.preventDefault();
+  const id = refs.vehicleForm.elements.id.value;
+  const previousVehicle = id ? findById(state.vehicles, id) : null;
+
+  const payload = {
+    plate: refs.vehicleForm.elements.plate.value,
+    fuelProfile: refs.vehicleForm.elements.fuelProfile.value,
+    brand: refs.vehicleForm.elements.brand.value,
+    model: refs.vehicleForm.elements.model.value,
+    sector: refs.vehicleForm.elements.sector.value,
+    status: refs.vehicleForm.elements.status.value,
+    notes: refs.vehicleForm.elements.notes.value,
+  };
+
+  try {
+    await api(id ? `/api/vehicles/${id}` : "/api/vehicles", {
+      method: id ? "PUT" : "POST",
+      body: payload,
+    });
+    resetVehicleForm();
+    await Promise.all([refreshVehicles(), refreshFuel(), refreshDashboard()]);
+
+    const shouldRefreshDossier =
+      state.dossier.selectedPlate &&
+      normalizeClientPlateKey(state.dossier.selectedPlate) ===
+        normalizeClientPlateKey(previousVehicle?.plate || payload.plate);
+    if (shouldRefreshDossier) {
+      await loadVehicleDossierByPlate(payload.plate, { silent: true });
+    }
+
+    showToast(id ? "Veiculo atualizado." : "Veiculo cadastrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function editFine(id) {
+  const item = findById(state.fines, id);
+  if (!item) return;
+
+  refs.fineForm.elements.id.value = item.id;
+  refs.fineForm.elements.fineDate.value = item.fineDate;
+  refs.fineForm.elements.plate.value = item.plate;
+  refs.fineForm.elements.driver.value = item.driver;
+  refs.fineForm.elements.status.value = item.status;
+  refs.fineForm.elements.amount.value = item.amount;
+  refs.fineForm.elements.documentName.value = item.documentName || "";
+  refs.fineForm.elements.documentUrl.value = item.documentUrl || "";
+  refs.fineForm.elements.notes.value = item.notes || "";
+  setSection("fines");
+}
+
+function resetFineForm() {
+  refs.fineForm.reset();
+  refs.fineForm.elements.id.value = "";
+  refs.fineForm.elements.fineDate.value = currentLocalDate();
+  refs.fineForm.elements.status.value = "OPEN";
+}
+
+async function handleFineSubmit(event) {
+  event.preventDefault();
+  const id = refs.fineForm.elements.id.value;
+
+  const payload = {
+    fineDate: refs.fineForm.elements.fineDate.value,
+    plate: refs.fineForm.elements.plate.value,
+    driver: refs.fineForm.elements.driver.value,
+    status: refs.fineForm.elements.status.value,
+    amount: refs.fineForm.elements.amount.value,
+    documentName: refs.fineForm.elements.documentName.value,
+    documentUrl: refs.fineForm.elements.documentUrl.value,
+    notes: refs.fineForm.elements.notes.value,
+  };
+
+  try {
+    await api(id ? `/api/fines/${id}` : "/api/fines", {
+      method: id ? "PUT" : "POST",
+      body: payload,
+    });
+    resetFineForm();
+    await Promise.all([refreshFines(), maybeRefreshAdmin()]);
+
+    if (state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(payload.plate)) {
+      await loadVehicleDossierByPlate(payload.plate, { silent: true });
+    }
+
+    showToast(id ? "Multa atualizada." : "Multa cadastrada.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleChecklistSubmit(event) {
+  event.preventDefault();
+  const id = refs.checklistForm.elements.id.value;
+  const itemsDetailed = ensureChecklistDraft();
+  const payload = {
+    vehicle: refs.checklistForm.elements.vehicle.value,
+    checklistDate: toIsoDateTime(refs.checklistForm.elements.checklistDate.value),
+    checklistType: refs.checklistForm.elements.checklistType.value,
+    driverName: refs.checklistForm.elements.driverName.value,
+    odometerKm: refs.checklistForm.elements.odometerKm.value,
+    signatureName: refs.checklistForm.elements.signatureName.value,
+    temporaryIssue: refs.checklistForm.elements.temporaryIssue?.value || "",
+    status: deriveChecklistOverallStatus(itemsDetailed),
+    items: itemsDetailed.map((item) => item.label).join("\n"),
+    itemsDetailed,
+    problems: refs.checklistForm.elements.problems.value,
+  };
+
+  try {
+    await api(id ? `/api/checklists/${id}` : "/api/checklists", {
+      method: id ? "PUT" : "POST",
+      body: payload,
+    });
+    resetChecklistForm();
+    await Promise.all([refreshChecklists(), maybeRefreshAdmin()]);
+
+    if (state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(payload.vehicle)) {
+      await loadVehicleDossierByPlate(payload.vehicle, { silent: true });
+    }
+
+    showToast(id ? "Checklist atualizado." : "Checklist cadastrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleFuelSubmit(event) {
+  event.preventDefault();
+  const isExit = refs.fuelForm.elements.type.value === "EXIT";
+  const selectedVehicle =
+    isExit && refs.fuelForm.elements.vehicleId.value
+      ? state.vehicles.find((item) => String(item.id) === String(refs.fuelForm.elements.vehicleId.value))
+      : null;
+
+  const payload = {
+    storageId: refs.fuelForm.elements.storageId.value,
+    type: refs.fuelForm.elements.type.value,
+    vehicleId: isExit ? refs.fuelForm.elements.vehicleId.value : "",
+    quantity: refs.fuelForm.elements.quantity.value,
+    odometerKm: refs.fuelForm.elements.odometerKm.value,
+    occurredAt: toIsoDateTime(refs.fuelForm.elements.occurredAt.value),
+    notes: refs.fuelForm.elements.notes.value,
+  };
+
+  try {
+    await api("/api/fuel", { method: "POST", body: payload });
+    resetFuelForm();
+    await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+
+    if (selectedVehicle && state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(selectedVehicle.plate)) {
+      await loadVehicleDossierByPlate(selectedVehicle.plate, { silent: true });
+    }
+
+    showToast("Abastecimento registrado.");
   } catch (error) {
     showToast(error.message, "error");
   }
@@ -5060,6 +7552,11 @@ async function handleChecklistSubmit(event) {
     });
     resetChecklistForm();
     await Promise.all([refreshChecklists(), maybeRefreshAdmin()]);
+
+    if (state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(payload.vehicle)) {
+      await loadVehicleDossierByPlate(payload.vehicle, { silent: true });
+    }
+
     showToast(id ? "Checklist atualizado." : "Checklist cadastrado.");
   } catch (error) {
     showToast(error.message, "error");
@@ -6006,6 +8503,10 @@ function renderFuel() {
 async function handleFuelSubmit(event) {
   event.preventDefault();
   const isExit = refs.fuelForm.elements.type.value === "EXIT";
+  const selectedVehicle =
+    isExit && refs.fuelForm.elements.vehicleId.value
+      ? state.vehicles.find((item) => String(item.id) === String(refs.fuelForm.elements.vehicleId.value))
+      : null;
 
   const payload = {
     storageId: refs.fuelForm.elements.storageId.value,
@@ -6021,6 +8522,11 @@ async function handleFuelSubmit(event) {
     await api("/api/fuel", { method: "POST", body: payload });
     resetFuelForm();
     await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+
+    if (selectedVehicle && state.dossier.selectedPlate && normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(selectedVehicle.plate)) {
+      await loadVehicleDossierByPlate(selectedVehicle.plate, { silent: true });
+    }
+
     showToast("Abastecimento registrado.");
   } catch (error) {
     showToast(error.message, "error");

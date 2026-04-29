@@ -110,11 +110,28 @@ const VEHICLE_FUEL_PROFILE_ALIASES = {
   ambos_combustiveis_: "BOTH",
 };
 
+const VEHICLE_STATUS_ALIASES = {
+  active: "ACTIVE",
+  ativo: "ACTIVE",
+  available: "AVAILABLE",
+  disponivel: "AVAILABLE",
+  maintenance: "MAINTENANCE",
+  manutencao: "MAINTENANCE",
+  manutencao_programada: "MAINTENANCE",
+  em_manutencao: "MAINTENANCE",
+  inactive: "INACTIVE",
+  inativo: "INACTIVE",
+};
+
 const FINE_STATUS_ALIASES = {
   aberta: "OPEN",
   open: "OPEN",
   contestando: "CONTESTING",
   contesting: "CONTESTING",
+  aguardando_condutor: "WAITING_DRIVER",
+  waiting_driver: "WAITING_DRIVER",
+  pendente_pagamento: "PENDING_PAYMENT",
+  pending_payment: "PENDING_PAYMENT",
   paga: "PAID",
   paid: "PAID",
 };
@@ -372,6 +389,15 @@ function normalizeStockType(value, fallback = "COMMON") {
 
 function normalizeVehicleFuelProfile(value, fallback = "S500") {
   return normalizeEnum(value, VEHICLE_FUEL_PROFILE_ALIASES, fallback);
+}
+
+function normalizeVehicleOperationalStatus(value, fallback = "ACTIVE") {
+  return normalizeEnum(value, VEHICLE_STATUS_ALIASES, fallback);
+}
+
+function isVehicleOperational(status) {
+  const normalized = normalizeVehicleOperationalStatus(status, "ACTIVE");
+  return normalized === "ACTIVE" || normalized === "AVAILABLE";
 }
 
 function normalizePlate(value) {
@@ -828,6 +854,11 @@ function normalizeDashboardDays(value) {
   return DASHBOARD_PERIODS.includes(parsed) ? parsed : 30;
 }
 
+function normalizeDashboardDate(value) {
+  const normalized = normalizeText(value);
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : "";
+}
+
 function buildDashboardDayRange(days) {
   const periodDays = normalizeDashboardDays(days);
   const endDate = new Date(`${todayDate()}T12:00:00`);
@@ -840,6 +871,53 @@ function buildDashboardDayRange(days) {
   }
 
   return result;
+}
+
+function buildDashboardDayRangeBetween(startDay, endDay) {
+  const normalizedStart = normalizeDashboardDate(startDay);
+  const normalizedEnd = normalizeDashboardDate(endDay);
+  if (!normalizedStart || !normalizedEnd || normalizedStart > normalizedEnd) {
+    return [];
+  }
+
+  const current = new Date(`${normalizedStart}T12:00:00`);
+  const endDate = new Date(`${normalizedEnd}T12:00:00`);
+  const result = [];
+
+  while (current <= endDate) {
+    result.push(current.toISOString().slice(0, 10));
+    current.setDate(current.getDate() + 1);
+  }
+
+  return result;
+}
+
+function resolveDashboardPeriod(filters = {}) {
+  const from = normalizeDashboardDate(filters.from);
+  const to = normalizeDashboardDate(filters.to);
+
+  if (from && to && from <= to) {
+    const dayRange = buildDashboardDayRangeBetween(from, to);
+    if (dayRange.length) {
+      return {
+        periodDays: dayRange.length,
+        dayRange,
+        startDay: dayRange[0],
+        endDay: dayRange[dayRange.length - 1],
+        isCustomRange: true,
+      };
+    }
+  }
+
+  const periodDays = normalizeDashboardDays(filters.days);
+  const dayRange = buildDashboardDayRange(periodDays);
+  return {
+    periodDays,
+    dayRange,
+    startDay: dayRange[0],
+    endDay: dayRange[dayRange.length - 1],
+    isCustomRange: false,
+  };
 }
 
 function normalizeChecklistStatus(value, fallback = "OPEN") {
@@ -1218,6 +1296,10 @@ function queryVehicles(filters = {}) {
 
   return all(sql, params).map((row) => {
     const fuelProfile = normalizeVehicleFuelProfile(row.fuel_profile, "S500");
+    const operationalStatus = normalizeVehicleOperationalStatus(
+      row.operational_status || (Number(row.active || 0) === 1 ? "ACTIVE" : "INACTIVE"),
+      Number(row.active || 0) === 1 ? "ACTIVE" : "INACTIVE"
+    );
     return {
       id: Number(row.id),
       plate: row.plate,
@@ -1225,12 +1307,14 @@ function queryVehicles(filters = {}) {
       brand: row.brand || "",
       model: row.model || "",
       sector: row.sector || "",
-      status: Number(row.active || 0) === 1 ? "ACTIVE" : "INACTIVE",
-      active: Number(row.active || 0) === 1,
+      status: operationalStatus,
+      active: isVehicleOperational(operationalStatus),
       notes: row.notes || "",
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       userName: row.user_name || "",
+      available: operationalStatus === "AVAILABLE",
+      inMaintenance: operationalStatus === "MAINTENANCE",
       supportsS500: vehicleSupportsFuel(fuelProfile, "S500"),
       supportsS10: vehicleSupportsFuel(fuelProfile, "S10"),
       displayName: [row.plate, normalizeText([row.brand, row.model].filter(Boolean).join(" "))]
@@ -1434,10 +1518,8 @@ function getFuelStorageByProductId(productId) {
 
 function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
   const selectedPlate = normalizeText(filters.plate).toUpperCase();
-  const periodDays = normalizeDashboardDays(filters.days);
-  const dayRange = buildDashboardDayRange(periodDays);
-  const startDay = dayRange[0];
-  const endDay = dayRange[dayRange.length - 1];
+  const period = resolveDashboardPeriod(filters);
+  const { periodDays, dayRange, startDay, endDay, isCustomRange } = period;
   const availablePlates = all(
     `
       SELECT DISTINCT plate
@@ -1446,6 +1528,11 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
       ORDER BY plate ASC
     `
   ).map((row) => row.plate);
+  const severityRank = { CRITICAL: 0, WARNING: 1, INFO: 2 };
+  const sortAlerts = (left, right) =>
+    (severityRank[left.severity] ?? 9) - (severityRank[right.severity] ?? 9) ||
+    String(right.occurredAt || "").localeCompare(String(left.occurredAt || "")) ||
+    String(left.plate || "").localeCompare(String(right.plate || ""));
 
   const consumptionParams = [startDay, endDay];
   const filteredPlateSql = selectedPlate ? " AND plate = ?" : "";
@@ -1506,6 +1593,7 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
         MAX(occurred_at) AS last_at
       FROM fuel_records
       WHERE type = 'EXIT'
+        AND trim(COALESCE(plate, '')) <> ''
         AND substr(occurred_at, 1, 10) >= ?
         AND substr(occurred_at, 1, 10) <= ?
         ${filteredPlateSql}
@@ -1550,6 +1638,8 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
 
   const previousByPlate = new Map();
   const efficiencyByPlate = new Map();
+  const odometerIssues = [];
+  const outlierSegments = [];
 
   for (const row of odometerRows) {
     const plate = normalizeText(row.plate).toUpperCase();
@@ -1562,37 +1652,67 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
     if (
       previous &&
       occurredDay >= startDay &&
-      occurredDay <= endDay &&
-      odometerKm > previous.odometerKm &&
-      quantity > 0
+      occurredDay <= endDay
     ) {
-      const distanceKm = odometerKm - previous.odometerKm;
-      const currentStats = efficiencyByPlate.get(plate) || {
-        plate,
-        totalDistanceKm: 0,
-        totalLiters: 0,
-        samples: 0,
-        lastOdometerKm: 0,
-        lastFuelAt: "",
-        lastFuelKind: "",
-        lastFuelQuantity: 0,
-        segments: [],
-      };
+      if (odometerKm <= previous.odometerKm) {
+        odometerIssues.push({
+          type: "KM_ERROR",
+          severity: "CRITICAL",
+          plate,
+          occurredAt,
+          currentOdometerKm: odometerKm,
+          previousOdometerKm: previous.odometerKm,
+          title: `KM inconsistente: ${plate}`,
+          description: `Leitura atual ${odometerKm} km menor ou igual a anterior ${previous.odometerKm} km.`,
+        });
+      } else if (quantity > 0) {
+        const distanceKm = odometerKm - previous.odometerKm;
+        const kmPerLiter = distanceKm / quantity;
+        const currentStats = efficiencyByPlate.get(plate) || {
+          plate,
+          totalDistanceKm: 0,
+          totalLiters: 0,
+          samples: 0,
+          lastOdometerKm: 0,
+          lastFuelAt: "",
+          lastFuelKind: "",
+          lastFuelQuantity: 0,
+          segments: [],
+        };
 
-      currentStats.totalDistanceKm += distanceKm;
-      currentStats.totalLiters += quantity;
-      currentStats.samples += 1;
-      currentStats.lastOdometerKm = odometerKm;
-      currentStats.lastFuelAt = occurredAt;
-      currentStats.lastFuelKind = row.fuel_kind || "";
-      currentStats.lastFuelQuantity = quantity;
-      currentStats.segments.push({
-        date: occurredDay,
-        distanceKm,
-        liters: quantity,
-        kmPerLiter: distanceKm / quantity,
-      });
-      efficiencyByPlate.set(plate, currentStats);
+        currentStats.totalDistanceKm += distanceKm;
+        currentStats.totalLiters += quantity;
+        currentStats.samples += 1;
+        currentStats.lastOdometerKm = odometerKm;
+        currentStats.lastFuelAt = occurredAt;
+        currentStats.lastFuelKind = row.fuel_kind || "";
+        currentStats.lastFuelQuantity = quantity;
+        currentStats.segments.push({
+          date: occurredDay,
+          distanceKm,
+          liters: quantity,
+          kmPerLiter,
+        });
+        efficiencyByPlate.set(plate, currentStats);
+
+        if (kmPerLiter <= 2.5 || kmPerLiter >= 8) {
+          const severity = kmPerLiter <= 2.5 ? "CRITICAL" : "WARNING";
+          outlierSegments.push({
+            type: "OUTLIER_CONSUMPTION",
+            severity,
+            plate,
+            occurredAt,
+            distanceKm,
+            liters: quantity,
+            kmPerLiter,
+            title:
+              severity === "CRITICAL"
+                ? `Consumo fora do padrao: ${plate}`
+                : `Media acima do padrao: ${plate}`,
+            description: `${distanceKm} km com ${quantity.toFixed(2)} L (${kmPerLiter.toFixed(2)} km/L).`,
+          });
+        }
+      }
     }
 
     previousByPlate.set(plate, {
@@ -1615,6 +1735,19 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
       segments: item.segments.slice(-8),
     }))
     .sort((left, right) => right.kmPerLiter - left.kmPerLiter || left.plate.localeCompare(right.plate));
+  const efficiencySummary = efficiencyRanking.reduce(
+    (summary, item) => {
+      summary.totalDistanceKm += Number(item.totalDistanceKm || 0);
+      summary.totalLiters += Number(item.totalLiters || 0);
+      return summary;
+    },
+    { totalDistanceKm: 0, totalLiters: 0 }
+  );
+  efficiencySummary.vehicleCount = efficiencyRanking.length;
+  efficiencySummary.averageKmPerLiter =
+    efficiencySummary.totalLiters > 0
+      ? efficiencySummary.totalDistanceKm / efficiencySummary.totalLiters
+      : 0;
 
   let selectedVehicle =
     (selectedPlate && efficiencyRanking.find((item) => item.plate === selectedPlate)) ||
@@ -1626,11 +1759,14 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
       `
         SELECT plate, odometer_km, quantity, fuel_kind, occurred_at
         FROM fuel_records
-        WHERE type = 'EXIT' AND plate = ?
+        WHERE type = 'EXIT'
+          AND plate = ?
+          AND substr(occurred_at, 1, 10) >= ?
+          AND substr(occurred_at, 1, 10) <= ?
         ORDER BY occurred_at DESC, id DESC
         LIMIT 1
       `,
-      [selectedPlate]
+      [selectedPlate, startDay, endDay]
     );
 
     if (latestRecord) {
@@ -1669,11 +1805,12 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
       SELECT plate, quantity, fuel_kind, storage_name, occurred_at, odometer_km
       FROM fuel_records
       WHERE type = 'EXIT'
+        AND trim(COALESCE(plate, '')) <> ''
         AND substr(occurred_at, 1, 10) >= ?
         AND substr(occurred_at, 1, 10) <= ?
         ${filteredPlateSql}
       ORDER BY occurred_at DESC, id DESC
-      LIMIT 6
+      LIMIT 8
     `,
     consumptionParams
   ).map((row) => ({
@@ -1690,13 +1827,48 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
     0
   );
   const lowStorageCount = fuelOverview.storages.filter(
-    (storage) =>
-      Number(storage.minBalance || 0) > 0 &&
-      Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0)
+      (storage) =>
+        Number(storage.minBalance || 0) > 0 &&
+        Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0)
   ).length;
+  const missingOdometerRecords = all(
+    `
+      SELECT plate, quantity, fuel_kind, storage_name, occurred_at
+      FROM fuel_records
+      WHERE type = 'EXIT'
+        AND (odometer_km IS NULL)
+        AND substr(occurred_at, 1, 10) >= ?
+        AND substr(occurred_at, 1, 10) <= ?
+        ${filteredPlateSql}
+      ORDER BY occurred_at DESC, id DESC
+      LIMIT 6
+    `,
+    consumptionParams
+  ).map((row) => ({
+    plate: row.plate || "-",
+    quantity: Number(row.quantity || 0),
+    fuelKind: row.fuel_kind || "",
+    storageName: row.storage_name || "",
+    occurredAt: row.occurred_at,
+    type: "MISSING_ODOMETER",
+    severity: "WARNING",
+    title: `KM ausente: ${row.plate || "Sem placa"}`,
+    description: `Abastecimento de ${Number(row.quantity || 0).toFixed(2)} L sem hodometro registrado.`,
+  }));
+  const operationalAlerts = [...odometerIssues, ...outlierSegments, ...missingOdometerRecords].sort(sortAlerts);
+  const alertSummary = {
+    total: operationalAlerts.length,
+    critical: operationalAlerts.filter((item) => item.severity === "CRITICAL").length,
+    kmErrors: odometerIssues.length,
+    outliers: outlierSegments.length,
+    missingOdometer: missingOdometerRecords.length,
+  };
 
   return {
     periodDays,
+    periodStart: startDay,
+    periodEnd: endDay,
+    isCustomRange,
     selectedPlate,
     availablePlates,
     consumptionSeries,
@@ -1704,6 +1876,7 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
     averageDailyConsumption: periodDays ? totalConsumptionLiters / periodDays : 0,
     peakConsumption,
     efficiencyRanking,
+    efficiencySummary,
     selectedVehicle,
     topConsumers,
     recentFuelRecords,
@@ -1718,6 +1891,8 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
         total: consumptionSeries.reduce((total, item) => total + item.s10, 0),
       },
     ],
+    operationalAlerts,
+    alertSummary,
     odometerCoverage: {
       totalRecords: Number(coverage?.total_records || 0),
       withOdometer: Number(coverage?.with_odometer || 0),
@@ -2175,6 +2350,8 @@ function queryFines() {
     status: row.status,
     amount: Number(row.amount || 0),
     notes: row.notes,
+    documentName: row.document_name || "",
+    documentUrl: row.document_url || "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     userName: row.user_name || "",
@@ -2223,6 +2400,855 @@ function queryChecklists() {
       userName: row.user_name || "",
     };
   });
+}
+
+function toNullableNumber(value) {
+  if (value === null || value === undefined || String(value).trim() === "") {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeMaintenanceType(value, fallback = "PREVENTIVE") {
+  const normalized = normalizeKey(value);
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized.includes("oleo") || normalized.includes("oil")) {
+    return "OIL_CHANGE";
+  }
+  if (normalized.includes("prevent")) {
+    return "PREVENTIVE";
+  }
+  return normalized.toUpperCase();
+}
+
+function normalizeTireType(value, fallback = "NEW") {
+  const normalized = normalizeKey(value);
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized.includes("recap")) {
+    return "RECAP";
+  }
+  return "NEW";
+}
+
+function normalizeTireStatus(value, fallback = "OK") {
+  const normalized = normalizeKey(value);
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized.includes("descart")) {
+    return "DISCARDED";
+  }
+  if (normalized.includes("troca") || normalized.includes("replace")) {
+    return "REPLACE_RECOMMENDED";
+  }
+  if (normalized.includes("atenc")) {
+    return "ATTENTION";
+  }
+  return "OK";
+}
+
+function normalizeTireLocationStatus(value, fallback = "INSTALLED") {
+  const normalized = normalizeKey(value);
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized.includes("stock") || normalized.includes("estoque")) {
+    return "STOCK";
+  }
+  if (normalized.includes("remov") || normalized.includes("retir")) {
+    return "REMOVED";
+  }
+  if (normalized.includes("descart")) {
+    return "DISCARDED";
+  }
+  return "INSTALLED";
+}
+
+function normalizeTireEventType(value, fallback = "INSTALL") {
+  const normalized = normalizeKey(value);
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized.includes("rod")) {
+    return "ROTATION";
+  }
+  if (normalized.includes("remov")) {
+    return "REMOVE";
+  }
+  if (normalized.includes("stock") || normalized.includes("estoque")) {
+    return "STOCK_LINK";
+  }
+  return "INSTALL";
+}
+
+function buildDossierSortAt(value, fallbackTime = "12:00:00") {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return "";
+  }
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? `${normalized}T${fallbackTime}` : normalized;
+}
+
+function compareDossierEventsDesc(left, right) {
+  return String(right.sortAt || "").localeCompare(String(left.sortAt || "")) || Number(right.id || 0) - Number(left.id || 0);
+}
+
+function calculateMedian(values = []) {
+  const numeric = values
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item))
+    .sort((left, right) => left - right);
+
+  if (!numeric.length) {
+    return 0;
+  }
+
+  const middle = Math.floor(numeric.length / 2);
+  if (numeric.length % 2 === 0) {
+    return (numeric[middle - 1] + numeric[middle]) / 2;
+  }
+  return numeric[middle];
+}
+
+function queryVehicleMaintenanceRecords(filters = {}) {
+  let sql = `
+    SELECT m.*, u.name AS user_name
+    FROM vehicle_maintenance_records m
+    LEFT JOIN users u ON u.id = m.created_by
+    WHERE 1 = 1
+  `;
+  const params = [];
+
+  if (filters.vehicleId) {
+    sql += " AND m.vehicle_id = ?";
+    params.push(Number(filters.vehicleId));
+  }
+
+  if (filters.plate) {
+    sql += " AND replace(replace(upper(coalesce(m.plate, '')), '-', ''), ' ', '') = ?";
+    params.push(normalizePlateKey(filters.plate));
+  }
+
+  sql += " ORDER BY m.performed_at DESC, m.id DESC";
+
+  return all(sql, params).map((row) => ({
+    id: Number(row.id),
+    vehicleId: toNullableNumber(row.vehicle_id),
+    plate: row.plate || "",
+    maintenanceType: normalizeMaintenanceType(row.maintenance_type, "PREVENTIVE"),
+    title: row.title || "",
+    performedAt: row.performed_at,
+    odometerKm: toNullableNumber(row.odometer_km),
+    intervalKm: toNullableNumber(row.interval_km),
+    nextDueKm: toNullableNumber(row.next_due_km),
+    notes: row.notes || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    userName: row.user_name || "",
+  }));
+}
+
+function queryVehicleTires(filters = {}) {
+  let sql = `
+    SELECT t.*, u.name AS user_name
+    FROM vehicle_tires t
+    LEFT JOIN users u ON u.id = t.created_by
+    WHERE 1 = 1
+  `;
+  const params = [];
+
+  if (filters.vehicleId) {
+    sql += " AND t.vehicle_id = ?";
+    params.push(Number(filters.vehicleId));
+  }
+
+  if (filters.plate) {
+    sql += " AND replace(replace(upper(coalesce(t.plate, '')), '-', ''), ' ', '') = ?";
+    params.push(normalizePlateKey(filters.plate));
+  }
+
+  sql += " ORDER BY t.updated_at DESC, t.id DESC";
+
+  return all(sql, params).map((row) => ({
+    id: Number(row.id),
+    vehicleId: toNullableNumber(row.vehicle_id),
+    plate: row.plate || "",
+    code: row.tire_code,
+    tireType: normalizeTireType(row.tire_type, "NEW"),
+    position: row.position || "",
+    installedAt: row.installed_at || "",
+    installedKm: toNullableNumber(row.installed_km),
+    removedAt: row.removed_at || "",
+    removedKm: toNullableNumber(row.removed_km),
+    estimatedLifeKm: toNullableNumber(row.estimated_life_km),
+    locationStatus: normalizeTireLocationStatus(row.location_status, "INSTALLED"),
+    status: normalizeTireStatus(row.status, "OK"),
+    notes: row.notes || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    userName: row.user_name || "",
+  }));
+}
+
+function queryVehicleTireEvents(filters = {}) {
+  let sql = `
+    SELECT e.*, t.tire_code, u.name AS user_name
+    FROM vehicle_tire_events e
+    JOIN vehicle_tires t ON t.id = e.tire_id
+    LEFT JOIN users u ON u.id = e.created_by
+    WHERE 1 = 1
+  `;
+  const params = [];
+
+  if (filters.vehicleId) {
+    sql += " AND e.vehicle_id = ?";
+    params.push(Number(filters.vehicleId));
+  }
+
+  if (filters.plate) {
+    sql += " AND replace(replace(upper(coalesce(e.plate, '')), '-', ''), ' ', '') = ?";
+    params.push(normalizePlateKey(filters.plate));
+  }
+
+  sql += " ORDER BY e.occurred_at DESC, e.id DESC";
+
+  return all(sql, params).map((row) => ({
+    id: Number(row.id),
+    tireId: Number(row.tire_id),
+    vehicleId: toNullableNumber(row.vehicle_id),
+    plate: row.plate || "",
+    tireCode: row.tire_code || "",
+    eventType: normalizeTireEventType(row.event_type, "INSTALL"),
+    positionFrom: row.position_from || "",
+    positionTo: row.position_to || "",
+    odometerKm: toNullableNumber(row.odometer_km),
+    occurredAt: row.occurred_at,
+    notes: row.notes || "",
+    createdAt: row.created_at,
+    userName: row.user_name || "",
+  }));
+}
+
+function queryVehicleOdometerCorrections(filters = {}) {
+  let sql = `
+    SELECT c.*, u.name AS user_name
+    FROM vehicle_odometer_corrections c
+    LEFT JOIN users u ON u.id = c.created_by
+    WHERE 1 = 1
+  `;
+  const params = [];
+
+  if (filters.vehicleId) {
+    sql += " AND c.vehicle_id = ?";
+    params.push(Number(filters.vehicleId));
+  }
+
+  if (filters.plate) {
+    sql += " AND replace(replace(upper(coalesce(c.plate, '')), '-', ''), ' ', '') = ?";
+    params.push(normalizePlateKey(filters.plate));
+  }
+
+  if (filters.sourceType) {
+    sql += " AND upper(coalesce(c.source_type, '')) = ?";
+    params.push(normalizeText(filters.sourceType).toUpperCase());
+  }
+
+  sql += " ORDER BY c.created_at DESC, c.id DESC";
+
+  return all(sql, params).map((row) => ({
+    id: Number(row.id),
+    vehicleId: toNullableNumber(row.vehicle_id),
+    plate: row.plate || "",
+    sourceType: normalizeText(row.source_type).toUpperCase() || "FUEL",
+    sourceId: toNullableNumber(row.source_id),
+    originalKm: Number(row.original_km || 0),
+    correctedKm: Number(row.corrected_km || 0),
+    reason: row.reason || "",
+    createdAt: row.created_at,
+    userName: row.user_name || "",
+  }));
+}
+
+function buildCorrectedFuelHistory(records = [], corrections = []) {
+  const correctionByRecordId = corrections.reduce((result, item) => {
+    if (item.sourceType === "FUEL" && item.sourceId) {
+      result.set(Number(item.sourceId), item);
+    }
+    return result;
+  }, new Map());
+
+  const chronological = records
+    .slice()
+    .sort(
+      (left, right) =>
+        String(left.occurredAt || "").localeCompare(String(right.occurredAt || "")) || Number(left.id) - Number(right.id)
+    )
+    .map((record) => {
+      const correction = correctionByRecordId.get(Number(record.id)) || null;
+      return {
+        ...record,
+        originalKm: record.odometerKm,
+        correctedKm: correction ? correction.correctedKm : null,
+        effectiveKm: correction ? correction.correctedKm : record.odometerKm,
+        correction,
+        distanceKm: null,
+        averageKmPerLiter: null,
+        kmInconsistent: false,
+        averageOutOfPattern: false,
+      };
+    });
+
+  let referenceKm = null;
+  let totalDistanceKm = 0;
+  let totalLiters = 0;
+
+  chronological.forEach((record) => {
+    if (record.effectiveKm === null || record.effectiveKm === undefined) {
+      return;
+    }
+
+    if (referenceKm === null) {
+      referenceKm = record.effectiveKm;
+      return;
+    }
+
+    const distanceKm = Number(record.effectiveKm) - Number(referenceKm);
+    if (distanceKm <= 0) {
+      record.kmInconsistent = true;
+      return;
+    }
+
+    record.distanceKm = distanceKm;
+    if (Number(record.quantity || 0) > 0) {
+      record.averageKmPerLiter = distanceKm / Number(record.quantity || 0);
+      totalDistanceKm += distanceKm;
+      totalLiters += Number(record.quantity || 0);
+    }
+    referenceKm = record.effectiveKm;
+  });
+
+  const baselineAverage = calculateMedian(
+    chronological.map((item) => item.averageKmPerLiter).filter((item) => Number.isFinite(item) && item > 0)
+  );
+
+  chronological.forEach((record) => {
+    if (!Number.isFinite(record.averageKmPerLiter) || Number(record.averageKmPerLiter) <= 0) {
+      return;
+    }
+
+    record.averageOutOfPattern =
+      baselineAverage > 0
+        ? record.averageKmPerLiter < baselineAverage * 0.65 || record.averageKmPerLiter > baselineAverage * 1.45
+        : record.averageKmPerLiter < 1.5 || record.averageKmPerLiter > 6.5;
+  });
+
+  const recordsDesc = chronological
+    .slice()
+    .sort(
+      (left, right) =>
+        String(right.occurredAt || "").localeCompare(String(left.occurredAt || "")) || Number(right.id) - Number(left.id)
+    );
+
+  return {
+    recordsDesc,
+    totalDistanceKm,
+    totalLiters,
+    averageKmPerLiter: totalLiters > 0 ? totalDistanceKm / totalLiters : 0,
+    inconsistentCount: recordsDesc.filter((item) => item.kmInconsistent).length,
+    outlierCount: recordsDesc.filter((item) => item.averageOutOfPattern).length,
+  };
+}
+
+function buildMaintenanceDueStatus(record, currentKm) {
+  const dueKm =
+    record.nextDueKm !== null && record.nextDueKm !== undefined
+      ? Number(record.nextDueKm)
+      : record.intervalKm !== null && record.intervalKm !== undefined && record.odometerKm !== null && record.odometerKm !== undefined
+        ? Number(record.odometerKm) + Number(record.intervalKm)
+        : null;
+
+  if (dueKm === null || currentKm === null || currentKm === undefined) {
+    return {
+      dueKm,
+      remainingKm: null,
+      status: "ATTENTION",
+    };
+  }
+
+  const remainingKm = dueKm - Number(currentKm);
+  const thresholdKm = Math.max(Math.round(Number(record.intervalKm || 0) * 0.15), 1000);
+
+  if (remainingKm < 0) {
+    return { dueKm, remainingKm, status: "OVERDUE" };
+  }
+
+  if (remainingKm <= thresholdKm) {
+    return { dueKm, remainingKm, status: "ATTENTION" };
+  }
+
+  return { dueKm, remainingKm, status: "OK" };
+}
+
+function queryVehicleDossierByPlate(plate, options = {}) {
+  const normalizedPlate = normalizePlate(plate);
+  const plateKey = normalizePlateKey(normalizedPlate);
+  if (!plateKey) {
+    throw new Error("A placa do veiculo e obrigatoria.");
+  }
+
+  const vehicle = queryVehicles({}).find((item) => normalizePlateKey(item.plate) === plateKey);
+  if (!vehicle) {
+    return null;
+  }
+
+  const periodDays = Math.min(Math.max(Number(options.periodDays || 90), 7), 365);
+  const periodEnd = todayDate();
+  const periodStartDate = new Date(`${periodEnd}T12:00:00`);
+  periodStartDate.setDate(periodStartDate.getDate() - (periodDays - 1));
+  const periodStart = periodStartDate.toISOString().slice(0, 10);
+
+  const fuelRecords = queryFuelRecords({})
+    .filter((item) => item.type === "EXIT" && normalizePlateKey(item.plate) === plateKey);
+  const corrections = queryVehicleOdometerCorrections({ plate: vehicle.plate });
+  const fuelHistory = buildCorrectedFuelHistory(fuelRecords, corrections);
+  const maintenanceRecords = queryVehicleMaintenanceRecords({ plate: vehicle.plate });
+  const tireRecords = queryVehicleTires({ plate: vehicle.plate });
+  const tireEvents = queryVehicleTireEvents({ plate: vehicle.plate });
+  const fines = queryFines().filter((item) => normalizePlateKey(item.plate) === plateKey);
+  const checklists = queryChecklists()
+    .filter((item) => normalizePlateKey(item.vehicle) === plateKey)
+    .sort(
+      (left, right) =>
+        String(right.checklistDate || "").localeCompare(String(left.checklistDate || "")) || Number(right.id) - Number(left.id)
+    );
+  const scheduleEntries = queryScheduleEntries({ vehicle: vehicle.plate });
+  const todayScheduleEntries = scheduleEntries.filter((item) => item.scheduledDate === todayDate());
+
+  const latestFuelKm = fuelHistory.recordsDesc.find((item) => item.effectiveKm !== null && item.effectiveKm !== undefined);
+  const latestChecklistKm = checklists.find((item) => item.odometerKm !== null && item.odometerKm !== undefined) || null;
+  const latestMaintenanceKm =
+    maintenanceRecords.find((item) => item.odometerKm !== null && item.odometerKm !== undefined) || null;
+  const latestTireKm = tireEvents.find((item) => item.odometerKm !== null && item.odometerKm !== undefined) || null;
+
+  const currentKmCandidates = [
+    latestFuelKm
+      ? {
+          km: Number(latestFuelKm.effectiveKm),
+          source: "FUEL",
+          sortAt: buildDossierSortAt(latestFuelKm.occurredAt),
+          occurredAt: latestFuelKm.occurredAt,
+        }
+      : null,
+    latestChecklistKm
+      ? {
+          km: Number(latestChecklistKm.odometerKm),
+          source: "CHECKLIST",
+          sortAt: buildDossierSortAt(latestChecklistKm.checklistDate),
+          occurredAt: latestChecklistKm.checklistDate,
+        }
+      : null,
+    latestMaintenanceKm
+      ? {
+          km: Number(latestMaintenanceKm.odometerKm),
+          source: "MAINTENANCE",
+          sortAt: buildDossierSortAt(latestMaintenanceKm.performedAt),
+          occurredAt: latestMaintenanceKm.performedAt,
+        }
+      : null,
+    latestTireKm
+      ? {
+          km: Number(latestTireKm.odometerKm),
+          source: "TIRE",
+          sortAt: buildDossierSortAt(latestTireKm.occurredAt),
+          occurredAt: latestTireKm.occurredAt,
+        }
+      : null,
+  ]
+    .filter(Boolean)
+    .sort(compareDossierEventsDesc);
+
+  const currentKmSnapshot = currentKmCandidates[0] || null;
+  const currentKm = currentKmSnapshot ? Number(currentKmSnapshot.km) : null;
+
+  const maintenanceWithDue = maintenanceRecords.map((item) => ({
+    ...item,
+    ...buildMaintenanceDueStatus(item, currentKm),
+  }));
+  const oilChangeRecord =
+    maintenanceWithDue.find((item) => item.maintenanceType === "OIL_CHANGE") || null;
+  const oilChangeSummary = oilChangeRecord
+    ? {
+        ...oilChangeRecord,
+        message:
+          oilChangeRecord.remainingKm === null
+            ? "Intervalo de troca sem configuracao completa."
+            : oilChangeRecord.remainingKm < 0
+              ? `Troca de oleo vencida ha ${Math.abs(Math.round(oilChangeRecord.remainingKm))} km`
+              : `Troca de oleo em ${Math.round(oilChangeRecord.remainingKm)} km`,
+      }
+    : {
+        status: "ATTENTION",
+        message: "Sem manutencao registrada.",
+        remainingKm: null,
+        dueKm: null,
+      };
+
+  const enrichedTires = tireRecords.map((item) => {
+    const kmDriven =
+      currentKm !== null && item.installedKm !== null && item.installedKm !== undefined
+        ? Math.max(currentKm - Number(item.installedKm), 0)
+        : null;
+    const estimatedRemainingKm =
+      item.estimatedLifeKm !== null && item.estimatedLifeKm !== undefined && kmDriven !== null
+        ? Number(item.estimatedLifeKm) - kmDriven
+        : null;
+    let status = normalizeTireStatus(item.status, "OK");
+    if (item.locationStatus === "DISCARDED") {
+      status = "DISCARDED";
+    } else if (estimatedRemainingKm !== null) {
+      if (estimatedRemainingKm <= 0) {
+        status = "REPLACE_RECOMMENDED";
+      } else if (status === "OK" && estimatedRemainingKm <= Math.max(Math.round(Number(item.estimatedLifeKm || 0) * 0.15), 5000)) {
+        status = "ATTENTION";
+      }
+    }
+
+    return {
+      ...item,
+      currentKm,
+      kmDriven,
+      estimatedRemainingKm,
+      status,
+    };
+  });
+
+  const installedTires = enrichedTires.filter((item) => item.locationStatus === "INSTALLED");
+  const removedTires = enrichedTires.filter((item) => item.locationStatus === "REMOVED");
+  const stockTires = enrichedTires.filter((item) => item.locationStatus === "STOCK");
+
+  const lastChecklist = checklists[0] || null;
+  const checklistHighlights = lastChecklist
+    ? [
+        lastChecklist.temporaryIssue,
+        lastChecklist.problems,
+        ...(lastChecklist.itemsDetailed || [])
+          .filter((item) => item.status === "CRITICAL" || item.status === "ATTENTION")
+          .map((item) => [item.label, item.notes].filter(Boolean).join(" - ")),
+      ]
+        .map((item) => normalizeText(item))
+        .filter(Boolean)
+        .slice(0, 4)
+    : [];
+
+  const finesSummary = {
+    openCount: fines.filter((item) => item.status === "OPEN").length,
+    waitingDriverCount: fines.filter((item) => item.status === "WAITING_DRIVER").length,
+    pendingPaymentCount: fines.filter((item) => item.status === "PENDING_PAYMENT").length,
+  };
+
+  const maintenancePendingRecords = maintenanceWithDue.filter((item) => item.maintenanceType !== "OIL_CHANGE");
+  const maintenanceAlertStatus =
+    !maintenanceWithDue.length
+      ? "ATTENTION"
+      : maintenancePendingRecords.some((item) => item.status === "OVERDUE")
+        ? "CRITICAL"
+        : maintenancePendingRecords.some((item) => item.status === "ATTENTION")
+          ? "ATTENTION"
+          : "OK";
+
+  const tireAlertStatus =
+    !installedTires.length
+      ? "ATTENTION"
+      : installedTires.some((item) => item.estimatedRemainingKm !== null && item.estimatedRemainingKm <= 0)
+        ? "OVERDUE"
+        : installedTires.some((item) => item.status === "ATTENTION" || item.status === "REPLACE_RECOMMENDED")
+          ? "ATTENTION"
+          : "OK";
+
+  const checklistAlertStatus =
+    !lastChecklist
+      ? "ATTENTION"
+      : Number(lastChecklist.itemSummary?.critical || 0) > 0
+        ? "CRITICAL"
+        : Number(lastChecklist.itemSummary?.attention || 0) > 0 || lastChecklist.status !== "OK"
+          ? "ATTENTION"
+          : "OK";
+
+  const fineAlertStatus =
+    finesSummary.openCount > 0 || finesSummary.pendingPaymentCount > 0
+      ? "CRITICAL"
+      : finesSummary.waitingDriverCount > 0 || fines.some((item) => item.status === "CONTESTING")
+        ? "ATTENTION"
+        : "OK";
+
+  const kmAlertStatus =
+    fuelHistory.inconsistentCount > 0
+      ? "CRITICAL"
+      : corrections.length > 0
+        ? "ATTENTION"
+        : "OK";
+
+  const vehicleInactiveStatus =
+    vehicle.status === "INACTIVE" ? "CRITICAL" : vehicle.status === "MAINTENANCE" ? "ATTENTION" : "OK";
+
+  const oilAlertStatus = oilChangeSummary.status || "ATTENTION";
+  const todayScheduleStatus = todayScheduleEntries.length ? "ATTENTION" : "OK";
+
+  const alerts = [
+    {
+      key: "maintenance",
+      label: "Manutencao pendente",
+      status: maintenanceAlertStatus,
+      summary:
+        !maintenanceWithDue.length
+          ? "Sem manutencao registrada."
+          : maintenancePendingRecords.some((item) => item.status === "OVERDUE")
+            ? "Existem manutencoes preventivas vencidas."
+            : maintenancePendingRecords.some((item) => item.status === "ATTENTION")
+              ? "Ha manutencoes proximas do vencimento."
+              : "Sem pendencias preventivas.",
+    },
+    {
+      key: "oil",
+      label: "Troca de oleo",
+      status: oilAlertStatus,
+      summary: oilChangeSummary.message,
+    },
+    {
+      key: "tires",
+      label: "Pneus / rodizio",
+      status: tireAlertStatus,
+      summary:
+        !installedTires.length
+          ? "Sem pneus vinculados."
+          : tireAlertStatus === "OVERDUE"
+            ? "Ha pneus com troca recomendada imediata."
+            : tireAlertStatus === "ATTENTION"
+              ? "Alguns pneus exigem atencao."
+              : "Pneus dentro do esperado.",
+    },
+    {
+      key: "fines",
+      label: "Multa em aberto",
+      status: fineAlertStatus,
+      summary:
+        finesSummary.openCount > 0 || finesSummary.pendingPaymentCount > 0
+          ? `${finesSummary.openCount + finesSummary.pendingPaymentCount} pendencia(s) financeira(s).`
+          : finesSummary.waitingDriverCount > 0
+            ? `${finesSummary.waitingDriverCount} multa(s) aguardando condutor.`
+            : "Sem multas em aberto.",
+    },
+    {
+      key: "checklist",
+      label: "Checklist critico",
+      status: checklistAlertStatus,
+      summary:
+        !lastChecklist
+          ? "Sem checklist recente."
+          : Number(lastChecklist.itemSummary?.critical || 0) > 0
+            ? `${lastChecklist.itemSummary.critical} item(ns) critico(s) no ultimo checklist.`
+            : Number(lastChecklist.itemSummary?.attention || 0) > 0
+              ? `${lastChecklist.itemSummary.attention} item(ns) em atencao.`
+              : "Ultimo checklist sem criticidade.",
+    },
+    {
+      key: "km",
+      label: "KM inconsistente",
+      status: kmAlertStatus,
+      summary:
+        fuelHistory.inconsistentCount > 0
+          ? `${fuelHistory.inconsistentCount} abastecimento(s) com KM inconsistente.`
+          : corrections.length > 0
+            ? `${corrections.length} correcao(oes) de KM registrada(s).`
+            : "Sem inconsistencias de KM.",
+    },
+    {
+      key: "schedule",
+      label: "Veiculo escalado hoje",
+      status: todayScheduleStatus,
+      summary: todayScheduleEntries.length
+        ? `${todayScheduleEntries.length} escala(s) vinculada(s) para hoje.`
+        : "Veiculo sem escala para a data atual.",
+    },
+    {
+      key: "inactive",
+      label: "Veiculo inativo",
+      status: vehicleInactiveStatus,
+      summary:
+        vehicle.status === "INACTIVE"
+          ? "Veiculo marcado como inativo."
+          : vehicle.status === "MAINTENANCE"
+            ? "Veiculo em manutencao."
+            : "Veiculo operacional.",
+    },
+  ];
+
+  const timeline = [];
+
+  fuelHistory.recordsDesc.forEach((item) => {
+    timeline.push({
+      id: item.id,
+      type: "ABASTECIMENTO",
+      sortAt: buildDossierSortAt(item.occurredAt),
+      occurredAt: item.occurredAt,
+      description: `${item.quantity.toFixed(2)} L de ${item.fuelKind}${item.effectiveKm !== null ? ` | KM ${Math.round(item.effectiveKm)}` : ""}`,
+      userName: item.userName || "Sistema",
+    });
+  });
+
+  checklists.forEach((item) => {
+    timeline.push({
+      id: item.id,
+      type: "CHECKLIST",
+      sortAt: buildDossierSortAt(item.checklistDate),
+      occurredAt: item.checklistDate,
+      description: `${item.status} | ${item.driverName || "Sem motorista"} | ${item.itemSummary?.critical || 0} critico(s)`,
+      userName: item.userName || "Sistema",
+    });
+  });
+
+  maintenanceRecords.forEach((item) => {
+    timeline.push({
+      id: item.id,
+      type: "MANUTENCAO",
+      sortAt: buildDossierSortAt(item.performedAt),
+      occurredAt: item.performedAt,
+      description: `${item.title}${item.odometerKm !== null ? ` | KM ${Math.round(item.odometerKm)}` : ""}`,
+      userName: item.userName || "Sistema",
+    });
+  });
+
+  tireEvents.forEach((item) => {
+    timeline.push({
+      id: item.id,
+      type: "PNEU",
+      sortAt: buildDossierSortAt(item.occurredAt),
+      occurredAt: item.occurredAt,
+      description: `${item.eventType} | ${item.tireCode}${item.positionTo ? ` | ${item.positionTo}` : ""}`,
+      userName: item.userName || "Sistema",
+    });
+  });
+
+  scheduleEntries.forEach((item) => {
+    timeline.push({
+      id: item.id,
+      type: "ESCALA",
+      sortAt: buildDossierSortAt(item.scheduledDate),
+      occurredAt: item.scheduledDate,
+      description: `${item.driver}${item.assistant ? ` / ${item.assistant}` : ""}${item.location ? ` | ${item.location}` : ""}`,
+      userName: item.userName || item.responsibleName || "Sistema",
+    });
+  });
+
+  fines.forEach((item) => {
+    timeline.push({
+      id: item.id,
+      type: "MULTA",
+      sortAt: buildDossierSortAt(item.fineDate),
+      occurredAt: item.fineDate,
+      description: `${item.status} | ${item.driver} | ${item.amount ? `R$ ${item.amount.toFixed(2)}` : "Sem valor"}`,
+      userName: item.userName || "Sistema",
+    });
+  });
+
+  corrections.forEach((item) => {
+    timeline.push({
+      id: item.id,
+      type: "CORRECAO_KM",
+      sortAt: buildDossierSortAt(item.createdAt),
+      occurredAt: item.createdAt,
+      description: `${Math.round(item.originalKm)} -> ${Math.round(item.correctedKm)}${item.reason ? ` | ${item.reason}` : ""}`,
+      userName: item.userName || "Sistema",
+    });
+  });
+
+  all(
+    `
+      SELECT *
+      FROM action_logs
+      WHERE entity_type = 'VEHICLE'
+        AND entity_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 20
+    `,
+    [String(vehicle.id)]
+  ).forEach((row) => {
+    timeline.push({
+      id: Number(row.id),
+      type: "CADASTRO",
+      sortAt: buildDossierSortAt(row.created_at),
+      occurredAt: row.created_at,
+      description: row.action === "CREATE_VEHICLE" ? "Cadastro do veiculo criado." : "Alteracao cadastral do veiculo.",
+      userName: row.user_name || "Sistema",
+    });
+  });
+
+  timeline.sort(compareDossierEventsDesc);
+
+  const periodFuelRecords = fuelHistory.recordsDesc.filter((item) => String(item.occurredAt || "").slice(0, 10) >= periodStart);
+  const lastTimelineEvent = timeline[0] || null;
+  const criticalAlertCount = alerts.filter((item) => item.status === "CRITICAL" || item.status === "OVERDUE").length;
+
+  return {
+    vehicle,
+    summary: {
+      plate: vehicle.plate,
+      brandModel: [vehicle.brand, vehicle.model].filter(Boolean).join(" / "),
+      fuelProfile: vehicle.fuelProfile,
+      sector: vehicle.sector || "",
+      status: vehicle.status,
+      lastKnownKm: currentKm,
+      lastKmSource: currentKmSnapshot?.source || "",
+      lastUpdateAt: lastTimelineEvent?.occurredAt || vehicle.updatedAt,
+      criticalAlertCount,
+      isAvailableToday:
+        vehicle.status !== "INACTIVE" && vehicle.status !== "MAINTENANCE" && !todayScheduleEntries.length,
+    },
+    alerts,
+    todaySchedule: {
+      date: todayDate(),
+      entries: todayScheduleEntries,
+    },
+    fuel: {
+      periodDays,
+      periodStart,
+      periodEnd,
+      totalPeriodLiters: periodFuelRecords.reduce((total, item) => total + Number(item.quantity || 0), 0),
+      averageKmPerLiter: fuelHistory.averageKmPerLiter,
+      inconsistentCount: fuelHistory.inconsistentCount,
+      outlierCount: fuelHistory.outlierCount,
+      lastRecord: fuelHistory.recordsDesc[0] || null,
+      records: fuelHistory.recordsDesc.slice(0, 5),
+      corrections,
+    },
+    maintenance: {
+      oilChange: oilChangeSummary,
+      currentKm,
+      records: maintenanceWithDue,
+      others: maintenanceWithDue.filter((item) => item.maintenanceType !== "OIL_CHANGE"),
+    },
+    tires: {
+      installed: installedTires,
+      removed: removedTires,
+      stock: stockTires,
+      history: tireEvents.slice(0, 20),
+    },
+    checklist: {
+      last: lastChecklist,
+      highlights: checklistHighlights,
+    },
+    fines: {
+      summary: finesSummary,
+      records: fines,
+    },
+    timeline: timeline.slice(0, 80),
+  };
 }
 
 function buildInventoryMovementFilters(filters = {}, alias = "m", productAlias = "p") {
@@ -2833,7 +3859,7 @@ async function start() {
   });
 
   app.get("/api/dashboard", requireAuth, (req, res) => {
-    const periodDays = normalizeDashboardDays(req.query.days);
+    const period = resolveDashboardPeriod(req.query);
     const selectedPlate = normalizeText(req.query.plate).toUpperCase();
     const pendingNotes = get(
       "SELECT COUNT(*) AS total FROM notes WHERE status IN ('NEW', 'PENDING_ACK')"
@@ -2844,9 +3870,10 @@ async function start() {
     const sentFinanceNotes = get(
       "SELECT COUNT(*) AS total FROM notes WHERE status = 'SENT_FINANCE'"
     );
+    const activeVehicles = get("SELECT COUNT(*) AS total FROM vehicles WHERE active = 1");
     const fuelOverview = queryFuelOverview();
     const fuelAnalytics = queryFuelAnalytics(
-      { days: periodDays, plate: selectedPlate },
+      { days: period.periodDays, from: req.query.from, to: req.query.to, plate: selectedPlate },
       fuelOverview
     );
     const lowStock = queryProducts("", { stockType: "COMMON" }).filter((item) => item.lowStock);
@@ -2861,18 +3888,21 @@ async function start() {
       `
     );
 
-    const alerts = [
+    const businessAlerts = [
       ...lowStock.slice(0, 5).map((item) => ({
         type: "LOW_STOCK",
+        severity: "WARNING",
         title: `Estoque minimo: ${item.name}`,
         description: `Saldo ${item.currentStock} ${item.unit} | minimo ${item.minStock} ${item.unit}`,
       })),
       ...agingNotes.map((item) => ({
         type: "NOTE_PENDING",
+        severity: "WARNING",
         title: `Nota pendente: ${item.supplier_name}`,
         description: `Status ${item.status} desde ${new Date(item.updated_at).toLocaleString("pt-BR")}`,
       })),
     ];
+    const alerts = [...fuelAnalytics.operationalAlerts, ...businessAlerts];
 
     return res.json({
       metrics: {
@@ -2885,10 +3915,13 @@ async function start() {
         lowStockCount: lowStock.length,
         todaySchedulesCount: todaySchedules.length,
         alertCount: alerts.length,
+        criticalAlertCount: Number(fuelAnalytics.alertSummary?.critical || 0),
         periodFuelConsumption: Number(fuelAnalytics.totalConsumptionLiters || 0),
         averageDailyConsumption: Number(fuelAnalytics.averageDailyConsumption || 0),
+        averageKmPerLiter: Number(fuelAnalytics.efficiencySummary?.averageKmPerLiter || 0),
         bestKmPerLiter: Number(fuelAnalytics.efficiencyRanking[0]?.kmPerLiter || 0),
         monitoredVehicles: Number(fuelAnalytics.efficiencyRanking.length || 0),
+        activeVehicles: Number(activeVehicles?.total || 0),
       },
       alerts,
       todaySchedules,
@@ -3089,6 +4122,22 @@ async function start() {
     });
   });
 
+  app.get("/api/vehicles/dossier/:plate", requireAuth, (req, res) => {
+    try {
+      const dossier = queryVehicleDossierByPlate(req.params.plate, {
+        periodDays: req.query.periodDays,
+      });
+
+      if (!dossier) {
+        return sendError(res, 404, "Veiculo nao cadastrado.");
+      }
+
+      return res.json({ item: dossier });
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
+  });
+
   app.post("/api/vehicles", requireAuth, (req, res) => {
     const plate = normalizePlate(req.body.plate);
     const fuelProfile = normalizeVehicleFuelProfile(req.body.fuelProfile || req.body.fuelType, "S500");
@@ -3096,8 +4145,8 @@ async function start() {
     const model = normalizeText(req.body.model);
     const sector = normalizeText(req.body.sector || req.body.operation);
     const notes = normalizeText(req.body.notes || req.body.observation);
-    const status = normalizeText(req.body.status || "ACTIVE").toUpperCase();
-    const active = status !== "INACTIVE";
+    const status = normalizeVehicleOperationalStatus(req.body.status || "ACTIVE", "ACTIVE");
+    const active = isVehicleOperational(status);
 
     if (!plate) {
       return sendError(res, 400, "A placa do veiculo e obrigatoria.");
@@ -3112,16 +4161,56 @@ async function start() {
     const vehicleId = insert(
       `
         INSERT INTO vehicles (
-          plate, fuel_profile, brand, model, sector, active, notes, created_by, created_at, updated_at
+          plate, fuel_profile, brand, model, sector, active, operational_status, notes, created_by, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      [plate, fuelProfile, brand, model, sector, active ? 1 : 0, notes, req.user.id, timestamp, timestamp]
+      [plate, fuelProfile, brand, model, sector, active ? 1 : 0, status, notes, req.user.id, timestamp, timestamp]
     );
 
     write(
       `
         UPDATE fuel_records
+        SET vehicle_id = ?
+        WHERE plate = ?
+          AND (vehicle_id IS NULL OR vehicle_id = 0)
+      `,
+      [vehicleId, plate]
+    );
+
+    write(
+      `
+        UPDATE vehicle_maintenance_records
+        SET vehicle_id = ?
+        WHERE plate = ?
+          AND (vehicle_id IS NULL OR vehicle_id = 0)
+      `,
+      [vehicleId, plate]
+    );
+
+    write(
+      `
+        UPDATE vehicle_tires
+        SET vehicle_id = ?
+        WHERE plate = ?
+          AND (vehicle_id IS NULL OR vehicle_id = 0)
+      `,
+      [vehicleId, plate]
+    );
+
+    write(
+      `
+        UPDATE vehicle_tire_events
+        SET vehicle_id = ?
+        WHERE plate = ?
+          AND (vehicle_id IS NULL OR vehicle_id = 0)
+      `,
+      [vehicleId, plate]
+    );
+
+    write(
+      `
+        UPDATE vehicle_odometer_corrections
         SET vehicle_id = ?
         WHERE plate = ?
           AND (vehicle_id IS NULL OR vehicle_id = 0)
@@ -3135,6 +4224,7 @@ async function start() {
       brand,
       model,
       sector,
+      status,
       active,
     });
 
@@ -3155,8 +4245,11 @@ async function start() {
     const model = normalizeText(req.body.model || existing.model);
     const sector = normalizeText(req.body.sector || req.body.operation || existing.sector);
     const notes = normalizeText(req.body.notes || req.body.observation || existing.notes);
-    const status = normalizeText(req.body.status || (Number(existing.active || 0) === 1 ? "ACTIVE" : "INACTIVE")).toUpperCase();
-    const active = status !== "INACTIVE";
+    const status = normalizeVehicleOperationalStatus(
+      req.body.status || existing.operational_status || (Number(existing.active || 0) === 1 ? "ACTIVE" : "INACTIVE"),
+      Number(existing.active || 0) === 1 ? "ACTIVE" : "INACTIVE"
+    );
+    const active = isVehicleOperational(status);
 
     if (!plate) {
       return sendError(res, 400, "A placa do veiculo e obrigatoria.");
@@ -3171,10 +4264,10 @@ async function start() {
     write(
       `
         UPDATE vehicles
-        SET plate = ?, fuel_profile = ?, brand = ?, model = ?, sector = ?, active = ?, notes = ?, updated_at = ?
+        SET plate = ?, fuel_profile = ?, brand = ?, model = ?, sector = ?, active = ?, operational_status = ?, notes = ?, updated_at = ?
         WHERE id = ?
       `,
-      [plate, fuelProfile, brand, model, sector, active ? 1 : 0, notes, timestamp, vehicleId]
+      [plate, fuelProfile, brand, model, sector, active ? 1 : 0, status, notes, timestamp, vehicleId]
     );
 
     write(
@@ -3186,12 +4279,78 @@ async function start() {
       [plate, vehicleId, vehicleId]
     );
 
+    if (normalizePlateKey(plate) !== normalizePlateKey(existing.plate)) {
+      write(
+        `
+          UPDATE fines
+          SET plate = ?, updated_at = ?
+          WHERE replace(replace(upper(coalesce(plate, '')), '-', ''), ' ', '') = ?
+        `,
+        [plate, timestamp, normalizePlateKey(existing.plate)]
+      );
+
+      write(
+        `
+          UPDATE checklists
+          SET vehicle = ?, updated_at = ?
+          WHERE replace(replace(upper(coalesce(vehicle, '')), '-', ''), ' ', '') = ?
+        `,
+        [plate, timestamp, normalizePlateKey(existing.plate)]
+      );
+
+      write(
+        `
+          UPDATE schedule_entries
+          SET vehicle = ?, updated_at = ?
+          WHERE replace(replace(upper(coalesce(vehicle, '')), '-', ''), ' ', '') = ?
+        `,
+        [plate, timestamp, normalizePlateKey(existing.plate)]
+      );
+
+      write(
+        `
+          UPDATE vehicle_maintenance_records
+          SET plate = ?, updated_at = ?
+          WHERE replace(replace(upper(coalesce(plate, '')), '-', ''), ' ', '') = ?
+        `,
+        [plate, timestamp, normalizePlateKey(existing.plate)]
+      );
+
+      write(
+        `
+          UPDATE vehicle_tires
+          SET plate = ?, updated_at = ?
+          WHERE replace(replace(upper(coalesce(plate, '')), '-', ''), ' ', '') = ?
+        `,
+        [plate, timestamp, normalizePlateKey(existing.plate)]
+      );
+
+      write(
+        `
+          UPDATE vehicle_tire_events
+          SET plate = ?
+          WHERE replace(replace(upper(coalesce(plate, '')), '-', ''), ' ', '') = ?
+        `,
+        [plate, normalizePlateKey(existing.plate)]
+      );
+
+      write(
+        `
+          UPDATE vehicle_odometer_corrections
+          SET plate = ?
+          WHERE replace(replace(upper(coalesce(plate, '')), '-', ''), ' ', '') = ?
+        `,
+        [plate, normalizePlateKey(existing.plate)]
+      );
+    }
+
     logAction(req.user, "UPDATE_VEHICLE", "VEHICLE", vehicleId, {
       plate,
       fuelProfile,
       brand,
       model,
       sector,
+      status,
       active,
     });
 
@@ -3785,11 +4944,13 @@ async function start() {
 
   app.post("/api/fines", requireAuth, (req, res) => {
     const fineDate = normalizeText(req.body.fineDate);
-    const plate = normalizeText(req.body.plate).toUpperCase();
+    const plate = normalizePlate(req.body.plate);
     const driver = normalizeText(req.body.driver);
     const status = normalizeFineStatus(req.body.status, "OPEN");
     const amount = toNumber(req.body.amount);
     const notes = normalizeText(req.body.notes);
+    const documentName = normalizeText(req.body.documentName || req.body.document);
+    const documentUrl = normalizeText(req.body.documentUrl || req.body.attachmentUrl);
 
     if (!fineDate || !plate || !driver) {
       return sendError(res, 400, "Data, placa e condutor sao obrigatorios.");
@@ -3797,13 +4958,15 @@ async function start() {
 
     const fineId = insert(
       `
-        INSERT INTO fines (fine_date, plate, driver, status, amount, notes, created_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO fines (
+          fine_date, plate, driver, status, amount, notes, document_name, document_url, created_by, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      [fineDate, plate, driver, status, amount, notes, req.user.id, nowIso(), nowIso()]
+      [fineDate, plate, driver, status, amount, notes, documentName, documentUrl, req.user.id, nowIso(), nowIso()]
     );
 
-    logAction(req.user, "CREATE_FINE", "FINE", fineId, { fineDate, plate, driver, status });
+    logAction(req.user, "CREATE_FINE", "FINE", fineId, { fineDate, plate, driver, status, documentName });
     return res.status(201).json({ item: queryFines().find((item) => item.id === fineId) });
   });
 
@@ -3816,22 +4979,24 @@ async function start() {
     }
 
     const fineDate = normalizeText(req.body.fineDate || existing.fine_date);
-    const plate = normalizeText(req.body.plate || existing.plate).toUpperCase();
+    const plate = normalizePlate(req.body.plate || existing.plate);
     const driver = normalizeText(req.body.driver || existing.driver);
     const status = normalizeFineStatus(req.body.status || existing.status, "OPEN");
     const amount = toNumber(req.body.amount ?? existing.amount);
     const notes = normalizeText(req.body.notes || existing.notes);
+    const documentName = normalizeText(req.body.documentName || req.body.document || existing.document_name);
+    const documentUrl = normalizeText(req.body.documentUrl || req.body.attachmentUrl || existing.document_url);
 
     write(
       `
         UPDATE fines
-        SET fine_date = ?, plate = ?, driver = ?, status = ?, amount = ?, notes = ?, updated_at = ?
+        SET fine_date = ?, plate = ?, driver = ?, status = ?, amount = ?, notes = ?, document_name = ?, document_url = ?, updated_at = ?
         WHERE id = ?
       `,
-      [fineDate, plate, driver, status, amount, notes, nowIso(), fineId]
+      [fineDate, plate, driver, status, amount, notes, documentName, documentUrl, nowIso(), fineId]
     );
 
-    logAction(req.user, "UPDATE_FINE", "FINE", fineId, { fineDate, plate, driver, status });
+    logAction(req.user, "UPDATE_FINE", "FINE", fineId, { fineDate, plate, driver, status, documentName });
     return res.json({ item: queryFines().find((item) => item.id === fineId) });
   });
 
