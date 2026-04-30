@@ -25,6 +25,8 @@ const { parseInvoiceXml, parseSpreadsheet, parseEml, analyzeEmailPayload } = req
 
 const PORT = Number(process.env.PORT || 3000);
 const DASHBOARD_PERIODS = [7, 15, 30, 60, 90];
+const NOTE_FINANCE_DEADLINE_DAYS = 14;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const USER_STATUSES = {
   PENDING: "PENDING",
   ACTIVE: "ACTIVE",
@@ -306,6 +308,10 @@ function normalizeNoteStatus(value, fallback = "NEW") {
 
 function normalizeNoteCategory(value, fallback = "OTHER") {
   return normalizeEnum(value, NOTE_CATEGORY_ALIASES, fallback);
+}
+
+function normalizeTaxId(value) {
+  return String(value ?? "").replace(/\D+/g, "");
 }
 
 function normalizeInventoryMovement(value, fallback = "IN") {
@@ -1048,6 +1054,7 @@ function mapNoteRow(row) {
   return {
     id: Number(row.id),
     supplierName: row.supplier_name,
+    supplierTaxId: row.supplier_tax_id || "",
     totalValue: Number(row.total_value || 0),
     danfe: row.danfe,
     xmlKey: row.xml_key,
@@ -1057,6 +1064,7 @@ function mapNoteRow(row) {
     source: row.source,
     financeNotes: row.finance_notes,
     sentToFinanceAt: row.sent_to_finance_at,
+    archivedAt: row.archived_at || "",
     sentToFinanceBy: row.sent_to_finance_by ? Number(row.sent_to_finance_by) : null,
     sentToFinanceByName: row.sent_to_finance_by_name || "",
     createdAt: row.created_at,
@@ -1064,6 +1072,86 @@ function mapNoteRow(row) {
     createdByName: row.created_by_name || "",
     updatedByName: row.updated_by_name || "",
   };
+}
+
+function findExistingNoteForImport(payload = {}) {
+  const xmlKey = normalizeText(payload.xmlKey || payload.xml_key);
+  if (xmlKey) {
+    const byXmlKey = get("SELECT * FROM notes WHERE xml_key = ? LIMIT 1", [xmlKey]);
+    if (byXmlKey) {
+      return byXmlKey;
+    }
+  }
+
+  const danfe = normalizeText(payload.danfe);
+  const supplierTaxId = normalizeTaxId(payload.supplierTaxId || payload.supplier_tax_id);
+  if (danfe && supplierTaxId) {
+    const byDanfeAndTaxId = get(
+      "SELECT * FROM notes WHERE coalesce(danfe, '') = ? AND coalesce(supplier_tax_id, '') = ? LIMIT 1",
+      [danfe, supplierTaxId]
+    );
+    if (byDanfeAndTaxId) {
+      return byDanfeAndTaxId;
+    }
+  }
+
+  const supplierName = normalizeText(payload.supplierName || payload.supplier_name);
+  const totalValue = toNumber(payload.totalValue ?? payload.total_value);
+  if (supplierName && totalValue > 0) {
+    const bySupplierAndValue = get(
+      `
+        SELECT *
+        FROM notes
+        WHERE lower(coalesce(supplier_name, '')) = lower(?)
+          AND abs(coalesce(total_value, 0) - ?) < 0.005
+        LIMIT 1
+      `,
+      [supplierName, totalValue]
+    );
+    if (bySupplierAndValue) {
+      return bySupplierAndValue;
+    }
+  }
+
+  return null;
+}
+
+function autoArchiveExpiredNotes() {
+  const candidates = all(
+    `
+      SELECT id, sent_to_finance_at
+      FROM notes
+      WHERE archived_at IS NULL
+        AND sent_to_finance_at IS NOT NULL
+        AND trim(sent_to_finance_at) <> ''
+    `
+  );
+
+  const expiredIds = candidates
+    .filter((row) => {
+      const sentAt = Date.parse(String(row.sent_to_finance_at || ""));
+      return Number.isFinite(sentAt) && Date.now() - sentAt >= NOTE_FINANCE_DEADLINE_DAYS * DAY_IN_MS;
+    })
+    .map((row) => Number(row.id))
+    .filter(Boolean);
+
+  if (!expiredIds.length) {
+    return;
+  }
+
+  const timestamp = nowIso();
+  transaction(() => {
+    expiredIds.forEach((noteId) => {
+      write(
+        `
+          UPDATE notes
+          SET archived_at = ?, status = 'FINALIZED', updated_at = ?
+          WHERE id = ?
+        `,
+        [timestamp, timestamp, noteId]
+      );
+    });
+  });
 }
 
 function createOrUpdateNote(payload, user, options = {}) {
@@ -1074,6 +1162,9 @@ function createOrUpdateNote(payload, user, options = {}) {
   }
 
   const xmlKey = normalizeText(payload.xmlKey || payload.xml_key);
+  const supplierTaxId = normalizeTaxId(
+    payload.supplierTaxId || payload.supplier_tax_id || existingNote?.supplier_tax_id
+  );
   if (!existingNote && xmlKey) {
     existingNote = get("SELECT * FROM notes WHERE xml_key = ?", [xmlKey]) || null;
   }
@@ -1105,12 +1196,24 @@ function createOrUpdateNote(payload, user, options = {}) {
     ? payload.sentToFinanceBy || payload.sent_to_finance_by || existingNote?.sent_to_finance_by || null
     : payload.sentToFinanceBy || payload.sent_to_finance_by || null;
 
+  let archivedAt = preserveExistingWorkflow
+    ? normalizeText(payload.archivedAt || payload.archived_at || existingNote?.archived_at)
+    : normalizeText(payload.archivedAt || payload.archived_at);
+
   if (status === "SENT_FINANCE") {
     sentToFinanceAt = sentToFinanceAt || existingNote?.sent_to_finance_at || timestamp;
     sentToFinanceBy = sentToFinanceBy || existingNote?.sent_to_finance_by || user?.id || null;
   } else if (!payload.keepFinanceInfo && !preserveExistingWorkflow) {
     sentToFinanceAt = "";
     sentToFinanceBy = null;
+  }
+
+  if (sentToFinanceAt && !normalizeText(payload.status) && status !== "FINALIZED") {
+    archivedAt = archivedAt || existingNote?.archived_at || "";
+  }
+
+  if (!sentToFinanceAt) {
+    archivedAt = "";
   }
 
   let noteId = existingNote ? Number(existingNote.id) : 0;
@@ -1120,13 +1223,14 @@ function createOrUpdateNote(payload, user, options = {}) {
       write(
         `
           UPDATE notes
-          SET supplier_name = ?, total_value = ?, danfe = ?, xml_key = ?, issue_date = ?,
+          SET supplier_name = ?, supplier_tax_id = ?, total_value = ?, danfe = ?, xml_key = ?, issue_date = ?,
               category = ?, status = ?, source = ?, finance_notes = ?,
-              sent_to_finance_at = ?, sent_to_finance_by = ?, updated_by = ?, updated_at = ?
+              sent_to_finance_at = ?, archived_at = ?, sent_to_finance_by = ?, updated_by = ?, updated_at = ?
           WHERE id = ?
         `,
         [
           supplierName,
+          supplierTaxId || null,
           totalValue,
           danfe,
           xmlKey,
@@ -1136,6 +1240,7 @@ function createOrUpdateNote(payload, user, options = {}) {
           source,
           financeNotes,
           sentToFinanceAt || null,
+          archivedAt || null,
           sentToFinanceBy || null,
           user?.id || null,
           timestamp,
@@ -1146,13 +1251,14 @@ function createOrUpdateNote(payload, user, options = {}) {
       noteId = insert(
         `
           INSERT INTO notes (
-            supplier_name, total_value, danfe, xml_key, issue_date, category, status, source,
-            finance_notes, sent_to_finance_at, sent_to_finance_by, created_by, updated_by, created_at, updated_at
+            supplier_name, supplier_tax_id, total_value, danfe, xml_key, issue_date, category, status, source,
+            finance_notes, sent_to_finance_at, archived_at, sent_to_finance_by, created_by, updated_by, created_at, updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           supplierName,
+          supplierTaxId || null,
           totalValue,
           danfe,
           xmlKey,
@@ -1162,6 +1268,7 @@ function createOrUpdateNote(payload, user, options = {}) {
           source,
           financeNotes,
           sentToFinanceAt || null,
+          archivedAt || null,
           sentToFinanceBy || null,
           user?.id || null,
           user?.id || null,
@@ -1201,6 +1308,8 @@ function createOrUpdateNote(payload, user, options = {}) {
 }
 
 function queryNotes(filters = {}) {
+  autoArchiveExpiredNotes();
+
   let sql = `
     SELECT n.*, sent_user.name AS sent_to_finance_by_name, created_user.name AS created_by_name,
            updated_user.name AS updated_by_name
@@ -1228,7 +1337,19 @@ function queryNotes(filters = {}) {
     params.push(search, search);
   }
 
-  sql += " ORDER BY n.updated_at DESC, n.id DESC";
+  const workflow = normalizeKey(filters.workflow);
+  if (workflow === "active") {
+    sql += " AND n.archived_at IS NULL AND (n.sent_to_finance_at IS NULL OR trim(n.sent_to_finance_at) = '')";
+  } else if (workflow === "finance") {
+    sql += " AND n.archived_at IS NULL AND n.sent_to_finance_at IS NOT NULL AND trim(n.sent_to_finance_at) <> ''";
+  } else if (workflow === "archived") {
+    sql += " AND n.archived_at IS NOT NULL AND trim(n.archived_at) <> ''";
+  }
+
+  sql +=
+    workflow === "archived"
+      ? " ORDER BY coalesce(n.archived_at, n.updated_at) DESC, n.id DESC"
+      : " ORDER BY n.updated_at DESC, n.id DESC";
 
   return all(sql, params).map(mapNoteRow);
 }
@@ -1518,6 +1639,7 @@ function getFuelStorageByProductId(productId) {
 
 function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
   const selectedPlate = normalizeText(filters.plate).toUpperCase();
+  const focusPlate = normalizeText(filters.focusPlate).toUpperCase();
   const period = resolveDashboardPeriod(filters);
   const { periodDays, dayRange, startDay, endDay, isCustomRange } = period;
   const availablePlates = all(
@@ -1623,116 +1745,118 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
     consumptionParams
   );
 
-  const odometerRows = all(
+  const fuelHistoryRows = all(
     `
-      SELECT plate, quantity, odometer_km, fuel_kind, occurred_at
+      SELECT id, plate, quantity, odometer_km, fuel_kind, storage_name, occurred_at
       FROM fuel_records
       WHERE type = 'EXIT'
         AND trim(COALESCE(plate, '')) <> ''
-        AND odometer_km IS NOT NULL
         ${selectedPlate ? "AND plate = ?" : ""}
       ORDER BY plate ASC, occurred_at ASC, id ASC
     `,
     selectedPlate ? [selectedPlate] : []
   );
 
-  const previousByPlate = new Map();
+  const corrections = queryVehicleOdometerCorrections(
+    selectedPlate ? { plate: selectedPlate, sourceType: "FUEL" } : { sourceType: "FUEL" }
+  );
+  const correctionsByPlate = corrections.reduce((result, item) => {
+    const plate = normalizeText(item.plate).toUpperCase();
+    if (!plate) {
+      return result;
+    }
+    if (!result.has(plate)) {
+      result.set(plate, []);
+    }
+    result.get(plate).push(item);
+    return result;
+  }, new Map());
+  const recordsByPlate = fuelHistoryRows.reduce((result, row) => {
+    const plate = normalizeText(row.plate).toUpperCase();
+    if (!plate) {
+      return result;
+    }
+    if (!result.has(plate)) {
+      result.set(plate, []);
+    }
+    result.get(plate).push({
+      id: Number(row.id),
+      plate,
+      quantity: Number(row.quantity || 0),
+      odometerKm: row.odometer_km === null || row.odometer_km === undefined ? null : Number(row.odometer_km),
+      fuelKind: row.fuel_kind || "",
+      storageName: row.storage_name || "",
+      occurredAt: row.occurred_at,
+    });
+    return result;
+  }, new Map());
   const efficiencyByPlate = new Map();
   const odometerIssues = [];
   const outlierSegments = [];
 
-  for (const row of odometerRows) {
-    const plate = normalizeText(row.plate).toUpperCase();
-    const odometerKm = Number(row.odometer_km || 0);
-    const quantity = Number(row.quantity || 0);
-    const occurredAt = row.occurred_at;
-    const occurredDay = String(occurredAt || "").slice(0, 10);
-    const previous = previousByPlate.get(plate);
+  recordsByPlate.forEach((records, plate) => {
+    const history = buildCorrectedFuelHistory(records, correctionsByPlate.get(plate) || []);
+    const vehicleSummary = summarizeVehicleEfficiencyHistory(history, startDay, endDay);
+    efficiencyByPlate.set(plate, {
+      plate,
+      ...vehicleSummary,
+    });
 
-    if (
-      previous &&
-      occurredDay >= startDay &&
-      occurredDay <= endDay
-    ) {
-      if (odometerKm <= previous.odometerKm) {
+    vehicleSummary.periodRecords.forEach((record) => {
+      if (record.kmInconsistent) {
         odometerIssues.push({
           type: "KM_ERROR",
           severity: "CRITICAL",
           plate,
-          occurredAt,
-          currentOdometerKm: odometerKm,
-          previousOdometerKm: previous.odometerKm,
+          occurredAt: record.occurredAt,
+          currentOdometerKm:
+            record.effectiveKm === null || record.effectiveKm === undefined ? 0 : Number(record.effectiveKm),
+          previousOdometerKm:
+            record.referenceKmUsed === null || record.referenceKmUsed === undefined
+              ? 0
+              : Number(record.referenceKmUsed),
           title: `KM inconsistente: ${plate}`,
-          description: `Leitura atual ${odometerKm} km menor ou igual a anterior ${previous.odometerKm} km.`,
+          description: `Leitura utilizada ${Number(record.effectiveKm || 0).toFixed(0)} km menor ou igual a anterior ${Number(record.referenceKmUsed || 0).toFixed(0)} km.`,
         });
-      } else if (quantity > 0) {
-        const distanceKm = odometerKm - previous.odometerKm;
-        const kmPerLiter = distanceKm / quantity;
-        const currentStats = efficiencyByPlate.get(plate) || {
-          plate,
-          totalDistanceKm: 0,
-          totalLiters: 0,
-          samples: 0,
-          lastOdometerKm: 0,
-          lastFuelAt: "",
-          lastFuelKind: "",
-          lastFuelQuantity: 0,
-          segments: [],
-        };
-
-        currentStats.totalDistanceKm += distanceKm;
-        currentStats.totalLiters += quantity;
-        currentStats.samples += 1;
-        currentStats.lastOdometerKm = odometerKm;
-        currentStats.lastFuelAt = occurredAt;
-        currentStats.lastFuelKind = row.fuel_kind || "";
-        currentStats.lastFuelQuantity = quantity;
-        currentStats.segments.push({
-          date: occurredDay,
-          distanceKm,
-          liters: quantity,
-          kmPerLiter,
-        });
-        efficiencyByPlate.set(plate, currentStats);
-
-        if (kmPerLiter <= 2.5 || kmPerLiter >= 8) {
-          const severity = kmPerLiter <= 2.5 ? "CRITICAL" : "WARNING";
-          outlierSegments.push({
-            type: "OUTLIER_CONSUMPTION",
-            severity,
-            plate,
-            occurredAt,
-            distanceKm,
-            liters: quantity,
-            kmPerLiter,
-            title:
-              severity === "CRITICAL"
-                ? `Consumo fora do padrao: ${plate}`
-                : `Media acima do padrao: ${plate}`,
-            description: `${distanceKm} km com ${quantity.toFixed(2)} L (${kmPerLiter.toFixed(2)} km/L).`,
-          });
-        }
       }
-    }
 
-    previousByPlate.set(plate, {
-      odometerKm,
-      occurredAt,
+      if (record.averageOutOfPattern && Number(record.averageKmPerLiter || 0) > 0) {
+        const kmPerLiter = Number(record.averageKmPerLiter || 0);
+        const severity = kmPerLiter <= 2.5 ? "CRITICAL" : "WARNING";
+        outlierSegments.push({
+          type: "OUTLIER_CONSUMPTION",
+          severity,
+          plate,
+          occurredAt: record.occurredAt,
+          distanceKm: Number(record.distanceKm || 0),
+          liters: Number(record.quantity || 0),
+          kmPerLiter,
+          title:
+            severity === "CRITICAL"
+              ? `Consumo fora do padrao: ${plate}`
+              : `Media fora da faixa: ${plate}`,
+          description: `${Number(record.distanceKm || 0).toFixed(0)} km com ${Number(record.quantity || 0).toFixed(2)} L (${kmPerLiter.toFixed(2)} km/L).`,
+        });
+      }
     });
-  }
+  });
 
   const efficiencyRanking = Array.from(efficiencyByPlate.values())
+    .filter((item) => Number(item.totalLiters || 0) > 0)
     .map((item) => ({
       plate: item.plate,
       totalDistanceKm: item.totalDistanceKm,
       totalLiters: item.totalLiters,
       samples: item.samples,
-      kmPerLiter: item.totalLiters > 0 ? item.totalDistanceKm / item.totalLiters : 0,
+      kmPerLiter: item.kmPerLiter,
+      currentKmPerLiter: item.currentKmPerLiter,
+      recentAverageKmPerLiter: item.recentAverageKmPerLiter,
       lastOdometerKm: item.lastOdometerKm,
       lastFuelAt: item.lastFuelAt,
       lastFuelKind: item.lastFuelKind,
       lastFuelQuantity: item.lastFuelQuantity,
-      segments: item.segments.slice(-8),
+      segments: item.segments,
+      records: item.records,
     }))
     .sort((left, right) => right.kmPerLiter - left.kmPerLiter || left.plate.localeCompare(right.plate));
   const efficiencySummary = efficiencyRanking.reduce(
@@ -1749,15 +1873,16 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
       ? efficiencySummary.totalDistanceKm / efficiencySummary.totalLiters
       : 0;
 
+  const selectedVehiclePlate = selectedPlate || focusPlate;
   let selectedVehicle =
-    (selectedPlate && efficiencyRanking.find((item) => item.plate === selectedPlate)) ||
-    efficiencyRanking[0] ||
+    (selectedVehiclePlate && efficiencyByPlate.get(selectedVehiclePlate)) ||
+    (efficiencyRanking[0] ? efficiencyByPlate.get(efficiencyRanking[0].plate) : null) ||
     null;
 
-  if (!selectedVehicle && selectedPlate) {
+  if (!selectedVehicle && selectedVehiclePlate) {
     const latestRecord = get(
       `
-        SELECT plate, odometer_km, quantity, fuel_kind, occurred_at
+        SELECT id, plate, odometer_km, quantity, fuel_kind, storage_name, occurred_at
         FROM fuel_records
         WHERE type = 'EXIT'
           AND plate = ?
@@ -1766,24 +1891,53 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
         ORDER BY occurred_at DESC, id DESC
         LIMIT 1
       `,
-      [selectedPlate, startDay, endDay]
+      [selectedVehiclePlate, startDay, endDay]
     );
 
     if (latestRecord) {
+      const correction =
+        (correctionsByPlate.get(selectedVehiclePlate) || []).find(
+          (item) => item.sourceType === "FUEL" && Number(item.sourceId || 0) === Number(latestRecord.id)
+        ) || null;
+      const originalKm =
+        latestRecord.odometer_km === null || latestRecord.odometer_km === undefined
+          ? null
+          : Number(latestRecord.odometer_km);
+      const correctedKm = correction ? Number(correction.correctedKm || 0) : null;
       selectedVehicle = {
-        plate: selectedPlate,
+        plate: selectedVehiclePlate,
         totalDistanceKm: 0,
         totalLiters: Number(latestRecord.quantity || 0),
         samples: 0,
         kmPerLiter: 0,
-        lastOdometerKm:
-          latestRecord.odometer_km === null || latestRecord.odometer_km === undefined
-            ? 0
-            : Number(latestRecord.odometer_km),
+        currentKmPerLiter: 0,
+        recentAverageKmPerLiter: 0,
+        lastOdometerKm: correctedKm ?? originalKm ?? 0,
         lastFuelAt: latestRecord.occurred_at,
         lastFuelKind: latestRecord.fuel_kind || "",
         lastFuelQuantity: Number(latestRecord.quantity || 0),
         segments: [],
+        records: [
+          {
+            id: Number(latestRecord.id),
+            plate: selectedVehiclePlate,
+            occurredAt: latestRecord.occurred_at,
+            fuelKind: latestRecord.fuel_kind || "",
+            storageName: latestRecord.storage_name || "",
+            quantity: Number(latestRecord.quantity || 0),
+            originalKm,
+            correctedKm,
+            effectiveKm: correctedKm ?? originalKm,
+            referenceKmUsed: null,
+            distanceKm: null,
+            averageKmPerLiter: null,
+            kmInconsistent: false,
+            averageOutOfPattern: false,
+            usedInAverage: false,
+            correctionId: correction ? Number(correction.id) : null,
+            correctionReason: correction?.reason || "",
+          },
+        ],
       };
     }
   }
@@ -1802,7 +1956,7 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
 
   const recentFuelRecords = all(
     `
-      SELECT plate, quantity, fuel_kind, storage_name, occurred_at, odometer_km
+      SELECT id, plate, quantity, fuel_kind, storage_name, occurred_at, odometer_km
       FROM fuel_records
       WHERE type = 'EXIT'
         AND trim(COALESCE(plate, '')) <> ''
@@ -1814,6 +1968,7 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
     `,
     consumptionParams
   ).map((row) => ({
+    id: Number(row.id),
     plate: row.plate,
     quantity: Number(row.quantity || 0),
     fuelKind: row.fuel_kind || "",
@@ -1870,6 +2025,7 @@ function queryFuelAnalytics(filters = {}, fuelOverview = queryFuelOverview()) {
     periodEnd: endDay,
     isCustomRange,
     selectedPlate,
+    focusPlate: selectedVehicle?.plate || selectedVehiclePlate || "",
     availablePlates,
     consumptionSeries,
     totalConsumptionLiters,
@@ -2698,6 +2854,7 @@ function buildCorrectedFuelHistory(records = [], corrections = []) {
         effectiveKm: correction ? correction.correctedKm : record.odometerKm,
         correction,
         distanceKm: null,
+        referenceKmUsed: null,
         averageKmPerLiter: null,
         kmInconsistent: false,
         averageOutOfPattern: false,
@@ -2719,6 +2876,7 @@ function buildCorrectedFuelHistory(records = [], corrections = []) {
     }
 
     const distanceKm = Number(record.effectiveKm) - Number(referenceKm);
+    record.referenceKmUsed = referenceKm;
     if (distanceKm <= 0) {
       record.kmInconsistent = true;
       return;
@@ -2762,6 +2920,91 @@ function buildCorrectedFuelHistory(records = [], corrections = []) {
     averageKmPerLiter: totalLiters > 0 ? totalDistanceKm / totalLiters : 0,
     inconsistentCount: recordsDesc.filter((item) => item.kmInconsistent).length,
     outlierCount: recordsDesc.filter((item) => item.averageOutOfPattern).length,
+  };
+}
+
+function summarizeVehicleEfficiencyHistory(history = {}, periodStart = "", periodEnd = "") {
+  const recordsDesc = Array.isArray(history.recordsDesc) ? history.recordsDesc : [];
+  const periodRecords = recordsDesc.filter((item) => {
+    const day = String(item.occurredAt || "").slice(0, 10);
+    return day >= periodStart && day <= periodEnd;
+  });
+  const validSegmentsDesc = periodRecords.filter(
+    (item) =>
+      Number.isFinite(Number(item.averageKmPerLiter)) &&
+      Number(item.averageKmPerLiter) > 0 &&
+      Number(item.distanceKm || 0) > 0 &&
+      !item.kmInconsistent &&
+      !item.averageOutOfPattern
+  );
+  const totalDistanceKm = validSegmentsDesc.reduce((total, item) => total + Number(item.distanceKm || 0), 0);
+  const totalLiters = validSegmentsDesc.reduce((total, item) => total + Number(item.quantity || 0), 0);
+  const recentWindow = validSegmentsDesc.slice(0, 3);
+  const latestRecord = periodRecords[0] || recordsDesc[0] || null;
+
+  return {
+    periodRecords,
+    validSegmentsDesc,
+    totalDistanceKm,
+    totalLiters,
+    samples: validSegmentsDesc.length,
+    kmPerLiter: totalLiters > 0 ? totalDistanceKm / totalLiters : 0,
+    currentKmPerLiter: recentWindow[0] ? Number(recentWindow[0].averageKmPerLiter || 0) : 0,
+    recentAverageKmPerLiter: recentWindow.length
+      ? recentWindow.reduce((total, item) => total + Number(item.averageKmPerLiter || 0), 0) / recentWindow.length
+      : 0,
+    lastOdometerKm:
+      latestRecord && latestRecord.effectiveKm !== null && latestRecord.effectiveKm !== undefined
+        ? Number(latestRecord.effectiveKm)
+        : 0,
+    lastFuelAt: latestRecord?.occurredAt || "",
+    lastFuelKind: latestRecord?.fuelKind || "",
+    lastFuelQuantity: latestRecord ? Number(latestRecord.quantity || 0) : 0,
+    segments: validSegmentsDesc
+      .slice(0, 8)
+      .slice()
+      .reverse()
+      .map((item) => ({
+        date: String(item.occurredAt || "").slice(0, 10),
+        distanceKm: Number(item.distanceKm || 0),
+        liters: Number(item.quantity || 0),
+        kmPerLiter: Number(item.averageKmPerLiter || 0),
+        fuelKind: item.fuelKind || "",
+      })),
+    records: periodRecords.slice(0, 8).map((item) => ({
+      id: Number(item.id),
+      plate: item.plate || "",
+      occurredAt: item.occurredAt,
+      fuelKind: item.fuelKind || "",
+      storageName: item.storageName || "",
+      quantity: Number(item.quantity || 0),
+      originalKm:
+        item.originalKm === null || item.originalKm === undefined ? null : Number(item.originalKm),
+      correctedKm:
+        item.correctedKm === null || item.correctedKm === undefined ? null : Number(item.correctedKm),
+      effectiveKm:
+        item.effectiveKm === null || item.effectiveKm === undefined ? null : Number(item.effectiveKm),
+      referenceKmUsed:
+        item.referenceKmUsed === null || item.referenceKmUsed === undefined
+          ? null
+          : Number(item.referenceKmUsed),
+      distanceKm:
+        item.distanceKm === null || item.distanceKm === undefined ? null : Number(item.distanceKm),
+      averageKmPerLiter:
+        item.averageKmPerLiter === null || item.averageKmPerLiter === undefined
+          ? null
+          : Number(item.averageKmPerLiter),
+      kmInconsistent: Boolean(item.kmInconsistent),
+      averageOutOfPattern: Boolean(item.averageOutOfPattern),
+      usedInAverage:
+        Number.isFinite(Number(item.averageKmPerLiter)) &&
+        Number(item.averageKmPerLiter) > 0 &&
+        Number(item.distanceKm || 0) > 0 &&
+        !item.kmInconsistent &&
+        !item.averageOutOfPattern,
+      correctionId: item.correction ? Number(item.correction.id) : null,
+      correctionReason: item.correction?.reason || "",
+    })),
   };
 }
 
@@ -3859,8 +4102,10 @@ async function start() {
   });
 
   app.get("/api/dashboard", requireAuth, (req, res) => {
+    autoArchiveExpiredNotes();
     const period = resolveDashboardPeriod(req.query);
     const selectedPlate = normalizeText(req.query.plate).toUpperCase();
+    const focusPlate = normalizeText(req.query.focusPlate).toUpperCase();
     const pendingNotes = get(
       "SELECT COUNT(*) AS total FROM notes WHERE status IN ('NEW', 'PENDING_ACK')"
     );
@@ -3873,7 +4118,7 @@ async function start() {
     const activeVehicles = get("SELECT COUNT(*) AS total FROM vehicles WHERE active = 1");
     const fuelOverview = queryFuelOverview();
     const fuelAnalytics = queryFuelAnalytics(
-      { days: period.periodDays, from: req.query.from, to: req.query.to, plate: selectedPlate },
+      { days: period.periodDays, from: req.query.from, to: req.query.to, plate: selectedPlate, focusPlate },
       fuelOverview
     );
     const lowStock = queryProducts("", { stockType: "COMMON" }).filter((item) => item.lowStock);
@@ -3927,6 +4172,106 @@ async function start() {
       todaySchedules,
       analytics: fuelAnalytics,
     });
+  });
+
+  app.put("/api/dashboard/fuel-records/:id/odometer", requireAuth, (req, res) => {
+    const recordId = Number(req.params.id);
+    const fuelRecord = get(
+      `
+        SELECT *
+        FROM fuel_records
+        WHERE id = ?
+          AND type = 'EXIT'
+        LIMIT 1
+      `,
+      [recordId]
+    );
+
+    if (!fuelRecord) {
+      return sendError(res, 404, "Abastecimento nao encontrado.");
+    }
+
+    const rawOdometer = req.body.odometerKm;
+    const nextOdometer =
+      rawOdometer === null || rawOdometer === undefined || rawOdometer === ""
+        ? null
+        : toNumber(rawOdometer);
+    const reason = normalizeText(req.body.reason || "");
+
+    if (nextOdometer !== null && (!Number.isFinite(nextOdometer) || nextOdometer < 0)) {
+      return sendError(res, 400, "Informe um KM valido.");
+    }
+
+    const originalKm =
+      fuelRecord.odometer_km === null || fuelRecord.odometer_km === undefined
+        ? null
+        : Number(fuelRecord.odometer_km);
+    const plate = normalizePlate(fuelRecord.plate);
+    const existingCorrection = get(
+      `
+        SELECT *
+        FROM vehicle_odometer_corrections
+        WHERE source_type = 'FUEL'
+          AND source_id = ?
+        LIMIT 1
+      `,
+      [recordId]
+    );
+    const timestamp = nowIso();
+
+    transaction(() => {
+      if (originalKm === null) {
+        write(
+          `
+            UPDATE fuel_records
+            SET odometer_km = ?
+            WHERE id = ?
+          `,
+          [nextOdometer, recordId]
+        );
+      } else if (nextOdometer === null || Number(nextOdometer) === Number(originalKm)) {
+        if (existingCorrection) {
+          write("DELETE FROM vehicle_odometer_corrections WHERE id = ?", [Number(existingCorrection.id)]);
+        }
+      } else if (existingCorrection) {
+        write(
+          `
+            UPDATE vehicle_odometer_corrections
+            SET original_km = ?, corrected_km = ?, reason = ?, created_by = ?, created_at = ?
+            WHERE id = ?
+          `,
+          [originalKm, nextOdometer, reason, req.user.id, timestamp, Number(existingCorrection.id)]
+        );
+      } else {
+        insert(
+          `
+            INSERT INTO vehicle_odometer_corrections (
+              vehicle_id, plate, source_type, source_id, original_km, corrected_km, reason, created_by, created_at
+            )
+            VALUES (?, ?, 'FUEL', ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            fuelRecord.vehicle_id ? Number(fuelRecord.vehicle_id) : null,
+            plate,
+            recordId,
+            originalKm,
+            nextOdometer,
+            reason,
+            req.user.id,
+            timestamp,
+          ]
+        );
+      }
+
+      logAction(req.user, "UPDATE_FUEL_ODOMETER", "FUEL", recordId, {
+        plate,
+        originalKm,
+        odometerKm: nextOdometer,
+        reason,
+      });
+    });
+
+    return res.json({ ok: true });
   });
 
   app.get("/api/settings/company", requireAuth, (req, res) => {
@@ -4037,30 +4382,64 @@ async function start() {
 
     try {
       const created = [];
+      const ignored = [];
+      const errors = [];
 
       transaction(() => {
         for (const file of files) {
-          const parsed = parseInvoiceXml(String(file.content || ""), String(file.name || ""));
-          const note = createOrUpdateNote(
-            {
-              supplierName: parsed.supplierName,
-              totalValue: parsed.totalValue,
-              danfe: parsed.danfe,
-              xmlKey: parsed.xmlKey,
-              issueDate: parsed.issueDate,
-              status: "NEW",
-              source: "XML",
-            },
-            req.user,
-            { source: "XML", skipLog: true, preferExistingWorkflow: true }
-          );
-          created.push(note);
+          try {
+            const parsed = parseInvoiceXml(String(file.content || ""), String(file.name || ""));
+            const duplicate = findExistingNoteForImport(parsed);
+            if (duplicate) {
+              ignored.push({
+                fileName: String(file.name || ""),
+                supplierName: parsed.supplierName || duplicate.supplier_name || "",
+                danfe: parsed.danfe || duplicate.danfe || "",
+                reason: "Duplicada por numero/CNPJ ou fornecedor/valor.",
+              });
+              continue;
+            }
+
+            const note = createOrUpdateNote(
+              {
+                supplierName: parsed.supplierName,
+                supplierTaxId: parsed.supplierTaxId,
+                totalValue: parsed.totalValue,
+                danfe: parsed.danfe,
+                xmlKey: parsed.xmlKey,
+                issueDate: parsed.issueDate,
+                status: "NEW",
+                source: "XML",
+              },
+              req.user,
+              { source: "XML", skipLog: true }
+            );
+            created.push(note);
+          } catch (error) {
+            errors.push({
+              fileName: String(file.name || ""),
+              message: error.message,
+            });
+          }
         }
 
-        logAction(req.user, "IMPORT_XML_NOTES", "NOTE", null, { total: created.length });
+        logAction(req.user, "IMPORT_XML_NOTES", "NOTE", null, {
+          imported: created.length,
+          ignored: ignored.length,
+          errors: errors.length,
+        });
       });
 
-      return res.json({ items: created });
+      return res.json({
+        items: created,
+        ignored,
+        errors,
+        summary: {
+          imported: created.length,
+          ignored: ignored.length,
+          errors: errors.length,
+        },
+      });
     } catch (error) {
       return sendError(res, 400, `Falha ao importar XML: ${error.message}`);
     }
@@ -4081,31 +4460,63 @@ async function start() {
       }
 
       const created = [];
+      const ignored = [];
+      const errors = [];
 
       transaction(() => {
-        for (const row of rows) {
-          const note = createOrUpdateNote(
-            {
-              supplierName: row.supplierName,
-              totalValue: row.totalValue,
-              danfe: row.danfe,
-              issueDate: row.issueDate,
-              category: row.category,
-              status: row.status || "NEW",
-              source: "SPREADSHEET",
-            },
-            req.user,
-            { source: "SPREADSHEET", skipLog: true, preferExistingWorkflow: true }
-          );
-          created.push(note);
-        }
+        rows.forEach((row, index) => {
+          try {
+            const duplicate = findExistingNoteForImport(row);
+            if (duplicate) {
+              ignored.push({
+                row: index + 1,
+                supplierName: row.supplierName || duplicate.supplier_name || "",
+                danfe: row.danfe || duplicate.danfe || "",
+                reason: "Duplicada por numero/CNPJ ou fornecedor/valor.",
+              });
+              return;
+            }
+
+            const note = createOrUpdateNote(
+              {
+                supplierName: row.supplierName,
+                supplierTaxId: row.supplierTaxId,
+                totalValue: row.totalValue,
+                danfe: row.danfe,
+                issueDate: row.issueDate,
+                category: row.category,
+                status: row.status || "NEW",
+                source: "PLANILHA",
+              },
+              req.user,
+              { source: "PLANILHA", skipLog: true }
+            );
+            created.push(note);
+          } catch (error) {
+            errors.push({
+              row: index + 1,
+              message: error.message,
+            });
+          }
+        });
 
         logAction(req.user, "IMPORT_SPREADSHEET_NOTES", "NOTE", null, {
-          total: created.length,
+          imported: created.length,
+          ignored: ignored.length,
+          errors: errors.length,
         });
       });
 
-      return res.json({ items: created });
+      return res.json({
+        items: created,
+        ignored,
+        errors,
+        summary: {
+          imported: created.length,
+          ignored: ignored.length,
+          errors: errors.length,
+        },
+      });
     } catch (error) {
       return sendError(res, 400, `Falha ao importar planilha: ${error.message}`);
     }

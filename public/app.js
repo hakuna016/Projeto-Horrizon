@@ -10,6 +10,7 @@ const PRINT_JOB_STORAGE_KEY = "horizon-print-jobs-v1";
 const PRINT_JOB_TTL_MS = 15 * 60 * 1000;
 const PRINT_PAGE_FILENAME = "print.html";
 const SIDEBAR_STORAGE_KEY = "horizon-sidebar-mode";
+const DASHBOARD_FILTERS_STORAGE_KEY = "horizon-dashboard-filters-v2";
 const SIDEBAR_MOBILE_MAX_WIDTH = 780;
 const SIDEBAR_TABLET_MAX_WIDTH = 1100;
 const runtimeState = {
@@ -79,23 +80,15 @@ const DASHBOARD_TITLE_ICONS = ["analytics", "efficiency", "vehicle", "fuel", "no
 const DASHBOARD_VIEW_META = {
   overview: {
     label: "Visao Geral",
-    description: "Resumo compacto da operacao com foco nas decisoes do dia.",
-  },
-  vehicle: {
-    label: "Por Veiculo",
-    description: "Leitura individual por placa com consumo recente, media KM/L e sinais de inconsistencia.",
+    description: "Combustivel, eficiencia media e alertas com foco na decisao rapida do dia.",
   },
   fuel: {
     label: "Combustivel",
-    description: "Comparativo entre S-10 e S-500 para identificar volume, media e distribuicao.",
+    description: "Tanques, consumo por tipo e equilibrio do estoque operacional.",
   },
-  period: {
-    label: "Periodo",
-    description: "Resumo analitico do intervalo selecionado para apoiar fechamento e conferencia.",
-  },
-  alerts: {
-    label: "Alertas",
-    description: "Fila priorizada de inconsistencias, erros de KM e consumo fora do padrao.",
+  efficiency: {
+    label: "Eficiencia",
+    description: "KM/L por placa com conferencia dos ultimos abastecimentos e ajuste manual de KM.",
   },
 };
 
@@ -114,12 +107,33 @@ const state = {
     documentFooter: "Gerado pelo sistema Horizon",
   },
   notes: [],
+  notesUi: {
+    editingId: null,
+    importSummary: null,
+    workflow: "ACTIVE",
+  },
   products: [],
   vehicles: [],
   inventoryMovements: [],
   fuelRecords: [],
   fuelStorages: [],
   schedules: [],
+  schedule: {
+    dayId: null,
+    day: null,
+    history: [],
+    suggestions: {
+      vehicles: [],
+      drivers: [],
+      assistants: [],
+      locations: [],
+      documentTitles: [],
+    },
+    draftLines: [],
+    previewVisible: false,
+    lineCounter: 0,
+    hasUnsavedChanges: false,
+  },
   fines: [],
   checklists: [],
   checklistTemplate: [],
@@ -130,13 +144,19 @@ const state = {
   logs: [],
   dashboard: {
     view: "overview",
+    lazy: {
+      fuelChartLoaded: false,
+    },
     filters: {
       quickPeriodDays: 30,
       selectedPlate: "",
+      focusPlate: "",
       useCustomRange: false,
       dateFrom: "",
       dateTo: "",
     },
+    cache: new Map(),
+    requestToken: 0,
     metrics: {
       pendingNotes: 0,
       waitingRecognition: 0,
@@ -197,6 +217,13 @@ const state = {
     timer: null,
     targetId: null,
     detector: null,
+    engine: "",
+    sessionId: 0,
+    isClosing: false,
+    controls: null,
+    codeReader: null,
+    lastValue: "",
+    lastDetectedAt: 0,
   },
   kardexReport: null,
   theme: "light",
@@ -348,6 +375,7 @@ const refs = {
   dashboardPeriodActions: $("dashboard-period-actions"),
   dashboardPlateFilter: $("dashboard-plate-filter"),
   dashboardPeriodFilter: $("dashboard-period-filter"),
+  dashboardDataFilter: $("dashboard-data-filter"),
   dashboardDateFrom: $("dashboard-date-from"),
   dashboardDateTo: $("dashboard-date-to"),
   dashboardPeriodApplyButton: $("dashboard-period-apply-button"),
@@ -355,8 +383,11 @@ const refs = {
   noteForm: $("note-form"),
   noteResetButton: $("note-reset-button"),
   notesSearch: $("notes-search"),
+  notesWorkflowFilter: $("notes-workflow-filter"),
   notesStatusFilter: $("notes-status-filter"),
   notesCategoryFilter: $("notes-category-filter"),
+  notesSummaryCards: $("notes-summary-cards"),
+  notesImportSummary: $("notes-import-summary"),
   notesTableBody: $("notes-table-body"),
   xmlImportInput: $("xml-import-input"),
   xmlImportButton: $("xml-import-button"),
@@ -365,6 +396,7 @@ const refs = {
   productForm: $("product-form"),
   productResetButton: $("product-reset-button"),
   productsTableBody: $("products-table-body"),
+  vehiclesSummaryCards: $("vehicles-summary-cards"),
   vehicleForm: $("vehicle-form"),
   vehicleResetButton: $("vehicle-reset-button"),
   vehiclesTableBody: $("vehicles-table-body"),
@@ -373,6 +405,7 @@ const refs = {
   inventoryMovementsBody: $("inventory-movements-body"),
   movementBarcodeInput: $("movement-barcode-input"),
   lookupBarcodeButton: $("lookup-barcode-button"),
+  barcodeImageInput: $("barcode-image-input"),
   fuelStockForm: $("fuel-stock-form"),
   fuelStockProductSelect: $("fuel-stock-product-select"),
   fuelForm: $("fuel-form"),
@@ -392,6 +425,19 @@ const refs = {
   fuelSideInsights: $("fuel-side-insights"),
   scheduleForm: $("schedule-form"),
   scheduleResetButton: $("schedule-reset-button"),
+  scheduleAddLineButton: $("schedule-add-line-button"),
+  scheduleDuplicatePreviousButton: $("schedule-duplicate-previous-button"),
+  scheduleExportExcelButton: $("schedule-export-excel-button"),
+  scheduleExportPdfButton: $("schedule-export-pdf-button"),
+  scheduleGenerateDocumentButton: $("schedule-generate-document-button"),
+  schedulePrintButton: $("schedule-print-button"),
+  scheduleLinesContainer: $("schedule-lines-container"),
+  scheduleDocumentPreview: $("schedule-document-preview"),
+  scheduleHistoryDate: $("schedule-history-date"),
+  scheduleHistoryPlate: $("schedule-history-plate"),
+  scheduleHistoryDriver: $("schedule-history-driver"),
+  scheduleHistoryClearButton: $("schedule-history-clear-button"),
+  scheduleHistoryTableBody: $("schedule-history-table-body"),
   schedulesTableBody: $("schedules-table-body"),
   scheduleSummaryCards: $("schedule-summary-cards"),
   scheduleNotesFeed: $("schedule-notes-feed"),
@@ -543,6 +589,7 @@ function bindEvents() {
   refs.dashboardViewSwitcher?.addEventListener("click", handleDashboardViewSwitch);
   refs.dashboardPlateFilter?.addEventListener("change", handleDashboardPlateFilterChange);
   refs.dashboardPeriodFilter?.addEventListener("change", handleDashboardQuickPeriodChange);
+  refs.dashboardDataFilter?.addEventListener("change", handleDashboardDataFilterChange);
   refs.dashboardPeriodApplyButton?.addEventListener("click", handleDashboardPeriodApply);
   refs.dashboardPeriodResetButton?.addEventListener("click", handleDashboardPeriodReset);
   refs.noteForm.addEventListener("submit", handleNoteSubmit);
@@ -550,6 +597,10 @@ function bindEvents() {
   refs.xmlImportButton.addEventListener("click", handleXmlImport);
   refs.spreadsheetImportButton.addEventListener("click", handleSpreadsheetImport);
   refs.notesSearch.addEventListener("input", debounce(refreshNotes, 250));
+  refs.notesWorkflowFilter?.addEventListener("change", () => {
+    state.notesUi.workflow = refs.notesWorkflowFilter.value || "ACTIVE";
+    refreshNotes();
+  });
   refs.notesStatusFilter.addEventListener("change", refreshNotes);
   refs.notesCategoryFilter.addEventListener("change", refreshNotes);
   refs.productForm.addEventListener("submit", handleProductSubmit);
@@ -571,6 +622,16 @@ function bindEvents() {
   refs.scheduleForm.addEventListener("submit", handleScheduleSubmit);
   refs.scheduleResetButton.addEventListener("click", resetScheduleForm);
   refs.scheduleForm.elements.scheduledDate?.addEventListener("change", refreshSchedules);
+  refs.scheduleAddLineButton?.addEventListener("click", () => addScheduleDraftLine());
+  refs.scheduleDuplicatePreviousButton?.addEventListener("click", handleScheduleDuplicatePrevious);
+  refs.scheduleExportExcelButton?.addEventListener("click", handleScheduleExportExcel);
+  refs.scheduleExportPdfButton?.addEventListener("click", () => handleSchedulePrint("pdf"));
+  refs.scheduleGenerateDocumentButton?.addEventListener("click", handleScheduleGenerateDocument);
+  refs.schedulePrintButton?.addEventListener("click", () => handleSchedulePrint("print"));
+  refs.scheduleHistoryDate?.addEventListener("change", refreshSchedules);
+  refs.scheduleHistoryPlate?.addEventListener("input", debounce(refreshSchedules, 250));
+  refs.scheduleHistoryDriver?.addEventListener("input", debounce(refreshSchedules, 250));
+  refs.scheduleHistoryClearButton?.addEventListener("click", clearScheduleHistoryFilters);
   refs.fineForm.addEventListener("submit", handleFineSubmit);
   refs.fineResetButton.addEventListener("click", resetFineForm);
   refs.checklistForm.addEventListener("submit", handleChecklistSubmit);
@@ -602,11 +663,16 @@ function bindEvents() {
 
   document.body.addEventListener("click", handleRowActions);
   document.body.addEventListener("click", handleInteractivePanels);
+  document.body.addEventListener("change", handleInteractiveChanges);
   document.body.addEventListener("input", handleInteractiveInputs);
 
   document.querySelectorAll("[data-scan-target]").forEach((button) => {
     button.addEventListener("click", () => openScanner(button.dataset.scanTarget));
   });
+  document.querySelectorAll("[data-scan-image-target]").forEach((button) => {
+    button.addEventListener("click", () => openBarcodeImagePicker(button.dataset.scanImageTarget));
+  });
+  refs.barcodeImageInput?.addEventListener("change", handleBarcodeImageSelection);
 }
 
 function resolveInitialTheme() {
@@ -679,7 +745,10 @@ function resolveSidebarViewport() {
 function readStoredSidebarMode(viewport) {
   const storageKey = `${SIDEBAR_STORAGE_KEY}:${viewport}`;
   const storedMode = window.localStorage.getItem(storageKey);
-  return storedMode === "compact" || storedMode === "expanded" ? storedMode : null;
+  if (storedMode === "expanded" || storedMode === "hidden") {
+    return storedMode;
+  }
+  return storedMode === "compact" ? "hidden" : null;
 }
 
 function resolveSidebarModeForViewport(viewport) {
@@ -687,7 +756,7 @@ function resolveSidebarModeForViewport(viewport) {
     return "hidden";
   }
 
-  return readStoredSidebarMode(viewport) || (viewport === "tablet" ? "compact" : "expanded");
+  return readStoredSidebarMode(viewport) || (viewport === "tablet" ? "hidden" : "expanded");
 }
 
 function syncSidebarLayout() {
@@ -739,7 +808,7 @@ function toggleSidebar() {
     return;
   }
 
-  runtimeState.sidebarMode = runtimeState.sidebarMode === "expanded" ? "compact" : "expanded";
+  runtimeState.sidebarMode = runtimeState.sidebarMode === "expanded" ? "hidden" : "expanded";
   window.localStorage.setItem(`${SIDEBAR_STORAGE_KEY}:${runtimeState.sidebarViewport}`, runtimeState.sidebarMode);
   applySidebarLayout();
 }
@@ -774,7 +843,10 @@ async function api(url, options = {}) {
       if (error.status === 401 && !suppressAuthRedirect) {
         setUser(null);
       }
-      throw new Error(error.message || "Falha no modo navegador.");
+      const requestError = new Error(error.message || "Falha no modo navegador.");
+      requestError.status = error.status || 500;
+      requestError.data = error.data || {};
+      throw requestError;
     }
   }
 
@@ -806,7 +878,10 @@ async function api(url, options = {}) {
     if (response.status === 401 && !suppressAuthRedirect) {
       setUser(null);
     }
-    throw new Error(message);
+    const requestError = new Error(message);
+    requestError.status = response.status;
+    requestError.data = data;
+    throw requestError;
   }
 
   return data;
@@ -1305,6 +1380,35 @@ function buildRowActionButton(action, id, label, iconHtml, extraClass = "") {
   `;
 }
 
+function syncResponsiveTableLabels(root = document) {
+  root.querySelectorAll(".table-wrapper table").forEach((table) => {
+    const headers = Array.from(table.querySelectorAll("thead th")).map((cell) => cell.textContent.trim());
+    if (!headers.length) {
+      return;
+    }
+
+    table.querySelectorAll("tbody tr").forEach((row) => {
+      Array.from(row.children).forEach((cell, index) => {
+        if (!(cell instanceof HTMLElement) || cell.tagName !== "TD") {
+          return;
+        }
+        if (Number(cell.colSpan || 0) > 1) {
+          cell.removeAttribute("data-label");
+          return;
+        }
+        cell.setAttribute("data-label", headers[Math.min(index, headers.length - 1)] || "");
+      });
+    });
+  });
+}
+
+function scrollToElement(element, block = "start") {
+  if (!element?.scrollIntoView) {
+    return;
+  }
+  element.scrollIntoView({ block });
+}
+
 function iconMarkup(name, className = "ui-icon") {
   const body = UI_ICONS[name] || UI_ICONS.dashboard;
   return `
@@ -1443,12 +1547,57 @@ function setSection(section) {
   closeSidebarOverlay();
 }
 
+function normalizeDashboardPeriodDays(value) {
+  const safeValue = Number(value || 30);
+  return [1, 7, 30].includes(safeValue) ? safeValue : 30;
+}
+
+function persistDashboardFilters() {
+  const filters = state.dashboard.filters || {};
+  window.localStorage.setItem(
+    DASHBOARD_FILTERS_STORAGE_KEY,
+    JSON.stringify({
+      quickPeriodDays: normalizeDashboardPeriodDays(filters.quickPeriodDays),
+      selectedPlate: filters.selectedPlate || "",
+      focusPlate: filters.focusPlate || "",
+      view: normalizeDashboardView(state.dashboard.view),
+    })
+  );
+}
+
+function readStoredDashboardFilters() {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(DASHBOARD_FILTERS_STORAGE_KEY) || "{}");
+    return {
+      quickPeriodDays: normalizeDashboardPeriodDays(stored.quickPeriodDays),
+      selectedPlate: String(stored.selectedPlate || "").trim().toUpperCase(),
+      focusPlate: String(stored.focusPlate || "").trim().toUpperCase(),
+      view: normalizeDashboardView(stored.view),
+    };
+  } catch (error) {
+    return {
+      quickPeriodDays: 30,
+      selectedPlate: "",
+      focusPlate: "",
+      view: "overview",
+    };
+  }
+}
+
 function applyDefaultFormValues() {
-  state.dashboard.filters.quickPeriodDays = state.dashboard.filters.quickPeriodDays || 30;
+  const storedDashboardFilters = readStoredDashboardFilters();
+  state.dashboard.view = storedDashboardFilters.view || state.dashboard.view || "overview";
+  state.dashboard.filters.quickPeriodDays =
+    normalizeDashboardPeriodDays(storedDashboardFilters.quickPeriodDays || state.dashboard.filters.quickPeriodDays || 30);
+  state.dashboard.filters.selectedPlate = storedDashboardFilters.selectedPlate || state.dashboard.filters.selectedPlate || "";
+  state.dashboard.filters.focusPlate = storedDashboardFilters.focusPlate || state.dashboard.filters.focusPlate || "";
   state.dashboard.filters.dateTo = state.dashboard.filters.dateTo || currentLocalDate();
   state.dashboard.filters.dateFrom = state.dashboard.filters.dateFrom || shiftDateString(currentLocalDate(), -29);
   if (refs.dashboardPeriodFilter) {
     refs.dashboardPeriodFilter.value = String(state.dashboard.filters.quickPeriodDays || 30);
+  }
+  if (refs.dashboardDataFilter) {
+    refs.dashboardDataFilter.value = normalizeDashboardView(state.dashboard.view);
   }
   if (refs.dashboardDateTo) {
     refs.dashboardDateTo.value = state.dashboard.filters.dateTo;
@@ -1527,10 +1676,54 @@ async function refreshAll() {
   }
 }
 
-async function refreshDashboard() {
+function buildDashboardCacheKey() {
+  const filters = state.dashboard.filters || {};
+  return JSON.stringify({
+    days: normalizeDashboardPeriodDays(filters.quickPeriodDays),
+    selectedPlate: filters.selectedPlate || "",
+    focusPlate: filters.selectedPlate || filters.focusPlate || "",
+    useCustomRange: Boolean(filters.useCustomRange),
+    dateFrom: filters.dateFrom || "",
+    dateTo: filters.dateTo || "",
+  });
+}
+
+async function refreshDashboard(options = {}) {
+  const { useCache = false, invalidateCache = false } = options;
   const query = buildDashboardRequestParams();
   const suffix = query.toString() ? `?${query.toString()}` : "";
+  const cacheKey = buildDashboardCacheKey();
+
+  if (invalidateCache || !useCache) {
+    state.dashboard.cache.clear();
+  }
+
+  if (useCache && state.dashboard.cache.has(cacheKey)) {
+    const cached = state.dashboard.cache.get(cacheKey);
+    state.dashboard = {
+      ...state.dashboard,
+      metrics: cached.metrics || state.dashboard.metrics,
+      analytics: cached.analytics || state.dashboard.analytics,
+      alerts: Array.isArray(cached.alerts) ? cached.alerts : [],
+      todaySchedules: Array.isArray(cached.todaySchedules) ? cached.todaySchedules : [],
+    };
+    renderDashboard();
+    return;
+  }
+
+  const requestToken = Number(state.dashboard.requestToken || 0) + 1;
+  state.dashboard.requestToken = requestToken;
   const response = await api(`/api/dashboard${suffix}`);
+  if (requestToken !== state.dashboard.requestToken) {
+    return;
+  }
+
+  state.dashboard.cache.set(cacheKey, {
+    metrics: response.metrics || state.dashboard.metrics,
+    analytics: response.analytics || state.dashboard.analytics,
+    alerts: Array.isArray(response.alerts) ? response.alerts : [],
+    todaySchedules: Array.isArray(response.todaySchedules) ? response.todaySchedules : [],
+  });
   state.dashboard = {
     ...state.dashboard,
     metrics: response.metrics || state.dashboard.metrics,
@@ -1539,6 +1732,7 @@ async function refreshDashboard() {
     todaySchedules: Array.isArray(response.todaySchedules) ? response.todaySchedules : [],
   };
   renderDashboard();
+  renderVehicles();
 }
 
 async function refreshNotes() {
@@ -1616,6 +1810,7 @@ async function refreshFuel() {
   updateFuelStockProductSelect();
   updateKardexProductSelect();
   syncFuelFormState();
+  renderVehicles();
 }
 
 async function refreshSchedules() {
@@ -2083,11 +2278,15 @@ function buildDashboardRequestParams() {
     query.set("from", filters.dateFrom);
     query.set("to", filters.dateTo);
   } else {
-    query.set("days", String(filters.quickPeriodDays || 30));
+    query.set("days", String(normalizeDashboardPeriodDays(filters.quickPeriodDays)));
   }
 
-  if (normalizeDashboardView(state.dashboard.view) === "vehicle" && filters.selectedPlate) {
+  if (filters.selectedPlate) {
     query.set("plate", filters.selectedPlate);
+  }
+
+  if (filters.selectedPlate || filters.focusPlate) {
+    query.set("focusPlate", filters.selectedPlate || filters.focusPlate);
   }
 
   return query;
@@ -2115,8 +2314,14 @@ function syncDashboardFilterInputs() {
   const filters = state.dashboard.filters || {};
   const availablePlates = Array.isArray(analytics.availablePlates) ? analytics.availablePlates : [];
   const selectedPlate = availablePlates.includes(filters.selectedPlate) ? filters.selectedPlate : "";
+  const fallbackFocusPlate =
+    analytics.focusPlate || analytics.selectedVehicle?.plate || availablePlates[0] || "";
+  const focusPlate =
+    selectedPlate ||
+    (availablePlates.includes(filters.focusPlate) ? filters.focusPlate : fallbackFocusPlate);
 
   state.dashboard.filters.selectedPlate = selectedPlate;
+  state.dashboard.filters.focusPlate = focusPlate;
   refs.dashboardContextTitle.textContent = meta.label;
   refs.dashboardContextDescription.textContent = meta.description;
 
@@ -2127,12 +2332,18 @@ function syncDashboardFilterInputs() {
   });
 
   if (refs.dashboardPeriodFilter) {
-    refs.dashboardPeriodFilter.value = String(filters.quickPeriodDays || analytics.periodDays || 30);
+    refs.dashboardPeriodFilter.value = String(
+      normalizeDashboardPeriodDays(filters.quickPeriodDays || analytics.periodDays || 30)
+    );
+  }
+
+  if (refs.dashboardDataFilter) {
+    refs.dashboardDataFilter.value = view;
   }
 
   if (refs.dashboardPlateFilter) {
     refs.dashboardPlateFilter.innerHTML = [
-      `<option value="">Selecione um veiculo</option>`,
+      `<option value="">Todas as placas</option>`,
       ...availablePlates.map(
         (plate) => `<option value="${escapeHtml(plate)}">${escapeHtml(plate)}</option>`
       ),
@@ -2149,25 +2360,14 @@ function syncDashboardFilterInputs() {
     refs.dashboardDateTo.value = defaultTo;
   }
 
-  refs.dashboardQuickPeriodGroup?.classList.toggle("hidden", view === "period");
-  refs.dashboardVehicleGroup?.classList.toggle("hidden", view !== "vehicle");
-  refs.dashboardPeriodRangeGroup?.classList.toggle("hidden", view !== "period");
-  refs.dashboardPeriodActions?.classList.toggle("hidden", view !== "period");
+  persistDashboardFilters();
 }
 
 async function setDashboardView(view) {
   const nextView = normalizeDashboardView(view);
   state.dashboard.view = nextView;
-
-  if (nextView === "vehicle" && !state.dashboard.filters.selectedPlate) {
-    state.dashboard.filters.selectedPlate =
-      state.dashboard.analytics?.selectedVehicle?.plate ||
-      state.dashboard.analytics?.availablePlates?.[0] ||
-      "";
-  }
-
   syncDashboardFilterInputs();
-  await refreshDashboard();
+  renderDashboard();
 }
 
 async function handleDashboardViewSwitch(event) {
@@ -2180,40 +2380,42 @@ async function handleDashboardViewSwitch(event) {
 }
 
 async function handleDashboardQuickPeriodChange() {
-  state.dashboard.filters.quickPeriodDays = Number(refs.dashboardPeriodFilter?.value || 30);
+  state.dashboard.filters.quickPeriodDays = normalizeDashboardPeriodDays(
+    refs.dashboardPeriodFilter?.value || 30
+  );
   state.dashboard.filters.useCustomRange = false;
+  state.dashboard.lazy.fuelChartLoaded = false;
   syncDashboardDateInputsWithQuickPeriod(state.dashboard.filters.quickPeriodDays);
-  await refreshDashboard();
+  persistDashboardFilters();
+  await refreshDashboard({ useCache: true });
 }
 
 async function handleDashboardPlateFilterChange() {
   state.dashboard.filters.selectedPlate = refs.dashboardPlateFilter?.value || "";
-  if (!state.dashboard.filters.selectedPlate) {
-    renderDashboard();
-    return;
+  if (state.dashboard.filters.selectedPlate) {
+    state.dashboard.filters.focusPlate = state.dashboard.filters.selectedPlate;
   }
-
-  await refreshDashboard();
+  state.dashboard.lazy.fuelChartLoaded = false;
+  persistDashboardFilters();
+  await refreshDashboard({ useCache: true });
 }
 
 async function handleDashboardPeriodApply() {
-  const from = refs.dashboardDateFrom?.value || "";
-  const to = refs.dashboardDateTo?.value || "";
-
-  if (!from || !to) {
-    showToast("Informe as duas datas para aplicar o periodo.", "error");
+  const dateFrom = refs.dashboardDateFrom?.value || "";
+  const dateTo = refs.dashboardDateTo?.value || "";
+  if (!dateFrom || !dateTo) {
+    showToast("Informe a data inicial e final para aplicar o periodo.", "error");
     return;
   }
-
-  if (from > to) {
-    showToast("A data inicial precisa ser menor ou igual a data final.", "error");
+  if (dateFrom > dateTo) {
+    showToast("A data inicial nao pode ser maior que a data final.", "error");
     return;
   }
-
+  state.dashboard.filters.dateFrom = dateFrom;
+  state.dashboard.filters.dateTo = dateTo;
   state.dashboard.filters.useCustomRange = true;
-  state.dashboard.filters.dateFrom = from;
-  state.dashboard.filters.dateTo = to;
-  await refreshDashboard();
+  state.dashboard.lazy.fuelChartLoaded = false;
+  await refreshDashboard({ useCache: true });
 }
 
 async function handleDashboardPeriodReset() {
@@ -2223,7 +2425,53 @@ async function handleDashboardPeriodReset() {
     refs.dashboardPeriodFilter.value = "30";
   }
   syncDashboardDateInputsWithQuickPeriod(30);
-  await refreshDashboard();
+  state.dashboard.lazy.fuelChartLoaded = false;
+  persistDashboardFilters();
+  await refreshDashboard({ useCache: true });
+}
+
+async function handleDashboardDataFilterChange() {
+  await setDashboardView(refs.dashboardDataFilter?.value || "overview");
+}
+
+async function handleDashboardFocusPlateChange(value) {
+  if (state.dashboard.filters.selectedPlate) {
+    return;
+  }
+
+  state.dashboard.filters.focusPlate = String(value || "").trim().toUpperCase();
+  persistDashboardFilters();
+  await refreshDashboard({ useCache: true });
+}
+
+async function saveDashboardOdometerChange(recordId, clearValue = false) {
+  const safeRecordId = Number(recordId || 0);
+  if (!safeRecordId) {
+    return;
+  }
+
+  const odometerInput = document.querySelector(`[data-dashboard-odometer-input="${safeRecordId}"]`);
+  const reasonInput = document.querySelector(`[data-dashboard-odometer-reason="${safeRecordId}"]`);
+  const rawValue = clearValue ? "" : odometerInput?.value?.trim() || "";
+  const nextValue = rawValue === "" ? null : Number(rawValue);
+
+  if (rawValue && (!Number.isFinite(nextValue) || nextValue < 0)) {
+    showToast("Informe um KM valido para salvar a correcao.", "error");
+    odometerInput?.focus();
+    return;
+  }
+
+  await api(`/api/dashboard/fuel-records/${safeRecordId}/odometer`, {
+    method: "PUT",
+    body: {
+      odometerKm: nextValue,
+      reason: reasonInput?.value?.trim() || "",
+    },
+  });
+
+  state.dashboard.cache.clear();
+  await refreshDashboard({ useCache: false });
+  showToast(clearValue ? "Leitura de KM restaurada." : "Leitura de KM atualizada.");
 }
 
 function buildDashboardPeriodLabel(analytics = state.dashboard.analytics) {
@@ -2231,7 +2479,12 @@ function buildDashboardPeriodLabel(analytics = state.dashboard.analytics) {
     return `${formatDateOnly(analytics.periodStart)} a ${formatDateOnly(analytics.periodEnd)}`;
   }
 
-  return `ultimos ${formatNumber(analytics?.periodDays || state.dashboard.filters.quickPeriodDays || 30)} dias`;
+  const periodDays = Number(analytics?.periodDays || state.dashboard.filters.quickPeriodDays || 30);
+  if (periodDays <= 1) {
+    return "hoje";
+  }
+
+  return `ultimos ${formatNumber(periodDays)} dias`;
 }
 
 function buildDashboardPanelHeader(eyebrow, title, description = "") {
@@ -2343,384 +2596,327 @@ function buildDashboardRecentFuelFeed(records, emptyTitle, emptyDescription) {
   `;
 }
 
-function buildDashboardSummaryCards() {
+function buildDashboardDerivedState() {
   const metricsState = state.dashboard.metrics || {};
   const analytics = state.dashboard.analytics || {};
-  const efficiencySummary = analytics.efficiencySummary || {
-    averageKmPerLiter: 0,
-    vehicleCount: 0,
-  };
-  const alertSummary = analytics.alertSummary || {
-    critical: 0,
-    kmErrors: 0,
-  };
-
-  return [
-    buildStatCard({
-      className: "dashboard-decision-card",
-      label: "Total abastecido",
-      value: `${formatLiters(metricsState.periodFuelConsumption || 0)} L`,
-      note: buildDashboardPeriodLabel(analytics),
-      icon: "fuel",
-      tone: "brand",
-    }),
-    buildStatCard({
-      className: "dashboard-decision-card",
-      label: "Media KM/L",
-      value: formatKmPerLiter(metricsState.averageKmPerLiter || efficiencySummary.averageKmPerLiter || 0),
-      note: `${formatNumber(efficiencySummary.vehicleCount || 0)} veiculo(s) com leitura valida`,
-      icon: "efficiency",
-      tone: efficiencySummary.vehicleCount ? "success" : "warning",
-    }),
-    buildStatCard({
-      className: "dashboard-decision-card",
-      label: "Veiculos ativos",
-      value: formatNumber(metricsState.activeVehicles || 0),
-      note: "Cadastro operacional ativo",
-      icon: "vehicle",
-      tone: "neutral",
-    }),
-    buildStatCard({
-      className: "dashboard-decision-card",
-      label: "Alertas criticos",
-      value: formatNumber(metricsState.criticalAlertCount || alertSummary.critical || 0),
-      note: `${formatNumber(alertSummary.kmErrors || 0)} erro(s) de KM no periodo`,
-      icon: "alert",
-      tone: (metricsState.criticalAlertCount || alertSummary.critical || 0) ? "danger" : "success",
-    }),
-  ].join("");
-}
-
-function buildDashboardOverviewView() {
-  const metricsState = state.dashboard.metrics || {};
-  const analytics = state.dashboard.analytics || {};
-  const bestVehicle = analytics.efficiencyRanking?.[0] || null;
-  const topConsumers = (analytics.topConsumers || []).slice(0, 5);
-
-  const primary = `
-    ${buildDashboardPanelHeader(
-      "Bloco 2",
-      "Resumo geral compacto",
-      "Somente os indicadores que ajudam a entender o periodo atual com rapidez."
-    )}
-    <div class="dashboard-focus-grid">
-      <article class="dashboard-focus-card">
-        <span class="eyebrow">Resumo geral</span>
-        <h4>${escapeHtml(`Consumo consolidado em ${buildDashboardPeriodLabel(analytics)}`)}</h4>
-        <p class="muted">Leitura enxuta para decidir onde agir primeiro.</p>
-        <div class="dashboard-mini-kpi-grid">
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Media diaria",
-            value: `${formatLiters(metricsState.averageDailyConsumption || 0)} L`,
-            note: "Saida media por dia",
-            icon: "analytics",
-            tone: "brand",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Pico do periodo",
-            value: `${formatLiters(analytics.peakConsumption?.total || 0)} L`,
-            note: analytics.peakConsumption?.date ? formatDateOnly(analytics.peakConsumption.date) : "Sem pico",
-            icon: "dashboard",
-            tone: "warning",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Captura de KM",
-            value: formatPercent(analytics.odometerCoverage?.percent || 0, 0),
-            note: `${formatNumber(analytics.odometerCoverage?.withOdometer || 0)} leitura(s) completas`,
-            icon: "vehicle",
-            tone: "neutral",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Melhor media",
-            value: bestVehicle ? formatKmPerLiter(bestVehicle.kmPerLiter) : "-",
-            note: bestVehicle ? `Placa ${bestVehicle.plate}` : "Aguardando leituras validas",
-            icon: "efficiency",
-            tone: bestVehicle ? "success" : "warning",
-          })}
-        </div>
-      </article>
-
-      <article class="dashboard-focus-card">
-        <span class="eyebrow">Ranking simples</span>
-        <h4>${escapeHtml(bestVehicle ? `Melhor resultado atual: ${bestVehicle.plate}` : "Ranking em preparacao")}</h4>
-        <p class="muted">Comparativo direto entre as medias KM/L mais consistentes do periodo.</p>
-        ${renderMeterList(
-          (analytics.efficiencyRanking || []).slice(0, 5).map((item) => ({
-            label: item.plate,
-            value: item.kmPerLiter,
-            totalDistanceKm: item.totalDistanceKm,
-            totalLiters: item.totalLiters,
-            samples: item.samples,
-          })),
-          {
-            emptyTitle: "Sem ranking no momento",
-            emptyDescription: "Assim que houver abastecimentos com KM, o ranking aparece aqui.",
-            valueFormatter: (value) => formatKmPerLiter(value),
-            secondaryFormatter: (item) =>
-              `${formatDistance(item.totalDistanceKm)} | ${formatLiters(item.totalLiters)} L | ${item.samples} leitura(s)`,
-          }
-        )}
-      </article>
-    </div>
-  `;
-
-  const detail =
-    analytics.totalConsumptionLiters > 0
-      ? `
-          ${buildDashboardPanelHeader(
-            "Bloco 3",
-            "Detalhamento",
-            "Grafico e tabela resumida apenas quando ajudam a interpretar o periodo."
-          )}
-          <div class="dashboard-detail-stack">
-            <div class="dashboard-detail-card">
-              ${renderConsumptionChart(analytics)}
-            </div>
-            <div class="dashboard-detail-card">
-              <span class="eyebrow">Tabela resumida</span>
-              <h4>Veiculos com maior consumo</h4>
-              ${buildDashboardTable(
-                ["Placa", "Total", "Lancamentos", "Ultimo abastecimento"],
-                topConsumers.map((item) => [
-                  `<strong>${escapeHtml(item.plate || "-")}</strong>`,
-                  escapeHtml(`${formatLiters(item.totalLiters || 0)} L`),
-                  escapeHtml(formatNumber(item.records || 0)),
-                  escapeHtml(formatDateOnly(item.lastAt)),
-                ]),
-                "Sem detalhamento",
-                "Nao houve saidas registradas no periodo selecionado."
-              )}
-            </div>
-          </div>
-        `
-      : "";
-
-  return { primary, detail };
-}
-
-function buildDashboardVehicleView() {
-  const analytics = state.dashboard.analytics || {};
-  const selectedPlate = state.dashboard.filters.selectedPlate || "";
+  const filters = state.dashboard.filters || {};
   const selectedVehicle = analytics.selectedVehicle || null;
-  const recentRecords = (analytics.recentFuelRecords || []).slice(0, 5);
-  const vehicleAlerts = (analytics.operationalAlerts || [])
-    .filter((alert) => alert.plate === selectedPlate)
-    .slice(0, 5);
+  const fuelByKind = metricsState.fuelByKind || {};
+  const fuelMixMap = new Map((analytics.fuelMix || []).map((item) => [item.fuelKind, Number(item.total || 0)]));
+  const tankCapacity = 5200;
+  const periodDays = Math.max(Number(analytics.periodDays || filters.quickPeriodDays || 30), 1);
+  const selectedPlate = filters.selectedPlate || "";
+  const focusPlate = selectedPlate || filters.focusPlate || analytics.focusPlate || selectedVehicle?.plate || "";
+  const selectedVehicleRecords = Array.isArray(selectedVehicle?.records) ? selectedVehicle.records : [];
+  const recentValidRecords = selectedVehicleRecords.filter((record) => Boolean(record.usedInAverage)).slice(0, 3);
+  const currentVehicleKmPerLiter = Number(
+    selectedVehicle?.currentKmPerLiter || recentValidRecords[0]?.averageKmPerLiter || selectedVehicle?.kmPerLiter || 0
+  );
+  const recentAverageKmPerLiter = Number(
+    selectedVehicle?.recentAverageKmPerLiter ||
+      (recentValidRecords.length
+        ? recentValidRecords.reduce((total, record) => total + Number(record.averageKmPerLiter || 0), 0) /
+          recentValidRecords.length
+        : 0)
+  );
+  const totalConsumption = Number(metricsState.periodFuelConsumption || 0);
+  const s500Balance = Number(fuelByKind.S500 || 0);
+  const s10Balance = Number(fuelByKind.S10 || 0);
+  const s500Consumption = Number(fuelMixMap.get("S500") || 0);
+  const s10Consumption = Number(fuelMixMap.get("S10") || 0);
 
-  if (!selectedPlate) {
-    return {
-      primary: `
-        ${buildDashboardPanelHeader(
-          "Bloco 2",
-          "Por veiculo",
-          "Selecione uma placa para ver os ultimos abastecimentos, a media KM/L e os alertas associados."
-        )}
-        ${renderDashboardEmpty(
-          "Selecione um veiculo",
-          "Use o campo de selecao acima para carregar a leitura individual da placa."
-        )}
-      `,
-      detail: "",
-    };
-  }
-
-  const primary = `
-    ${buildDashboardPanelHeader(
-      "Bloco 2",
-      `Leitura do veiculo ${selectedPlate}`,
-      "Historico recente, media KM/L e inconsistencias da placa selecionada."
-    )}
-    <div class="dashboard-focus-grid dashboard-focus-grid--vehicle">
-      <article class="dashboard-focus-card">
-        <span class="eyebrow">Media KM/L</span>
-        <h4>${escapeHtml(selectedPlate)}</h4>
-        <p class="muted">Leitura orientada a decisao para revisar consumo e consistencia do KM.</p>
-        <div class="dashboard-mini-kpi-grid">
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Media apurada",
-            value: formatKmPerLiter(selectedVehicle?.kmPerLiter || 0),
-            note: `${formatNumber(selectedVehicle?.samples || 0)} leitura(s) validas`,
-            icon: "efficiency",
-            tone: selectedVehicle?.samples ? "success" : "warning",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Distancia",
-            value: formatDistance(selectedVehicle?.totalDistanceKm || 0),
-            note: "Rodagem consolidada",
-            icon: "vehicle",
-            tone: "neutral",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Litros",
-            value: `${formatLiters(selectedVehicle?.totalLiters || 0)} L`,
-            note: "Volume analisado",
-            icon: "fuel",
-            tone: "brand",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Ultimo KM",
-            value: selectedVehicle?.lastOdometerKm ? formatDistance(selectedVehicle.lastOdometerKm) : "-",
-            note: selectedVehicle?.lastFuelAt ? formatDateOnly(selectedVehicle.lastFuelAt) : "Sem leitura recente",
-            icon: "analytics",
-            tone: "warning",
-          })}
-        </div>
-      </article>
-
-      <article class="dashboard-focus-card">
-        <span class="eyebrow">Ultimos abastecimentos</span>
-        <h4>Janela recente da placa</h4>
-        ${buildDashboardRecentFuelFeed(
-          recentRecords.map((record) => ({ ...record, plate: record.plate || selectedPlate })),
-          "Sem abastecimentos recentes",
-          "Nao foram encontrados lancamentos recentes para esta placa no periodo atual."
-        )}
-      </article>
-    </div>
-
-    <article class="dashboard-subsection-card">
-      <span class="eyebrow">Alertas de inconsistencia</span>
-      <h4>Conferencia rapida da placa</h4>
-      ${buildDashboardAlertFeed(
-        vehicleAlerts,
-        "Sem inconsistencias relevantes",
-        "Nao foram encontrados sinais criticos ou fora do padrao para este veiculo."
-      )}
-    </article>
-  `;
-
-  const segmentRows = (selectedVehicle?.segments || [])
-    .slice()
-    .reverse()
-    .slice(0, 5)
-    .map((segment) => [
-      `<strong>${escapeHtml(formatDateOnly(segment.date))}</strong>`,
-      escapeHtml(formatDistance(segment.distanceKm || 0)),
-      escapeHtml(`${formatLiters(segment.liters || 0)} L`),
-      escapeHtml(formatKmPerLiter(segment.kmPerLiter || 0)),
-    ]);
-  const recordRows = recentRecords.map((record) => [
-    `<strong>${escapeHtml(formatDateTime(record.occurredAt))}</strong>`,
-    escapeHtml(formatFuelKindLabel(record.fuelKind)),
-    escapeHtml(`${formatLiters(record.quantity || 0)} L`),
-    escapeHtml(
-      record.odometerKm === null || record.odometerKm === undefined ? "-" : formatDistance(record.odometerKm)
-    ),
-  ]);
-
-  const detail = `
-    ${buildDashboardPanelHeader(
-      "Bloco 3",
-      "Detalhamento do veiculo",
-      "Tabela resumida com pares de KM/L e os ultimos abastecimentos do veiculo selecionado."
-    )}
-    <div class="dashboard-detail-stack dashboard-detail-stack--split">
-      <div class="dashboard-detail-card">
-        <span class="eyebrow">Tabela resumida</span>
-        <h4>Pares de KM/L</h4>
-        ${buildDashboardTable(
-          ["Data", "Distancia", "Litros", "KM/L"],
-          segmentRows,
-          "Sem pares validos",
-          "Sao necessarios pelo menos dois abastecimentos com KM para gerar a conferencia."
-        )}
-      </div>
-      <div class="dashboard-detail-card">
-        <span class="eyebrow">Tabela resumida</span>
-        <h4>Ultimos lancamentos</h4>
-        ${buildDashboardTable(
-          ["Quando", "Combustivel", "Litros", "KM informado"],
-          recordRows,
-          "Sem lancamentos",
-          "Nao houve abastecimentos suficientes para montar o historico recente."
-        )}
-      </div>
-    </div>
-  `;
-
-  return { primary, detail };
+  return {
+    metricsState,
+    analytics,
+    filters,
+    selectedVehicle,
+    selectedVehicleRecords,
+    recentValidRecords,
+    currentVehicleKmPerLiter,
+    recentAverageKmPerLiter,
+    selectedPlate,
+    focusPlate,
+    periodDays,
+    periodLabel: buildDashboardPeriodLabel(analytics),
+    tankCapacity,
+    totalConsumption,
+    s500Balance,
+    s10Balance,
+    s500Consumption,
+    s10Consumption,
+    s500DailyAverage: periodDays ? s500Consumption / periodDays : 0,
+    s10DailyAverage: periodDays ? s10Consumption / periodDays : 0,
+    s500Percent: (s500Balance / tankCapacity) * 100,
+    s10Percent: (s10Balance / tankCapacity) * 100,
+    s500Participation: totalConsumption > 0 ? (s500Consumption / totalConsumption) * 100 : 0,
+    s10Participation: totalConsumption > 0 ? (s10Consumption / totalConsumption) * 100 : 0,
+    focusAlerts: (analytics.operationalAlerts || [])
+      .filter((alert) => !focusPlate || alert.plate === focusPlate)
+      .slice(0, 4),
+    topAlerts: (state.dashboard.alerts || []).slice(0, 4),
+  };
 }
 
-function buildDashboardFuelView() {
-  const metricsState = state.dashboard.metrics || {};
-  const analytics = state.dashboard.analytics || {};
-  const periodDays = Math.max(Number(analytics.periodDays || 0), 1);
-  const fuelMixMap = new Map((analytics.fuelMix || []).map((item) => [item.fuelKind, Number(item.total || 0)]));
-  const s500Total = Number(fuelMixMap.get("S500") || 0);
-  const s10Total = Number(fuelMixMap.get("S10") || 0);
-  const totalConsumption = Number(metricsState.periodFuelConsumption || 0);
+function getDashboardTankMeta(percent) {
+  if (percent >= 70) {
+    return { tone: "ok", label: "Nivel estavel" };
+  }
+  if (percent >= 30) {
+    return { tone: "warning", label: "Atencao de nivel" };
+  }
+  return { tone: "danger", label: "Reserva critica" };
+}
 
-  const buildFuelCard = (label, total, tone) => `
-    <article class="dashboard-fuel-card dashboard-fuel-card--${tone}">
-      <span class="eyebrow">${escapeHtml(label)}</span>
-      <strong>${escapeHtml(`${formatLiters(total)} L`)}</strong>
-      <p class="muted">${escapeHtml(`${formatLiters(total / periodDays)} L por dia`)}</p>
-      <div class="dashboard-fuel-card__meta">
-        <span>${escapeHtml(totalConsumption > 0 ? formatPercent((total / totalConsumption) * 100, 0) : "0%")}</span>
-        <span>Participacao no periodo</span>
+function getDashboardRecordStatus(record) {
+  if (record.kmInconsistent) {
+    return { className: "status-red", label: "KM incoerente" };
+  }
+  if (record.averageOutOfPattern) {
+    return { className: "status-yellow", label: "Fora do padrao" };
+  }
+  if (record.usedInAverage) {
+    return { className: "status-green", label: "Utilizado" };
+  }
+  if (record.effectiveKm === null || record.effectiveKm === undefined) {
+    return { className: "status-gray", label: "Sem KM" };
+  }
+  return { className: "status-gray", label: "Aguardando par" };
+}
+
+function buildDashboardTankCard(label, balance, dailyAverage, consumption, participation, capacity, averageKmPerLiter = 0) {
+  const percent = capacity > 0 ? (Number(balance || 0) / Number(capacity || 1)) * 100 : 0;
+  const tankMeta = getDashboardTankMeta(percent);
+  const visualPercent = clampPercent(percent);
+  const remainingDays = dailyAverage > 0 ? balance / dailyAverage : 0;
+  const estimatedAutonomyKm = Number(balance || 0) * Number(averageKmPerLiter || 0);
+
+  return `
+    <article class="dashboard-tank-card dashboard-tank-card--${tankMeta.tone}">
+      <div class="dashboard-tank-card__head">
+        <div>
+          <span class="eyebrow">${escapeHtml(label)}</span>
+          <h4>${escapeHtml(`Diesel ${label}`)}</h4>
+        </div>
+        <span class="dashboard-status-pill dashboard-status-pill--${tankMeta.tone}">${escapeHtml(tankMeta.label)}</span>
+      </div>
+      <div class="dashboard-tank-card__body">
+        <div class="dashboard-tank-visual">
+          <span class="dashboard-tank-visual__cap">${escapeHtml(`${formatLiters(capacity)} L`)}</span>
+          <div class="dashboard-tank-visual__shell">
+            <span class="dashboard-tank-visual__fill dashboard-tank-visual__fill--${tankMeta.tone}" style="height:${visualPercent}%"></span>
+          </div>
+          <span class="dashboard-tank-visual__base">0 L</span>
+        </div>
+        <div class="dashboard-tank-card__stats">
+          <article>
+            <span class="eyebrow">Volume atual</span>
+            <strong>${escapeHtml(`${formatLiters(balance)} L`)}</strong>
+          </article>
+          <article>
+            <span class="eyebrow">Consumo medio/dia</span>
+            <strong>${escapeHtml(`${formatLiters(dailyAverage)} L`)}</strong>
+          </article>
+          <article>
+            <span class="eyebrow">Percentual do tanque</span>
+            <strong>${escapeHtml(formatPercent(visualPercent, 0))}</strong>
+          </article>
+          <article>
+            <span class="eyebrow">Consumo no periodo</span>
+            <strong>${escapeHtml(`${formatLiters(consumption)} L`)}</strong>
+          </article>
+          <article>
+            <span class="eyebrow">Autonomia estimada</span>
+            <strong>${escapeHtml(
+              estimatedAutonomyKm > 0 ? formatDistance(estimatedAutonomyKm) : "-"
+            )}</strong>
+          </article>
+          <article>
+            <span class="eyebrow">Dias restantes</span>
+            <strong>${escapeHtml(
+              remainingDays > 0 ? `${formatNumber(remainingDays, 1, 1)} dia(s)` : "-"
+            )}</strong>
+          </article>
+        </div>
+      </div>
+      <div class="dashboard-tank-card__footer">
+        <span>${escapeHtml(`Participacao: ${formatPercent(participation, 0)}`)}</span>
+        <span>${escapeHtml(`Capacidade fixa: ${formatLiters(capacity)} L`)}</span>
       </div>
     </article>
   `;
+}
 
-  const primary = `
-    ${buildDashboardPanelHeader(
-      "Bloco 2",
-      "Comparativo por combustivel",
-      "Separacao clara entre S-10 e S-500 para revisar volume total, media e distribuicao."
-    )}
-    <div class="dashboard-fuel-grid">
-      ${buildFuelCard("S-500", s500Total, "s500")}
-      ${buildFuelCard("S-10", s10Total, "s10")}
-      <article class="dashboard-focus-card">
-        <span class="eyebrow">Totais e medias</span>
-        <h4>Leitura consolidada do mix</h4>
-        <div class="dashboard-mini-kpi-grid">
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Total geral",
-            value: `${formatLiters(totalConsumption)} L`,
-            note: buildDashboardPeriodLabel(analytics),
-            icon: "fuel",
-            tone: "brand",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Media diaria",
-            value: `${formatLiters(metricsState.averageDailyConsumption || 0)} L`,
-            note: "Consumo medio",
-            icon: "analytics",
-            tone: "neutral",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Saldo atual",
-            value: `${formatLiters(metricsState.fuelBalance || 0)} L`,
-            note: "Soma dos estoques",
-            icon: "inventory",
-            tone: "warning",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Alertas de estoque",
-            value: formatNumber(metricsState.lowStockCount || 0),
-            note: "Pontos abaixo do minimo",
-            icon: "alert",
-            tone: metricsState.lowStockCount ? "danger" : "success",
-          })}
+function buildDashboardOverviewView(derived) {
+  const rankingItems = (derived.analytics.efficiencyRanking || []).slice(0, 5);
+  const recentFuelRecords = (derived.analytics.recentFuelRecords || []).slice(0, 5);
+
+  return {
+    primary: `
+      ${buildDashboardPanelHeader(
+        "Prioridade alta",
+        "Combustivel e eficiencia",
+        "A leitura principal combina status dos tanques, consumo do periodo e resposta da frota."
+      )}
+      <div class="dashboard-stage-grid dashboard-stage-grid--overview">
+        <section class="dashboard-tank-grid">
+          ${buildDashboardTankCard(
+            "S-500",
+            derived.s500Balance,
+            derived.s500DailyAverage,
+            derived.s500Consumption,
+            derived.s500Participation,
+            derived.tankCapacity,
+            derived.metricsState.averageKmPerLiter
+          )}
+          ${buildDashboardTankCard(
+            "S-10",
+            derived.s10Balance,
+            derived.s10DailyAverage,
+            derived.s10Consumption,
+            derived.s10Participation,
+            derived.tankCapacity,
+            derived.metricsState.averageKmPerLiter
+          )}
+        </section>
+
+        <article class="dashboard-priority-card">
+          <div class="dashboard-priority-card__top">
+            <div>
+              <span class="eyebrow">Eficiencia em foco</span>
+              <h4>${escapeHtml(
+                derived.focusPlate ? `Leitura operacional de ${derived.focusPlate}` : "Media operacional da frota"
+              )}</h4>
+              <p class="muted">O dashboard destaca a melhor leitura disponivel sem esconder alertas de consistencia.</p>
+            </div>
+            ${buildIconBadge("efficiency", derived.currentVehicleKmPerLiter ? "success" : "warning")}
+          </div>
+          <div class="dashboard-kpi-hero">
+            <article>
+              <span class="eyebrow">KM/L atual</span>
+              <strong>${escapeHtml(formatKmPerLiter(derived.currentVehicleKmPerLiter))}</strong>
+              <span class="muted">${escapeHtml(derived.selectedVehicle?.lastFuelAt ? formatDateTime(derived.selectedVehicle.lastFuelAt) : "Sem leitura recente")}</span>
+            </article>
+            <article>
+              <span class="eyebrow">Media recente</span>
+              <strong>${escapeHtml(formatKmPerLiter(derived.recentAverageKmPerLiter))}</strong>
+              <span class="muted">${escapeHtml(`${formatNumber(derived.recentValidRecords.length)} leitura(s) recentes usadas`)}</span>
+            </article>
+          </div>
+          <div class="dashboard-mini-kpi-grid">
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Media da frota",
+              value: formatKmPerLiter(derived.metricsState.averageKmPerLiter || 0),
+              note: `${formatNumber(derived.analytics.efficiencySummary?.vehicleCount || 0)} placa(s) validas`,
+              icon: "efficiency",
+              tone: "success",
+            })}
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Captura de KM",
+              value: formatPercent(derived.analytics.odometerCoverage?.percent || 0, 0),
+              note: `${formatNumber(derived.analytics.odometerCoverage?.withOdometer || 0)} lancamento(s) completos`,
+              icon: "vehicle",
+              tone: "neutral",
+            })}
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Pico do periodo",
+              value: `${formatLiters(derived.analytics.peakConsumption?.total || 0)} L`,
+              note: derived.analytics.peakConsumption?.date ? formatDateOnly(derived.analytics.peakConsumption.date) : "Sem pico",
+              icon: "dashboard",
+              tone: "warning",
+            })}
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Estoque em alerta",
+              value: formatNumber(derived.metricsState.lowStockCount || 0),
+              note: "Pontos abaixo do minimo",
+              icon: "alert",
+              tone: derived.metricsState.lowStockCount ? "danger" : "success",
+            })}
+          </div>
+        </article>
+      </div>
+
+      <div class="dashboard-secondary-grid">
+        <article class="dashboard-alert-card">
+          <span class="eyebrow">Prioridade media</span>
+          <h4>Alertas operacionais</h4>
+          ${buildDashboardAlertFeed(
+            derived.topAlerts,
+            "Sem alertas ativos",
+            "Nao ha pendencias relevantes para o filtro atual."
+          )}
+        </article>
+
+        <article class="dashboard-subsection-card">
+          <span class="eyebrow">Status operacional</span>
+          <h4>Leitura rapida da operacao</h4>
+          <div class="dashboard-inline-stats">
+            <article>
+              <strong>${escapeHtml(formatNumber(derived.metricsState.activeVehicles || 0))}</strong>
+              <span>Veiculos ativos</span>
+            </article>
+            <article>
+              <strong>${escapeHtml(formatNumber(state.dashboard.todaySchedules.length || 0))}</strong>
+              <span>Escalas no dia</span>
+            </article>
+            <article>
+              <strong>${escapeHtml(`${formatLiters(derived.metricsState.fuelBalance || 0)} L`)}</strong>
+              <span>Saldo total</span>
+            </article>
+            <article>
+              <strong>${escapeHtml(formatNumber(derived.analytics.alertSummary?.critical || 0))}</strong>
+              <span>Alertas criticos</span>
+            </article>
+          </div>
+        </article>
+      </div>
+    `,
+    detail: `
+      ${buildDashboardPanelHeader(
+        "Prioridade baixa",
+        "Ranking e historico",
+        "Rankings e ultimos abastecimentos ficam em segundo plano para nao poluir a decisao principal."
+      )}
+      <div class="dashboard-detail-stack dashboard-detail-stack--split">
+        <div class="dashboard-detail-card">
+          <span class="eyebrow">Ranking de eficiencia</span>
+          <h4>Melhores medias do periodo</h4>
+          ${renderMeterList(
+            rankingItems.map((item) => ({
+              label: item.plate,
+              value: item.kmPerLiter,
+              totalDistanceKm: item.totalDistanceKm,
+              totalLiters: item.totalLiters,
+              samples: item.samples,
+            })),
+            {
+              emptyTitle: "Sem eficiencia calculada",
+              emptyDescription: "Assim que houver leituras coerentes, o ranking aparece aqui.",
+              valueFormatter: (value) => formatKmPerLiter(value),
+              secondaryFormatter: (item) =>
+                `${formatDistance(item.totalDistanceKm)} | ${formatLiters(item.totalLiters)} L | ${item.samples} leitura(s)`,
+            }
+          )}
         </div>
-      </article>
-    </div>
-  `;
+        <div class="dashboard-detail-card">
+          <span class="eyebrow">Historico recente</span>
+          <h4>Ultimos abastecimentos</h4>
+          ${buildDashboardRecentFuelFeed(
+            recentFuelRecords,
+            "Sem abastecimentos recentes",
+            "Nao houve lancamentos suficientes para exibir o historico."
+          )}
+        </div>
+      </div>
+    `,
+  };
+}
 
-  const detailRows = (analytics.consumptionSeries || [])
+function buildDashboardFuelView(derived) {
+  const detailRows = (derived.analytics.consumptionSeries || [])
     .filter((item) => Number(item.total || 0) > 0)
     .map((item) => [
       `<strong>${escapeHtml(formatDateOnly(item.date))}</strong>`,
@@ -2729,276 +2925,436 @@ function buildDashboardFuelView() {
       escapeHtml(`${formatLiters(item.total || 0)} L`),
     ]);
 
-  const detail =
-    totalConsumption > 0
-      ? `
-          ${buildDashboardPanelHeader(
-            "Bloco 3",
-            "Detalhamento do combustivel",
-            "Grafico do periodo e tabela diaria com a distribuicao entre S-10 e S-500."
+  return {
+    primary: `
+      ${buildDashboardPanelHeader(
+        "Prioridade alta",
+        "Abastecimento e nivel dos tanques",
+        "Visao direta do saldo atual, consumo diario e participacao entre S-500 e S-10."
+      )}
+      <section class="dashboard-tank-grid">
+          ${buildDashboardTankCard(
+            "S-500",
+            derived.s500Balance,
+            derived.s500DailyAverage,
+            derived.s500Consumption,
+            derived.s500Participation,
+            derived.tankCapacity,
+            derived.metricsState.averageKmPerLiter
           )}
-          <div class="dashboard-detail-stack">
-            <div class="dashboard-detail-card">
-              ${renderConsumptionChart(analytics)}
-            </div>
-            <div class="dashboard-detail-card">
-              <span class="eyebrow">Tabela resumida</span>
-              <h4>Distribuicao diaria</h4>
-              ${buildDashboardTable(
-                ["Data", "S-500", "S-10", "Total"],
-                detailRows,
-                "Sem detalhamento diario",
-                "Nao houve consumo suficiente para compor a distribuicao por dia."
-              )}
-            </div>
-          </div>
-        `
-      : "";
+          ${buildDashboardTankCard(
+            "S-10",
+            derived.s10Balance,
+            derived.s10DailyAverage,
+            derived.s10Consumption,
+            derived.s10Participation,
+            derived.tankCapacity,
+            derived.metricsState.averageKmPerLiter
+          )}
+      </section>
 
-  return { primary, detail };
+      <div class="dashboard-secondary-grid">
+        <article class="dashboard-focus-card">
+          <span class="eyebrow">Complementares</span>
+          <h4>Consumo consolidado do periodo</h4>
+          <div class="dashboard-mini-kpi-grid">
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Consumo total",
+              value: `${formatLiters(derived.totalConsumption)} L`,
+              note: derived.periodLabel,
+              icon: "fuel",
+              tone: "brand",
+            })}
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Media diaria",
+              value: `${formatLiters(derived.metricsState.averageDailyConsumption || 0)} L`,
+              note: `${formatNumber(derived.periodDays)} dia(s) analisado(s)`,
+              icon: "analytics",
+              tone: "neutral",
+            })}
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "S-500 no mix",
+              value: formatPercent(derived.s500Participation, 0),
+              note: `${formatLiters(derived.s500Consumption)} L no periodo`,
+              icon: "fuel",
+              tone: "warning",
+            })}
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "S-10 no mix",
+              value: formatPercent(derived.s10Participation, 0),
+              note: `${formatLiters(derived.s10Consumption)} L no periodo`,
+              icon: "fuel",
+              tone: "success",
+            })}
+          </div>
+        </article>
+        <article class="dashboard-alert-card">
+          <span class="eyebrow">Prioridade media</span>
+          <h4>Pontos que pedem atencao</h4>
+          ${buildDashboardAlertFeed(
+            derived.topAlerts,
+            "Sem alertas de combustivel",
+            "Estoques, abastecimentos e pendencias estao dentro do esperado."
+          )}
+        </article>
+      </div>
+    `,
+    detail: `
+      ${buildDashboardPanelHeader(
+        "Prioridade baixa",
+        "Curva e distribuicao diaria",
+        "Detalhamento grafico e tabela resumida para conferencia quando necessario."
+      )}
+      <div class="dashboard-detail-stack">
+        <div class="dashboard-detail-card">
+          ${
+            state.dashboard.lazy?.fuelChartLoaded
+              ? renderConsumptionChart(derived.analytics)
+              : `
+                  <div class="dashboard-chart-demand">
+                    <strong>Grafico sob demanda</strong>
+                    <p class="muted">Carregue a curva diaria apenas quando precisar aprofundar a leitura do periodo.</p>
+                    <button type="button" class="secondary-button" data-dashboard-load-chart="fuel">Carregar grafico</button>
+                  </div>
+                `
+          }
+        </div>
+        <div class="dashboard-detail-card">
+          <span class="eyebrow">Tabela diaria</span>
+          <h4>Distribuicao entre S-500 e S-10</h4>
+          ${buildDashboardTable(
+            ["Data", "S-500", "S-10", "Total"],
+            detailRows,
+            "Sem distribuicao diaria",
+            "Nao houve consumo suficiente para montar a distribuicao por dia."
+          )}
+        </div>
+      </div>
+    `,
+  };
 }
 
-function buildDashboardPeriodView() {
-  const metricsState = state.dashboard.metrics || {};
-  const analytics = state.dashboard.analytics || {};
-  const topConsumers = (analytics.topConsumers || []).slice(0, 5);
-  const periodLabel = buildDashboardPeriodLabel(analytics);
+function buildDashboardEfficiencyView(derived) {
+  const selectedVehicle = derived.selectedVehicle;
+  const records = derived.selectedVehicleRecords;
+  const selectorOptions = (derived.analytics.availablePlates || [])
+    .map((plate) => `<option value="${escapeHtml(plate)}"${plate === derived.focusPlate ? " selected" : ""}>${escapeHtml(plate)}</option>`)
+    .join("");
+  const vehicleSpecificAlerts = derived.focusAlerts;
 
-  const primary = `
-    ${buildDashboardPanelHeader(
-      "Bloco 2",
-      "Resumo do periodo",
-      "Leitura direta do intervalo selecionado para fechamento, conferencia e tomada de decisao."
-    )}
-    <div class="dashboard-focus-grid">
-      <article class="dashboard-focus-card">
-        <span class="eyebrow">Intervalo analisado</span>
-        <h4>${escapeHtml(periodLabel)}</h4>
-        <p class="muted">Ajuste as datas no topo para consolidar um recorte especifico da operacao.</p>
-        <div class="dashboard-mini-kpi-grid">
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Total abastecido",
-            value: `${formatLiters(metricsState.periodFuelConsumption || 0)} L`,
-            note: "Saidas do periodo",
-            icon: "fuel",
-            tone: "brand",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Media diaria",
-            value: `${formatLiters(metricsState.averageDailyConsumption || 0)} L`,
-            note: `${formatNumber(analytics.periodDays || 0)} dia(s) analisado(s)`,
-            icon: "analytics",
-            tone: "neutral",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Pico do periodo",
-            value: `${formatLiters(analytics.peakConsumption?.total || 0)} L`,
-            note: analytics.peakConsumption?.date ? formatDateOnly(analytics.peakConsumption.date) : "Sem pico",
-            icon: "dashboard",
-            tone: "warning",
-          })}
-          ${buildStatCard({
-            className: "dashboard-mini-kpi",
-            label: "Veiculos com leitura",
-            value: formatNumber(analytics.efficiencySummary?.vehicleCount || 0),
-            note: "Base com KM validado",
-            icon: "vehicle",
-            tone: "success",
-          })}
+  if (!derived.analytics.availablePlates?.length) {
+    return {
+      primary: `
+        ${buildDashboardPanelHeader(
+          "Prioridade alta",
+          "Conferencia de KM/L por placa",
+          "Cadastre abastecimentos com placa para liberar a leitura individual de eficiencia."
+        )}
+        ${renderDashboardEmpty(
+          "Sem placas com historico",
+          "Assim que houver abastecimentos associados a veiculos, este modulo passa a calcular KM/L."
+        )}
+      `,
+      detail: "",
+    };
+  }
+
+  const recordsMarkup = records.length
+    ? records
+        .map((record) => {
+          const status = getDashboardRecordStatus(record);
+          const effectiveKmValue =
+            record.effectiveKm === null || record.effectiveKm === undefined ? "" : String(record.effectiveKm);
+          const formulaLabel =
+            record.referenceKmUsed !== null &&
+            record.referenceKmUsed !== undefined &&
+            record.averageKmPerLiter !== null &&
+            record.averageKmPerLiter !== undefined
+              ? `(${formatNumber(record.effectiveKm || 0, 0, 0)} - ${formatNumber(record.referenceKmUsed || 0, 0, 0)}) / ${formatLiters(record.quantity || 0)}`
+              : "Leitura aguardando par valido";
+
+          return `
+            <article class="dashboard-efficiency-record">
+              <div class="dashboard-efficiency-record__top">
+                <div>
+                  <strong>${escapeHtml(`${formatDateOnly(record.occurredAt)} | ${formatFuelKindLabel(record.fuelKind)}`)}</strong>
+                  <p class="muted">${escapeHtml(`${formatLiters(record.quantity || 0)} L | ${formatDateTime(record.occurredAt)}`)}</p>
+                </div>
+                <span class="status-badge ${status.className}">${escapeHtml(status.label)}</span>
+              </div>
+              <div class="dashboard-efficiency-record__summary">
+                <article>
+                  <span class="eyebrow">KM/L</span>
+                  <strong>${escapeHtml(formatKmPerLiter(record.averageKmPerLiter || 0))}</strong>
+                </article>
+                <article>
+                  <span class="eyebrow">Formula</span>
+                  <strong>${escapeHtml(formulaLabel)}</strong>
+                </article>
+              </div>
+              <div class="dashboard-efficiency-record__edit">
+                <label class="dashboard-filter-field">
+                  <span>KM usado</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value="${escapeHtml(effectiveKmValue)}"
+                    data-dashboard-odometer-input="${record.id}"
+                  />
+                </label>
+                <label class="dashboard-filter-field">
+                  <span>Motivo da correcao</span>
+                  <input
+                    type="text"
+                    value="${escapeHtml(record.correctionReason || "")}"
+                    placeholder="Descreva a justificativa"
+                    data-dashboard-odometer-reason="${record.id}"
+                  />
+                </label>
+                <div class="dashboard-efficiency-record__actions">
+                  <button type="button" class="secondary-button" data-dashboard-save-odometer="${record.id}">Salvar</button>
+                  <button type="button" class="ghost-button" data-dashboard-clear-odometer="${record.id}">Restaurar</button>
+                </div>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : renderDashboardEmpty(
+        "Sem abastecimentos suficientes",
+        "Selecione uma placa com ao menos dois abastecimentos para apurar o KM/L."
+      );
+
+  return {
+    primary: `
+      ${buildDashboardPanelHeader(
+        "Prioridade alta",
+        "KM/L por veiculo",
+        "A leitura usa os ultimos abastecimentos coerentes e permite correcao manual do KM quando necessario."
+      )}
+      <div class="dashboard-stage-grid dashboard-stage-grid--efficiency">
+        <article class="dashboard-priority-card">
+          <div class="dashboard-priority-card__top">
+            <div>
+              <span class="eyebrow">Placa em foco</span>
+              <h4>${escapeHtml(selectedVehicle?.plate || derived.focusPlate || "Selecione uma placa")}</h4>
+              <p class="muted">KM/L = (KM atual - KM anterior) / litros abastecidos.</p>
+            </div>
+            ${buildIconBadge("vehicle", selectedVehicle?.samples ? "success" : "warning")}
+          </div>
+          <label class="dashboard-filter-field">
+            <span>Selecionar placa</span>
+            <select data-dashboard-focus-plate ${derived.selectedPlate ? "disabled" : ""}>
+              ${selectorOptions}
+            </select>
+          </label>
+          ${
+            derived.selectedPlate
+              ? `<p class="muted">O filtro global por placa esta ativo. Para comparar outra placa, limpe o filtro do topo.</p>`
+              : ""
+          }
+          <div class="dashboard-kpi-hero">
+            <article>
+              <span class="eyebrow">KM/L atual</span>
+              <strong>${escapeHtml(formatKmPerLiter(derived.currentVehicleKmPerLiter))}</strong>
+              <span class="muted">${escapeHtml(selectedVehicle?.lastFuelAt ? formatDateTime(selectedVehicle.lastFuelAt) : "Sem leitura recente")}</span>
+            </article>
+            <article>
+              <span class="eyebrow">Media recente</span>
+              <strong>${escapeHtml(formatKmPerLiter(derived.recentAverageKmPerLiter))}</strong>
+              <span class="muted">${escapeHtml(`${formatNumber(derived.recentValidRecords.length)} leitura(s) coerentes usadas`)}</span>
+            </article>
+          </div>
+          <div class="dashboard-mini-kpi-grid">
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Distancia analisada",
+              value: formatDistance(selectedVehicle?.totalDistanceKm || 0),
+              note: "Somente leituras coerentes",
+              icon: "vehicle",
+              tone: "neutral",
+            })}
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Litros usados",
+              value: `${formatLiters(selectedVehicle?.totalLiters || 0)} L`,
+              note: "Base do calculo recente",
+              icon: "fuel",
+              tone: "brand",
+            })}
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Leituras validas",
+              value: formatNumber(selectedVehicle?.samples || 0),
+              note: "Pares com KM coerente",
+              icon: "analytics",
+              tone: selectedVehicle?.samples ? "success" : "warning",
+            })}
+            ${buildStatCard({
+              className: "dashboard-mini-kpi",
+              label: "Ultimo KM",
+              value:
+                selectedVehicle?.lastOdometerKm && Number(selectedVehicle.lastOdometerKm) > 0
+                  ? formatDistance(selectedVehicle.lastOdometerKm)
+                  : "-",
+              note: selectedVehicle?.lastFuelKind ? formatFuelKindLabel(selectedVehicle.lastFuelKind) : "Sem ultima leitura",
+              icon: "efficiency",
+              tone: "warning",
+            })}
+          </div>
+        </article>
+
+        <article class="dashboard-subsection-card">
+          <span class="eyebrow">Abastecimentos usados</span>
+          <h4>Ultimos pares considerados no calculo</h4>
+          ${
+            derived.recentValidRecords.length
+              ? `
+                  <div class="dashboard-used-records">
+                    ${derived.recentValidRecords
+                      .map(
+                        (record) => `
+                          <article class="dashboard-used-record">
+                            <strong>${escapeHtml(formatDateOnly(record.occurredAt))}</strong>
+                            <span>${escapeHtml(formatKmPerLiter(record.averageKmPerLiter || 0))}</span>
+                            <p class="muted">${escapeHtml(
+                              record.referenceKmUsed !== null && record.referenceKmUsed !== undefined
+                                ? `${formatNumber(record.effectiveKm || 0, 0, 0)} - ${formatNumber(record.referenceKmUsed || 0, 0, 0)} em ${formatLiters(record.quantity || 0)} L`
+                                : "Leitura aguardando historico valido"
+                            )}</p>
+                          </article>
+                        `
+                      )
+                      .join("")}
+                  </div>
+                `
+              : renderDashboardEmpty(
+                  "Sem pares coerentes",
+                  "Registre ao menos dois abastecimentos com KM coerente para liberar a conferencia."
+                )
+          }
+        </article>
+      </div>
+
+      <article class="dashboard-detail-card">
+        <span class="eyebrow">Intervencao manual</span>
+        <h4>Ajuste o KM usado no calculo</h4>
+        <p class="muted">Edite o valor quando houver erro de digitacao ou necessidade de conferencia operacional.</p>
+        <div class="dashboard-efficiency-records">
+          ${recordsMarkup}
         </div>
       </article>
-
-      <article class="dashboard-focus-card">
-        <span class="eyebrow">Resumo operacional</span>
-        <h4>Top consumo no intervalo</h4>
-        ${renderMeterList(
-          topConsumers.map((item) => ({
-            label: item.plate,
-            value: item.totalLiters,
-            records: item.records,
-            lastAt: item.lastAt,
-          })),
-          {
-            emptyTitle: "Sem consumo no intervalo",
-            emptyDescription: "A selecao atual nao retornou lancamentos suficientes para comparacao.",
-            valueFormatter: (value) => `${formatLiters(value)} L`,
-            secondaryFormatter: (item) =>
-              `${formatNumber(item.records || 0)} lancamento(s) | ${formatDateOnly(item.lastAt)}`,
-          }
-        )}
-      </article>
-    </div>
-  `;
-
-  const detailRows = (analytics.consumptionSeries || []).map((item) => [
-    `<strong>${escapeHtml(formatDateOnly(item.date))}</strong>`,
-    escapeHtml(`${formatLiters(item.total || 0)} L`),
-    escapeHtml(`${formatLiters(item.s500 || 0)} L`),
-    escapeHtml(`${formatLiters(item.s10 || 0)} L`),
-  ]);
-
-  const detail = `
-    ${buildDashboardPanelHeader(
-      "Bloco 3",
-      "Detalhamento do periodo",
-      "Curva de consumo e tabela resumida do intervalo escolhido."
-    )}
-    <div class="dashboard-detail-stack">
-      <div class="dashboard-detail-card">
-        ${renderConsumptionChart(analytics)}
-      </div>
-      <div class="dashboard-detail-card">
-        <span class="eyebrow">Tabela resumida</span>
-        <h4>Consumo por dia</h4>
-        ${buildDashboardTable(
-          ["Data", "Total", "S-500", "S-10"],
-          detailRows,
-          "Sem consumo no periodo",
-          "A faixa selecionada nao possui saidas suficientes para detalhamento."
-        )}
-      </div>
-    </div>
-  `;
-
-  return { primary, detail };
-}
-
-function buildDashboardAlertsView() {
-  const analytics = state.dashboard.analytics || {};
-  const allAlerts = Array.isArray(state.dashboard.alerts) ? state.dashboard.alerts : [];
-  const operationalAlerts = Array.isArray(analytics.operationalAlerts) ? analytics.operationalAlerts : [];
-  const kmAlerts = operationalAlerts.filter((item) => item.type === "KM_ERROR");
-  const outlierAlerts = operationalAlerts.filter((item) => item.type === "OUTLIER_CONSUMPTION");
-  const missingAlerts = operationalAlerts.filter((item) => item.type === "MISSING_ODOMETER");
-  const generalAlerts = allAlerts.filter(
-    (item) => !["KM_ERROR", "OUTLIER_CONSUMPTION", "MISSING_ODOMETER"].includes(item.type)
-  );
-
-  const primary = `
-    ${buildDashboardPanelHeader(
-      "Bloco 2",
-      "Fila de alertas",
-      "Inconsistencias organizadas por tipo para facilitar a conferencia rapida do dia."
-    )}
-    <div class="dashboard-mini-kpi-grid dashboard-mini-kpi-grid--alerts">
-      ${buildStatCard({
-        className: "dashboard-mini-kpi",
-        label: "Criticos",
-        value: formatNumber(analytics.alertSummary?.critical || 0),
-        note: "Requer revisao imediata",
-        icon: "alert",
-        tone: (analytics.alertSummary?.critical || 0) ? "danger" : "success",
-      })}
-      ${buildStatCard({
-        className: "dashboard-mini-kpi",
-        label: "Erro de KM",
-        value: formatNumber(analytics.alertSummary?.kmErrors || 0),
-        note: "Leituras regressivas ou iguais",
-        icon: "vehicle",
-        tone: (analytics.alertSummary?.kmErrors || 0) ? "danger" : "neutral",
-      })}
-      ${buildStatCard({
-        className: "dashboard-mini-kpi",
-        label: "Fora do padrao",
-        value: formatNumber(analytics.alertSummary?.outliers || 0),
-        note: "Media alta ou baixa demais",
-        icon: "efficiency",
-        tone: (analytics.alertSummary?.outliers || 0) ? "warning" : "success",
-      })}
-      ${buildStatCard({
-        className: "dashboard-mini-kpi",
-        label: "KM ausente",
-        value: formatNumber(analytics.alertSummary?.missingOdometer || 0),
-        note: "Abastecimentos sem hodometro",
-        icon: "analytics",
-        tone: (analytics.alertSummary?.missingOdometer || 0) ? "warning" : "neutral",
-      })}
-    </div>
-
-    <div class="dashboard-alert-grid">
-      <article class="dashboard-alert-card">
-        <span class="eyebrow">Erro de KM</span>
-        <h4>Veiculos com leitura inconsistente</h4>
-        ${buildDashboardAlertFeed(
-          kmAlerts.slice(0, 5),
-          "Sem erros de KM",
-          "Nenhuma leitura regressiva foi encontrada no periodo atual."
-        )}
-      </article>
-
-      <article class="dashboard-alert-card">
-        <span class="eyebrow">Consumo fora do padrao</span>
-        <h4>Medias que pedem revisao</h4>
-        ${buildDashboardAlertFeed(
-          outlierAlerts.slice(0, 5),
-          "Sem outliers relevantes",
-          "Nao foram encontrados consumos muito acima ou abaixo do esperado."
-        )}
-      </article>
-
-      <article class="dashboard-alert-card">
-        <span class="eyebrow">Pendencias gerais</span>
-        <h4>Ausencia de KM e alertas auxiliares</h4>
-        ${buildDashboardAlertFeed(
-          [...missingAlerts, ...generalAlerts].slice(0, 6),
-          "Sem pendencias abertas",
-          "Nenhuma ausencia de KM ou pendencia auxiliar foi encontrada."
-        )}
-      </article>
-    </div>
-  `;
-
-  const detailRows = allAlerts.map((alert) => [
-    buildDashboardSeverityBadge(alert.severity),
-    `<strong>${escapeHtml(alert.type || "-")}</strong>`,
-    escapeHtml(alert.plate || "-"),
-    escapeHtml(alert.occurredAt ? formatDateTime(alert.occurredAt) : "-"),
-    escapeHtml(alert.title || "-"),
-  ]);
-
-  const detail = `
-    ${buildDashboardPanelHeader(
-      "Bloco 3",
-      "Tabela de alertas",
-      "Lista resumida para revisao rapida e priorizacao das tratativas."
-    )}
-    <div class="dashboard-detail-card">
-      ${buildDashboardTable(
-        ["Severidade", "Tipo", "Placa", "Quando", "Resumo"],
-        detailRows,
-        "Sem alertas ativos",
-        "Nenhuma inconsistencia foi encontrada para o filtro atual."
+    `,
+    detail: `
+      ${buildDashboardPanelHeader(
+        "Prioridade media e baixa",
+        "Alertas e ranking de eficiencia",
+        "Primeiro a placa em foco, depois alertas da leitura e ranking para comparacao da frota."
       )}
-    </div>
-  `;
-
-  return { primary, detail };
+      <div class="dashboard-detail-stack dashboard-detail-stack--split">
+        <div class="dashboard-detail-card">
+          <span class="eyebrow">Alertas da placa</span>
+          <h4>Conferencia da leitura atual</h4>
+          ${buildDashboardAlertFeed(
+            vehicleSpecificAlerts,
+            "Sem alertas para a placa",
+            "Nao ha inconsistencias abertas para a placa em foco neste periodo."
+          )}
+        </div>
+        <div class="dashboard-detail-card">
+          <span class="eyebrow">Ranking da frota</span>
+          <h4>Comparativo de KM/L</h4>
+          ${renderMeterList(
+            (derived.analytics.efficiencyRanking || []).slice(0, 6).map((item) => ({
+              label: item.plate,
+              value: item.kmPerLiter,
+              samples: item.samples,
+              totalDistanceKm: item.totalDistanceKm,
+            })),
+            {
+              emptyTitle: "Sem ranking disponivel",
+              emptyDescription: "Ainda nao ha leituras coerentes suficientes para ranquear a frota.",
+              valueFormatter: (value) => formatKmPerLiter(value),
+              secondaryFormatter: (item) =>
+                `${formatDistance(item.totalDistanceKm)} | ${item.samples} leitura(s) validas`,
+            }
+          )}
+        </div>
+      </div>
+    `,
+  };
 }
 
-function buildDashboardViewModel() {
+function buildDashboardSummaryCards(derived) {
+  return [
+    buildStatCard({
+      className: "dashboard-decision-card",
+      label: "Combustivel total",
+      value: `${formatLiters(derived.metricsState.fuelBalance || 0)} L`,
+      note: "Saldo somado entre S-500 e S-10",
+      icon: "fuel",
+      tone: "brand",
+    }),
+    buildStatCard({
+      className: "dashboard-decision-card",
+      label: "Media KM/L",
+      value: formatKmPerLiter(derived.metricsState.averageKmPerLiter || 0),
+      note: `${formatNumber(derived.analytics.efficiencySummary?.vehicleCount || 0)} placa(s) com leitura valida`,
+      icon: "efficiency",
+      tone:
+        Number(derived.metricsState.averageKmPerLiter || 0) > 0
+          ? "success"
+          : "warning",
+    }),
+    buildStatCard({
+      className: "dashboard-decision-card",
+      label: "Veiculos ativos",
+      value: formatNumber(derived.metricsState.activeVehicles || 0),
+      note: "Base operacional pronta para uso",
+      icon: "vehicle",
+      tone: "neutral",
+    }),
+    buildStatCard({
+      className: "dashboard-decision-card",
+      label: "Alertas",
+      value: formatNumber(derived.analytics.alertSummary?.total || state.dashboard.alerts.length || 0),
+      note: `${formatNumber(derived.analytics.alertSummary?.critical || derived.metricsState.criticalAlertCount || 0)} critico(s) no periodo`,
+      icon: "alert",
+      tone:
+        Number(derived.analytics.alertSummary?.critical || derived.metricsState.criticalAlertCount || 0) > 0
+          ? "danger"
+          : "success",
+    }),
+  ].join("");
+}
+
+function buildDashboardViewModel(derived) {
   switch (normalizeDashboardView(state.dashboard.view)) {
-    case "vehicle":
-      return buildDashboardVehicleView();
     case "fuel":
-      return buildDashboardFuelView();
-    case "period":
-      return buildDashboardPeriodView();
-    case "alerts":
-      return buildDashboardAlertsView();
+      return buildDashboardFuelView(derived);
+    case "efficiency":
+      return buildDashboardEfficiencyView(derived);
     case "overview":
     default:
-      return buildDashboardOverviewView();
+      return buildDashboardOverviewView(derived);
   }
 }
 
 function renderDashboard() {
-  syncDashboardFilterInputs();
-  refs.dashboardSummary.innerHTML = buildDashboardSummaryCards();
+  if (!refs.dashboardSummary || !refs.dashboardPrimary || !refs.dashboardDetail) {
+    return;
+  }
 
-  const viewModel = buildDashboardViewModel();
+  syncDashboardFilterInputs();
+  const derived = buildDashboardDerivedState();
+  refs.dashboardSummary.innerHTML = buildDashboardSummaryCards(derived);
+
+  const viewModel = buildDashboardViewModel(derived);
   refs.dashboardPrimary.innerHTML = viewModel.primary;
 
   if (viewModel.detail) {
@@ -3335,6 +3691,8 @@ function renderFines() {
         )
         .join("")
     : emptyRow("Nenhuma multa cadastrada.", 6);
+
+  syncResponsiveTableLabels();
 }
 
 function renderChecklists() {
@@ -3382,6 +3740,8 @@ function renderEmails() {
         )
         .join("")
     : emptyRow("Nenhum email processado.", 6);
+
+  syncResponsiveTableLabels();
 }
 
 function renderAdmin() {
@@ -3601,7 +3961,7 @@ function editChecklistTemplate(id) {
   refs.checklistTemplateForm.elements.active.value = item.active === false ? "false" : "true";
   refs.checklistTemplateForm.elements.vehicleType.value = item.vehicleType || "";
   refs.checklistTemplateForm.elements.sortOrder.value = item.sortOrder || 1;
-  refs.checklistTemplateForm.scrollIntoView({ behavior: "smooth", block: "start" });
+  scrollToElement(refs.checklistTemplateForm);
 }
 
 async function toggleChecklistTemplate(id) {
@@ -4161,6 +4521,1551 @@ async function handleScheduleSubmit(event) {
   } catch (error) {
     showToast(error.message, "error");
   }
+}
+
+function formatNoteSourceLabel(source) {
+  const normalized = String(source || "").trim().toUpperCase();
+  if (normalized === "PLANILHA" || normalized === "SPREADSHEET") {
+    return "PLANILHA";
+  }
+  if (normalized === "XML") {
+    return "XML";
+  }
+  if (normalized === "SISTEC") {
+    return "SISTEC";
+  }
+  return normalized || "MANUAL";
+}
+
+function getNoteWorkflowMeta(note) {
+  if (note.archivedAt) {
+    return {
+      label: "Baixada",
+      className: "status-green",
+      detail: `Arquivada em ${formatDateTime(note.archivedAt)}`,
+    };
+  }
+
+  if (!note.sentToFinanceAt) {
+    return {
+      label: "Ativa",
+      className: "status-gray",
+      detail: "Aguardando envio ao financeiro",
+    };
+  }
+
+  const sentAt = Date.parse(note.sentToFinanceAt);
+  if (!Number.isFinite(sentAt)) {
+    return {
+      label: "Financeiro",
+      className: "status-yellow",
+      detail: "Data de envio em revisao",
+    };
+  }
+
+  const deadline = sentAt + 14 * 24 * 60 * 60 * 1000;
+  const daysRemaining = Math.ceil((deadline - Date.now()) / (24 * 60 * 60 * 1000));
+
+  if (daysRemaining < 0) {
+    return {
+      label: "Vencido",
+      className: "status-red",
+      detail: `Enviado em ${formatDateTime(note.sentToFinanceAt)}`,
+    };
+  }
+
+  if (daysRemaining === 0) {
+    return {
+      label: "Vence hoje",
+      className: "status-red",
+      detail: `Enviado em ${formatDateTime(note.sentToFinanceAt)}`,
+    };
+  }
+
+  return {
+    label: `${daysRemaining} dia(s) restantes`,
+    className: daysRemaining > 7 ? "status-green" : daysRemaining >= 3 ? "status-yellow" : "status-red",
+    detail: `Enviado em ${formatDateTime(note.sentToFinanceAt)}`,
+  };
+}
+
+function renderNotesSummary() {
+  if (!refs.notesSummaryCards) {
+    return;
+  }
+
+  const activeCount = state.notes.filter((item) => !item.sentToFinanceAt && !item.archivedAt).length;
+  const financeCount = state.notes.filter((item) => item.sentToFinanceAt && !item.archivedAt).length;
+  const archivedCount = state.notes.filter((item) => item.archivedAt).length;
+
+  refs.notesSummaryCards.innerHTML = [
+    { label: "Notas visiveis", value: state.notes.length, note: "Filtros atuais", icon: "notes", tone: "brand" },
+    { label: "Ativas", value: activeCount, note: "Sem envio ao financeiro", icon: "alert", tone: "neutral" },
+    { label: "Financeiro", value: financeCount, note: "Sob acompanhamento", icon: "analytics", tone: "warning" },
+    { label: "Historico", value: archivedCount, note: "Ja arquivadas", icon: "dashboard", tone: "success" },
+  ]
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card operations-kpi-card--compact",
+        label: item.label,
+        value: formatNumber(item.value),
+        note: item.note,
+        icon: item.icon,
+        tone: item.tone,
+      })
+    )
+    .join("");
+}
+
+function renderNotesImportSummary() {
+  if (!refs.notesImportSummary) {
+    return;
+  }
+
+  const summary = state.notesUi.importSummary;
+  if (!summary) {
+    refs.notesImportSummary.textContent =
+      "Reimportacoes duplicadas serao ignoradas automaticamente e o resumo aparecera aqui.";
+    refs.notesImportSummary.dataset.tone = "neutral";
+    return;
+  }
+
+  refs.notesImportSummary.textContent =
+    `${summary.imported || 0} importada(s) | ${summary.ignored || 0} ignorada(s) | ${summary.errors || 0} erro(s)`;
+  refs.notesImportSummary.dataset.tone = Number(summary.errors || 0) > 0 ? "critical" : "positive";
+}
+
+function buildInlineNoteEditor(note) {
+  return `
+    <tr class="note-inline-editor-row">
+      <td colspan="8">
+        <div class="note-inline-editor">
+          <div class="note-inline-editor__summary">
+            <article>
+              <span>Fornecedor</span>
+              <strong>${escapeHtml(note.supplierName)}</strong>
+            </article>
+            <article>
+              <span>Valor</span>
+              <strong>${escapeHtml(formatCurrency(note.totalValue))}</strong>
+            </article>
+            <article>
+              <span>Emissao</span>
+              <strong>${escapeHtml(note.issueDate ? formatDateTime(note.issueDate) : "Nao informada")}</strong>
+            </article>
+          </div>
+          <div class="note-inline-editor__grid">
+            <label>
+              <span>DANFE</span>
+              <input id="note-inline-danfe-${note.id}" type="text" value="${escapeHtml(note.danfe || "")}" />
+            </label>
+            <label>
+              <span>Envio ao financeiro</span>
+              <input
+                id="note-inline-sent-${note.id}"
+                type="datetime-local"
+                value="${escapeHtml(toLocalDateTimeInput(note.sentToFinanceAt).slice(0, 16))}"
+              />
+            </label>
+            <label class="full-width">
+              <span>Observacoes financeiras</span>
+              <textarea id="note-inline-finance-notes-${note.id}" rows="3">${escapeHtml(note.financeNotes || "")}</textarea>
+            </label>
+          </div>
+          <div class="note-inline-editor__actions">
+            <button type="button" class="ghost-button" data-note-set-finance-today="${note.id}">Marcar agora</button>
+            <button type="button" class="secondary-button" data-note-inline-save="${note.id}">Salvar ajustes</button>
+            <button type="button" class="ghost-button" data-note-inline-cancel="true">Fechar</button>
+          </div>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+async function refreshNotes() {
+  const search = refs.notesSearch.value.trim();
+  const status = refs.notesStatusFilter.value;
+  const category = refs.notesCategoryFilter.value;
+  const workflow = refs.notesWorkflowFilter?.value || state.notesUi.workflow || "ACTIVE";
+  const query = new URLSearchParams();
+
+  if (search) query.set("search", search);
+  if (status) query.set("status", status);
+  if (category) query.set("category", category);
+  if (workflow) query.set("workflow", workflow);
+
+  state.notesUi.workflow = workflow;
+  if (refs.notesWorkflowFilter) {
+    refs.notesWorkflowFilter.value = workflow;
+  }
+
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const response = await api(`/api/notes${suffix}`);
+  state.notes = response.items || [];
+  renderNotes();
+}
+
+function renderNotes() {
+  renderNotesSummary();
+  renderNotesImportSummary();
+
+  refs.notesTableBody.innerHTML = state.notes.length
+    ? state.notes
+        .map((note) => {
+          const workflow = getNoteWorkflowMeta(note);
+          const isEditing = Number(state.notesUi.editingId || 0) === Number(note.id);
+
+          return `
+            <tr class="${isEditing ? "is-editing" : ""}">
+              <td>
+                <strong>${escapeHtml(note.supplierName)}</strong>
+                <div class="muted">${escapeHtml(note.issueDate ? formatDateTime(note.issueDate) : "Data nao informada")}</div>
+                <div class="muted">${escapeHtml(`${formatNoteSourceLabel(note.source)}${note.supplierTaxId ? ` • ${note.supplierTaxId}` : ""}`)}</div>
+              </td>
+              <td>${escapeHtml(note.danfe || "-")}</td>
+              <td>${escapeHtml(formatCurrency(note.totalValue))}</td>
+              <td>${statusBadge(note.category)}</td>
+              <td>${statusBadge(note.status)}</td>
+              <td>
+                <span class="status-badge ${workflow.className}">${escapeHtml(workflow.label)}</span>
+                <div class="muted">${escapeHtml(workflow.detail)}</div>
+              </td>
+              <td>
+                ${note.sentToFinanceAt ? `<div>${escapeHtml(formatDateTime(note.sentToFinanceAt))}</div>` : `<div class="muted">Nao enviado</div>`}
+                <div class="muted">${escapeHtml(note.sentToFinanceByName || note.financeNotes || "")}</div>
+              </td>
+              <td>
+                <div class="row-actions">
+                  ${buildRowActionButton("edit-note", note.id, "Editar nota", "&#9998;")}
+                  ${
+                    state.user?.role === "ADMIN"
+                      ? buildRowActionButton("delete-note", note.id, "Excluir nota", "&#10005;", "danger")
+                      : ""
+                  }
+                </div>
+              </td>
+            </tr>
+            ${isEditing ? buildInlineNoteEditor(note) : ""}
+          `;
+        })
+        .join("")
+    : emptyRow("Nenhuma nota encontrada para os filtros informados.", 8);
+
+  syncResponsiveTableLabels();
+}
+
+function editNote(id) {
+  const note = findById(state.notes, id);
+  if (!note) {
+    return;
+  }
+
+  state.notesUi.editingId = Number(note.id);
+  renderNotes();
+}
+
+function resetNoteForm() {
+  refs.noteForm.reset();
+  refs.noteForm.elements.id.value = "";
+  refs.noteForm.elements.status.value = "NEW";
+  refs.noteForm.elements.category.value = "LOGISTICS";
+  refs.noteForm.elements.issueDate.value = currentLocalDateTime();
+  state.notesUi.editingId = null;
+}
+
+function cancelInlineNoteEditing() {
+  state.notesUi.editingId = null;
+  renderNotes();
+}
+
+function setInlineNoteFinanceNow(noteId) {
+  const input = $(`note-inline-sent-${noteId}`);
+  if (!input) {
+    return;
+  }
+
+  input.value = currentLocalDateTime().slice(0, 16);
+}
+
+async function saveInlineNoteEditing(noteId) {
+  const note = findById(state.notes, noteId);
+  if (!note) {
+    return;
+  }
+
+  const sentToFinanceAt = toIsoDateTime($(`note-inline-sent-${noteId}`)?.value || "");
+  const payload = {
+    supplierName: note.supplierName,
+    supplierTaxId: note.supplierTaxId,
+    totalValue: note.totalValue,
+    issueDate: note.issueDate,
+    category: note.category,
+    status: sentToFinanceAt ? (note.archivedAt ? "FINALIZED" : "SENT_FINANCE") : note.status === "SENT_FINANCE" ? "ACKNOWLEDGED" : note.status,
+    danfe: $(`note-inline-danfe-${noteId}`)?.value || "",
+    sentToFinanceAt,
+    financeNotes: $(`note-inline-finance-notes-${noteId}`)?.value || "",
+    archivedAt: note.archivedAt || "",
+  };
+
+  try {
+    await api(`/api/notes/${noteId}`, {
+      method: "PUT",
+      body: payload,
+    });
+    state.notesUi.editingId = null;
+    await Promise.all([refreshNotes(), refreshDashboard(), maybeRefreshAdmin()]);
+    showToast("Nota atualizada na propria listagem.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleXmlImport() {
+  const files = Array.from(refs.xmlImportInput.files || []);
+  if (!files.length) {
+    showToast("Selecione ao menos um XML.", "error");
+    return;
+  }
+
+  try {
+    const payloadFiles = await Promise.all(
+      files.map(async (file) => ({
+        name: file.name,
+        content: await file.text(),
+      }))
+    );
+
+    const response = await api("/api/notes/import/xml", {
+      method: "POST",
+      body: { files: payloadFiles },
+    });
+
+    state.notesUi.importSummary = response.summary || null;
+    refs.xmlImportInput.value = "";
+    await Promise.all([refreshNotes(), refreshDashboard(), maybeRefreshAdmin()]);
+    showToast(
+      `${response.summary?.imported || 0} XML(s) importado(s) | ${response.summary?.ignored || 0} ignorado(s) | ${response.summary?.errors || 0} erro(s).`
+    );
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function handleSpreadsheetImport() {
+  const file = refs.spreadsheetImportInput.files?.[0];
+  if (!file) {
+    showToast("Selecione uma planilha.", "error");
+    return;
+  }
+
+  try {
+    const contentBase64 = await fileToBase64(file);
+    const response = await api("/api/notes/import/spreadsheet", {
+      method: "POST",
+      body: {
+        fileName: file.name,
+        contentBase64,
+      },
+    });
+
+    state.notesUi.importSummary = response.summary || null;
+    refs.spreadsheetImportInput.value = "";
+    await Promise.all([refreshNotes(), refreshDashboard(), maybeRefreshAdmin()]);
+    showToast(
+      `${response.summary?.imported || 0} linha(s) importada(s) | ${response.summary?.ignored || 0} ignorada(s) | ${response.summary?.errors || 0} erro(s).`
+    );
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function createScheduleDraftLine(line = {}) {
+  state.schedule.lineCounter = Number(state.schedule.lineCounter || 0) + 1;
+  return {
+    localId: line.localId || `schedule-line-${state.schedule.lineCounter}`,
+    id: line.id ? Number(line.id) : null,
+    lineOrder: Number(line.lineOrder || line.line_order || 0) || state.schedule.lineCounter,
+    vehicle: line.vehicle || "",
+    location: line.location || "",
+    driver: line.driver || "",
+    assistant: line.assistant || "",
+    departureTime: line.departureTime || line.departure_time || "",
+    notes: line.notes || "",
+  };
+}
+
+function normalizeScheduleDraftLines(lines = []) {
+  const normalized = lines.map((line, index) => ({
+    ...createScheduleDraftLine(line),
+    lineOrder: index + 1,
+  }));
+  return normalized.length ? normalized : [createScheduleDraftLine({ lineOrder: 1 })];
+}
+
+function getSchedulePreviewItems() {
+  const draftLines = Array.isArray(state.schedule?.draftLines) ? state.schedule.draftLines : [];
+  const meaningfulDraft = draftLines.filter((line) =>
+    [line.vehicle, line.location, line.driver, line.assistant, line.departureTime, line.notes].some((value) =>
+      String(value || "").trim()
+    )
+  );
+
+  if (meaningfulDraft.length) {
+    return meaningfulDraft;
+  }
+
+  return Array.isArray(state.schedules) ? state.schedules : [];
+}
+
+function renderScheduleSuggestions() {
+  const suggestions = state.schedule.suggestions || {};
+  const targets = [
+    ["schedule-vehicle-list", suggestions.vehicles || []],
+    ["schedule-driver-list", suggestions.drivers || []],
+    ["schedule-assistant-list", suggestions.assistants || []],
+    ["schedule-location-list", suggestions.locations || []],
+  ];
+
+  targets.forEach(([id, values]) => {
+    const target = $(id);
+    if (!target) {
+      return;
+    }
+    target.innerHTML = (values || []).map((item) => `<option value="${escapeHtml(item)}"></option>`).join("");
+  });
+}
+
+function renderScheduleLinesEditor() {
+  if (!refs.scheduleLinesContainer) {
+    return;
+  }
+
+  const lines = normalizeScheduleDraftLines(state.schedule.draftLines || []);
+  state.schedule.draftLines = lines;
+
+  refs.scheduleLinesContainer.innerHTML = lines
+    .map(
+      (line, index) => `
+        <article class="schedule-line-card" data-schedule-line-card="${escapeHtml(line.localId)}">
+          <div class="schedule-line-number">#${escapeHtml(formatNumber(index + 1))}</div>
+          <label>
+            <span>Placa</span>
+            <input
+              type="text"
+              value="${escapeHtml(line.vehicle)}"
+              list="schedule-vehicle-list"
+              data-schedule-line-field="vehicle"
+              data-schedule-line-id="${escapeHtml(line.localId)}"
+            />
+          </label>
+          <label>
+            <span>Local / rota</span>
+            <input
+              type="text"
+              value="${escapeHtml(line.location)}"
+              list="schedule-location-list"
+              data-schedule-line-field="location"
+              data-schedule-line-id="${escapeHtml(line.localId)}"
+            />
+          </label>
+          <label>
+            <span>Motorista</span>
+            <input
+              type="text"
+              value="${escapeHtml(line.driver)}"
+              list="schedule-driver-list"
+              data-schedule-line-field="driver"
+              data-schedule-line-id="${escapeHtml(line.localId)}"
+            />
+          </label>
+          <label>
+            <span>Ajudante</span>
+            <input
+              type="text"
+              value="${escapeHtml(line.assistant)}"
+              list="schedule-assistant-list"
+              data-schedule-line-field="assistant"
+              data-schedule-line-id="${escapeHtml(line.localId)}"
+            />
+          </label>
+          <label>
+            <span>Horario</span>
+            <input
+              type="time"
+              value="${escapeHtml(line.departureTime || "")}"
+              data-schedule-line-field="departureTime"
+              data-schedule-line-id="${escapeHtml(line.localId)}"
+            />
+          </label>
+          <div class="schedule-line-actions">
+            <button type="button" class="ghost-button" data-schedule-line-duplicate="${escapeHtml(line.localId)}">Duplicar</button>
+            <button type="button" class="ghost-button" data-schedule-line-remove="${escapeHtml(line.localId)}">Remover</button>
+          </div>
+          <label class="schedule-line-notes">
+            <span>Observacao da linha</span>
+            <textarea
+              rows="3"
+              data-schedule-line-field="notes"
+              data-schedule-line-id="${escapeHtml(line.localId)}"
+            >${escapeHtml(line.notes || "")}</textarea>
+          </label>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function buildScheduleDraftModel(sourceDay = null) {
+  if (sourceDay) {
+    return {
+      id: sourceDay.id || null,
+      scheduledDate: sourceDay.scheduledDate || currentLocalDate(),
+      documentTitle: sourceDay.documentTitle || refs.scheduleForm.elements.documentTitle.value || "ESCALA OPERACIONAL DIARIA",
+      responsibleName: sourceDay.responsibleName || refs.scheduleForm.elements.responsibleName.value || "",
+      generalNotes: sourceDay.generalNotes || "",
+      documentMode: refs.scheduleForm.elements.documentMode?.value || "filled",
+      entries: normalizeScheduleDraftLines(sourceDay.entries || []),
+    };
+  }
+
+  return {
+    id: state.schedule.dayId || null,
+    scheduledDate: refs.scheduleForm.elements.scheduledDate.value || currentLocalDate(),
+    documentTitle: refs.scheduleForm.elements.documentTitle.value || "ESCALA OPERACIONAL DIARIA",
+    responsibleName: refs.scheduleForm.elements.responsibleName.value || state.user?.name || "",
+    generalNotes: refs.scheduleForm.elements.generalNotes.value || "",
+    documentMode: refs.scheduleForm.elements.documentMode?.value || "filled",
+    entries: normalizeScheduleDraftLines(state.schedule.draftLines || []).filter((line) =>
+      [line.vehicle, line.location, line.driver, line.assistant, line.departureTime, line.notes].some((value) => String(value || "").trim())
+    ),
+  };
+}
+
+function buildSchedulePreviewMarkup(model) {
+  const company = getDocumentCompany();
+  const mode = model.documentMode === "blank" ? "blank" : "filled";
+  const printableEntries = (model.entries || []).map((entry, index) =>
+    mode === "blank"
+      ? {
+          ...entry,
+          lineOrder: index + 1,
+          vehicle: "",
+          location: "",
+          driver: "",
+          assistant: "",
+          departureTime: "",
+          notes: "",
+        }
+      : { ...entry, lineOrder: index + 1 }
+  );
+
+  const uniqueVehicles = new Set((model.entries || []).map((item) => item.vehicle).filter(Boolean));
+  const uniqueDrivers = new Set((model.entries || []).map((item) => item.driver).filter(Boolean));
+
+  return `
+    <article class="schedule-paper">
+      <header class="schedule-paper__header">
+        <div class="schedule-paper__brand">
+          ${
+            company.logoDataUrl
+              ? `<img src="${company.logoDataUrl}" alt="Logo da empresa" />`
+              : `<strong>${escapeHtml(company.companyName)}</strong>`
+          }
+        </div>
+        <div class="schedule-paper__title">
+          <span>${escapeHtml(company.companyName)}</span>
+          <h4>${escapeHtml(model.documentTitle || "ESCALA OPERACIONAL DIARIA")}</h4>
+          <span>${escapeHtml(mode === "blank" ? "Modo manual para preenchimento em campo" : "Modo auto preenchido")}</span>
+        </div>
+        <div class="schedule-paper__meta">
+          <span>Data</span>
+          <strong>${escapeHtml(formatDateOnly(model.scheduledDate))}</strong>
+          <span>Responsavel</span>
+          <strong>${escapeHtml(model.responsibleName || "-")}</strong>
+        </div>
+      </header>
+      <div class="schedule-paper__summary">
+        <div><span>Linhas</span><strong>${escapeHtml(formatNumber((model.entries || []).length))}</strong></div>
+        <div><span>Placas</span><strong>${escapeHtml(formatNumber(uniqueVehicles.size))}</strong></div>
+        <div><span>Motoristas</span><strong>${escapeHtml(formatNumber(uniqueDrivers.size))}</strong></div>
+        <div><span>Modo</span><strong>${escapeHtml(mode === "blank" ? "Manual" : "Auto")}</strong></div>
+      </div>
+      <table class="schedule-paper__table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Placa</th>
+            <th>Local / rota</th>
+            <th>Motorista</th>
+            <th>Ajudante</th>
+            <th>Hora</th>
+            <th>Observacao</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            printableEntries.length
+              ? printableEntries
+                  .map(
+                    (entry, index) => `
+                      <tr>
+                        <td>${escapeHtml(formatNumber(index + 1))}</td>
+                        <td>${escapeHtml(entry.vehicle || "")}</td>
+                        <td>${escapeHtml(entry.location || "")}</td>
+                        <td>${escapeHtml(entry.driver || "")}</td>
+                        <td>${escapeHtml(entry.assistant || "")}</td>
+                        <td>${escapeHtml(entry.departureTime || "")}</td>
+                        <td>${escapeHtml(entry.notes || "")}</td>
+                      </tr>
+                    `
+                  )
+                  .join("")
+              : `
+                  <tr>
+                    <td>1</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                  </tr>
+                `
+          }
+        </tbody>
+      </table>
+      <div class="schedule-paper__notes">
+        <div>
+          <span>Observacao geral</span>
+          <p>${escapeHtml(model.generalNotes || "Sem observacoes gerais registradas.")}</p>
+        </div>
+      </div>
+      <footer class="schedule-paper__footer">
+        <div>
+          <span>Rodape</span>
+          <p>${escapeHtml(company.documentFooter)}</p>
+        </div>
+        <div>
+          <span>Gerado em</span>
+          <p>${escapeHtml(formatDateTime(new Date().toISOString()))}</p>
+        </div>
+      </footer>
+    </article>
+  `;
+}
+
+function buildSchedulePrintDocument(model) {
+  return `
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; background: #ffffff; color: #101828; }
+      .schedule-paper { display: grid; gap: 14px; width: 210mm; min-height: 297mm; margin: 0 auto; padding: 12mm; box-sizing: border-box; }
+      .schedule-paper__header { display: grid; grid-template-columns: 28mm minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+      .schedule-paper__brand { display: flex; align-items: center; justify-content: center; min-height: 22mm; border: 1.4px solid #111; padding: 2mm; box-sizing: border-box; }
+      .schedule-paper__brand img { max-width: 100%; max-height: 100%; object-fit: contain; }
+      .schedule-paper__title { display: grid; gap: 2px; }
+      .schedule-paper__title span, .schedule-paper__meta span, .schedule-paper__footer span { font-size: 10px; color: #475467; }
+      .schedule-paper__title h4 { margin: 0; font-size: 16px; line-height: 1.1; letter-spacing: 0.06em; text-transform: uppercase; }
+      .schedule-paper__meta { display: grid; gap: 2px; justify-items: end; text-align: right; font-size: 11px; }
+      .schedule-paper__meta strong { font-size: 11px; }
+      .schedule-paper__summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+      .schedule-paper__summary div, .schedule-paper__notes div { border: 1.5px solid #111; padding: 8px 9px; border-radius: 0; }
+      .schedule-paper__summary strong { display: block; margin-top: 2px; font-size: 14px; color: #111; }
+      .schedule-paper__table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .schedule-paper__table th, .schedule-paper__table td { border: 1.5px solid #111; padding: 7px 6px; font-size: 10px; vertical-align: top; }
+      .schedule-paper__table th { background: #f4f4f5; text-transform: uppercase; letter-spacing: 0.04em; }
+      .schedule-paper__table td { min-height: 9mm; }
+      .schedule-paper__table th:nth-child(1), .schedule-paper__table td:nth-child(1) { width: 5.5%; }
+      .schedule-paper__table th:nth-child(2), .schedule-paper__table td:nth-child(2) { width: 15%; }
+      .schedule-paper__table th:nth-child(3), .schedule-paper__table td:nth-child(3) { width: 27%; }
+      .schedule-paper__table th:nth-child(4), .schedule-paper__table td:nth-child(4) { width: 17%; }
+      .schedule-paper__table th:nth-child(5), .schedule-paper__table td:nth-child(5) { width: 14%; }
+      .schedule-paper__table th:nth-child(6), .schedule-paper__table td:nth-child(6) { width: 9%; }
+      .schedule-paper__table th:nth-child(7), .schedule-paper__table td:nth-child(7) { width: 12.5%; }
+      .schedule-paper__notes p, .schedule-paper__footer p { margin: 4px 0 0; font-size: 10px; line-height: 1.45; }
+      .schedule-paper__footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      @page { size: A4 portrait; margin: 10mm; }
+    </style>
+    ${buildSchedulePreviewMarkup(model)}
+  `;
+}
+
+function renderScheduleDocumentPreview(forceVisible = false) {
+  if (!refs.scheduleDocumentPreview) {
+    return;
+  }
+
+  if (forceVisible) {
+    state.schedule.previewVisible = true;
+  }
+
+  const model = buildScheduleDraftModel();
+  if (!state.schedule.previewVisible && !(state.schedule.dayId && model.entries.length)) {
+    refs.scheduleDocumentPreview.innerHTML = `
+      <div class="dashboard-empty">
+        <strong>Documento ainda nao gerado</strong>
+        <p class="muted">Preencha a escala e gere o documento para revisar o layout antes de imprimir.</p>
+      </div>
+    `;
+    return;
+  }
+
+  refs.scheduleDocumentPreview.innerHTML = buildSchedulePreviewMarkup(model);
+}
+
+function renderScheduleHistory() {
+  if (!refs.scheduleHistoryTableBody) {
+    return;
+  }
+
+  refs.scheduleHistoryTableBody.innerHTML = (state.schedule.history || []).length
+    ? state.schedule.history
+        .map(
+          (day) => `
+            <tr>
+              <td>${escapeHtml(formatDateOnly(day.scheduledDate))}</td>
+              <td>
+                <strong>${escapeHtml(day.documentTitle || "ESCALA OPERACIONAL DIARIA")}</strong>
+                <div class="muted">${escapeHtml(day.responsibleName || "-")}</div>
+              </td>
+              <td>${escapeHtml(`${formatNumber(day.totals?.lines || 0)} linha(s) • ${formatNumber(day.totals?.vehicles || 0)} placa(s)` )}</td>
+              <td>${escapeHtml(day.updatedByName || day.createdByName || "-")}</td>
+              <td>
+                <div class="row-actions">
+                  <button type="button" class="ghost-button compact-button" data-schedule-history-open="${day.id}">Abrir</button>
+                  <button type="button" class="ghost-button compact-button" data-schedule-history-duplicate="${day.id}">Duplicar</button>
+                  <button type="button" class="ghost-button compact-button" data-schedule-history-print="${day.id}">PDF</button>
+                </div>
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhuma escala historica encontrada para os filtros informados.", 5);
+
+  syncResponsiveTableLabels();
+}
+
+function refreshScheduleSummary() {
+  const items = getSchedulePreviewItems();
+  const uniqueVehicles = new Set(items.map((item) => item.vehicle).filter(Boolean));
+  const uniqueDrivers = new Set(items.map((item) => item.driver).filter(Boolean));
+  const assistants = items.filter((item) => item.assistant).length;
+
+  refs.scheduleSummaryCards.innerHTML = [
+    { label: "Linhas do dia", value: items.length, icon: "schedules", tone: "brand" },
+    { label: "Placas", value: uniqueVehicles.size, icon: "vehicle", tone: "neutral" },
+    { label: "Motoristas", value: uniqueDrivers.size, icon: "team", tone: "warning" },
+    { label: "Ajudantes", value: assistants, icon: "dashboard", tone: "success" },
+  ]
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card operations-kpi-card--compact",
+        label: item.label,
+        value: formatNumber(item.value),
+        note: "Baseado na edicao atual",
+        icon: item.icon,
+        tone: item.tone,
+      })
+    )
+    .join("");
+
+  refs.scheduleNotesFeed.innerHTML = items.length
+    ? items
+        .filter((item) => item.notes)
+        .slice(0, 4)
+        .map(
+          (item) => `
+            <article class="stack-item">
+              <strong>${escapeHtml(item.vehicle || "Sem placa")}</strong>
+              <p class="muted">${escapeHtml(item.location || "Rota nao informada")}</p>
+              <p class="muted">${escapeHtml(item.notes)}</p>
+            </article>
+          `
+        )
+        .join("") ||
+      `<div class="stack-item"><strong>Sem observacoes adicionais</strong><p class="muted">Cadastre notas operacionais na escala para aparecerem aqui.</p></div>`
+    : `<div class="stack-item"><strong>Nenhuma escala do dia</strong><p class="muted">Adicione linhas para visualizar o resumo operacional.</p></div>`;
+}
+
+function renderSchedules() {
+  const items = getSchedulePreviewItems();
+  refs.schedulesTableBody.innerHTML = items.length
+    ? items
+        .map(
+          (item, index) => `
+            <tr>
+              <td>${escapeHtml(formatNumber(index + 1))}</td>
+              <td>
+                <strong>${escapeHtml(item.vehicle || "-")}</strong>
+                <div class="muted">${escapeHtml(formatDateOnly(refs.scheduleForm.elements.scheduledDate.value || currentLocalDate()))}</div>
+              </td>
+              <td>${escapeHtml(item.location || "Rota nao informada")}</td>
+              <td>${escapeHtml(item.driver || "-")}</td>
+              <td>${escapeHtml(item.assistant || "-")}</td>
+              <td>${escapeHtml(item.departureTime || "-")}</td>
+              <td>
+                <div class="row-actions">
+                  <button type="button" class="ghost-button compact-button" data-schedule-focus-line="${escapeHtml(item.localId || String(item.id || ""))}">Editar</button>
+                </div>
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhuma linha adicionada para a escala selecionada.", 7);
+
+  refreshScheduleSummary();
+}
+
+function addScheduleDraftLine(seed = {}) {
+  const nextLines = [...normalizeScheduleDraftLines(state.schedule.draftLines || []), createScheduleDraftLine(seed)];
+  state.schedule.draftLines = nextLines.map((line, index) => ({ ...line, lineOrder: index + 1 }));
+  state.schedule.hasUnsavedChanges = true;
+  renderScheduleLinesEditor();
+  renderSchedules();
+  renderScheduleDocumentPreview();
+}
+
+function removeScheduleDraftLine(localId) {
+  const current = normalizeScheduleDraftLines(state.schedule.draftLines || []);
+  if (current.length <= 1) {
+    showToast("Mantenha ao menos uma linha operacional.", "error");
+    return;
+  }
+
+  state.schedule.draftLines = current.filter((line) => line.localId !== localId).map((line, index) => ({
+    ...line,
+    lineOrder: index + 1,
+  }));
+  state.schedule.hasUnsavedChanges = true;
+  renderScheduleLinesEditor();
+  renderSchedules();
+  renderScheduleDocumentPreview();
+}
+
+function duplicateScheduleDraftLine(localId) {
+  const current = normalizeScheduleDraftLines(state.schedule.draftLines || []);
+  const source = current.find((line) => line.localId === localId);
+  if (!source) {
+    return;
+  }
+
+  state.schedule.draftLines = current
+    .flatMap((line) => (line.localId === localId ? [line, createScheduleDraftLine({ ...source, id: null })] : [line]))
+    .map((line, index) => ({ ...line, lineOrder: index + 1 }));
+  state.schedule.hasUnsavedChanges = true;
+  renderScheduleLinesEditor();
+  renderSchedules();
+  renderScheduleDocumentPreview();
+}
+
+function updateScheduleDraftField(localId, field, value) {
+  state.schedule.draftLines = normalizeScheduleDraftLines(state.schedule.draftLines || []).map((line) =>
+    line.localId === localId ? { ...line, [field]: value } : line
+  );
+  state.schedule.hasUnsavedChanges = true;
+  renderSchedules();
+  if (state.schedule.previewVisible) {
+    renderScheduleDocumentPreview();
+  }
+}
+
+function focusScheduleLine(localId) {
+  const lineCard = document.querySelector(`[data-schedule-line-card="${String(localId || "").replace(/"/g, '\\"')}"]`);
+  if (!lineCard) {
+    return;
+  }
+
+  scrollToElement(lineCard, "center");
+  lineCard.querySelector("input, textarea")?.focus();
+}
+
+function hydrateScheduleWorkspaceFromDay(day, options = {}) {
+  refs.scheduleForm.elements.id.value = day?.id ? String(day.id) : "";
+  refs.scheduleForm.elements.scheduledDate.value = day?.scheduledDate || refs.scheduleForm.elements.scheduledDate.value || currentLocalDate();
+  refs.scheduleForm.elements.documentTitle.value = day?.documentTitle || "ESCALA OPERACIONAL DIARIA";
+  refs.scheduleForm.elements.responsibleName.value = day?.responsibleName || state.user?.name || "";
+  refs.scheduleForm.elements.generalNotes.value = day?.generalNotes || "";
+
+  state.schedule.dayId = day?.id || null;
+  state.schedule.day = day || null;
+  state.schedule.draftLines = normalizeScheduleDraftLines(day?.entries || []);
+  state.schedule.hasUnsavedChanges = false;
+  state.schedule.previewVisible = options.preservePreview ? state.schedule.previewVisible : Boolean(day?.entries?.length);
+
+  renderScheduleSuggestions();
+  renderScheduleLinesEditor();
+  renderSchedules();
+  renderScheduleHistory();
+  renderScheduleDocumentPreview();
+}
+
+function clearScheduleHistoryFilters() {
+  if (refs.scheduleHistoryDate) refs.scheduleHistoryDate.value = "";
+  if (refs.scheduleHistoryPlate) refs.scheduleHistoryPlate.value = "";
+  if (refs.scheduleHistoryDriver) refs.scheduleHistoryDriver.value = "";
+  refreshSchedules().catch((error) => showToast(error.message, "error"));
+}
+
+async function refreshSchedules() {
+  const query = new URLSearchParams();
+  const selectedDate = refs.scheduleForm?.elements.scheduledDate?.value || currentLocalDate();
+  query.set("date", selectedDate);
+  if (refs.scheduleHistoryDate?.value) query.set("historyDate", refs.scheduleHistoryDate.value);
+  if (refs.scheduleHistoryPlate?.value.trim()) query.set("plate", refs.scheduleHistoryPlate.value.trim());
+  if (refs.scheduleHistoryDriver?.value.trim()) query.set("driver", refs.scheduleHistoryDriver.value.trim());
+
+  const response = await api(`/api/schedules?${query.toString()}`);
+  state.schedules = response.items || [];
+  state.schedule.history = response.history || [];
+  state.schedule.suggestions = response.suggestions || state.schedule.suggestions;
+
+  const currentSelectedDate = refs.scheduleForm?.elements.scheduledDate?.value || selectedDate;
+  const shouldHydrate =
+    !state.schedule.hasUnsavedChanges ||
+    currentSelectedDate !== (state.schedule.day?.scheduledDate || "") ||
+    Number(response.day?.id || 0) !== Number(state.schedule.dayId || 0);
+
+  if (response.day && shouldHydrate) {
+    hydrateScheduleWorkspaceFromDay(response.day);
+    return;
+  }
+
+  if (!response.day && shouldHydrate) {
+    refs.scheduleForm.elements.id.value = "";
+    refs.scheduleForm.elements.scheduledDate.value = response.selectedDate || selectedDate;
+    if (!refs.scheduleForm.elements.documentTitle.value) {
+      refs.scheduleForm.elements.documentTitle.value = "ESCALA OPERACIONAL DIARIA";
+    }
+    if (!refs.scheduleForm.elements.responsibleName.value) {
+      refs.scheduleForm.elements.responsibleName.value = state.user?.name || "";
+    }
+    state.schedule.dayId = null;
+    state.schedule.day = null;
+    state.schedule.draftLines = normalizeScheduleDraftLines([]);
+    state.schedule.hasUnsavedChanges = false;
+    state.schedule.previewVisible = false;
+  }
+
+  renderScheduleSuggestions();
+  renderScheduleLinesEditor();
+  renderSchedules();
+  renderScheduleHistory();
+  renderScheduleDocumentPreview();
+}
+
+async function handleScheduleSubmit(event) {
+  event.preventDefault();
+  const model = buildScheduleDraftModel();
+  const payload = {
+    scheduledDate: model.scheduledDate,
+    documentTitle: model.documentTitle,
+    responsibleName: model.responsibleName,
+    generalNotes: model.generalNotes,
+    entries: model.entries.map((entry, index) => ({
+      vehicle: entry.vehicle,
+      location: entry.location,
+      driver: entry.driver,
+      assistant: entry.assistant,
+      departureTime: entry.departureTime,
+      notes: entry.notes,
+      lineOrder: index + 1,
+    })),
+  };
+
+  if (!payload.entries.length) {
+    showToast("Adicione ao menos uma linha operacional para salvar a escala.", "error");
+    return;
+  }
+
+  try {
+    const scheduleDayId = state.schedule.dayId || refs.scheduleForm.elements.id.value;
+    await api(scheduleDayId ? `/api/schedules/${scheduleDayId}` : "/api/schedules", {
+      method: scheduleDayId ? "PUT" : "POST",
+      body: payload,
+    });
+    state.schedule.previewVisible = true;
+    await Promise.all([refreshSchedules(), refreshDashboard(), maybeRefreshAdmin()]);
+
+    if (
+      state.dossier.selectedPlate &&
+      payload.entries.some((entry) => normalizeClientPlateKey(entry.vehicle) === normalizeClientPlateKey(state.dossier.selectedPlate))
+    ) {
+      await loadVehicleDossierByPlate(state.dossier.selectedPlate, { silent: true });
+    }
+
+    showToast(scheduleDayId ? "Escala atualizada com sucesso." : "Escala salva com sucesso.");
+  } catch (error) {
+    if (error.status === 409 && error.data?.day) {
+      hydrateScheduleWorkspaceFromDay(error.data.day, { preservePreview: true });
+      showToast("Ja existe uma escala para esta data. A versao salva foi carregada para revisao.", "error");
+      return;
+    }
+    showToast(error.message || "Falha ao salvar a escala.", "error");
+  }
+}
+
+function editSchedule(id) {
+  const line = getSchedulePreviewItems().find(
+    (item) => Number(item.id || 0) === Number(id) || String(item.localId || "") === String(id)
+  );
+  if (!line) {
+    return;
+  }
+  focusScheduleLine(line.localId || String(id));
+}
+
+function resetScheduleForm() {
+  refs.scheduleForm.reset();
+  refs.scheduleForm.elements.id.value = "";
+  refs.scheduleForm.elements.scheduledDate.value = currentLocalDate();
+  refs.scheduleForm.elements.documentTitle.value = "ESCALA OPERACIONAL DIARIA";
+  refs.scheduleForm.elements.responsibleName.value = state.user?.name || "";
+  refs.scheduleForm.elements.documentMode.value = "filled";
+  state.schedule.dayId = null;
+  state.schedule.day = null;
+  state.schedule.draftLines = normalizeScheduleDraftLines([]);
+  state.schedule.previewVisible = false;
+  state.schedule.hasUnsavedChanges = false;
+  renderScheduleLinesEditor();
+  renderSchedules();
+  renderScheduleDocumentPreview();
+}
+
+async function handleScheduleDuplicatePrevious() {
+  const currentDate = refs.scheduleForm.elements.scheduledDate.value || currentLocalDate();
+  const previousDay = (state.schedule.history || []).find((day) => String(day.scheduledDate || "") < currentDate);
+
+  if (!previousDay) {
+    showToast("Nenhuma escala anterior disponivel para duplicacao.", "error");
+    return;
+  }
+
+  refs.scheduleForm.elements.id.value = "";
+  refs.scheduleForm.elements.documentTitle.value = previousDay.documentTitle || "ESCALA OPERACIONAL DIARIA";
+  refs.scheduleForm.elements.responsibleName.value = previousDay.responsibleName || state.user?.name || "";
+  refs.scheduleForm.elements.generalNotes.value = previousDay.generalNotes || "";
+  state.schedule.dayId = null;
+  state.schedule.day = null;
+  state.schedule.draftLines = normalizeScheduleDraftLines(
+    (previousDay.entries || []).map((entry) => ({
+      ...entry,
+      id: null,
+      localId: "",
+    }))
+  );
+  state.schedule.previewVisible = true;
+  state.schedule.hasUnsavedChanges = true;
+  renderScheduleLinesEditor();
+  renderSchedules();
+  renderScheduleDocumentPreview();
+  showToast("Escala anterior carregada para o dia atual.");
+}
+
+async function handleSchedulePrint(mode = "print", sourceDay = null) {
+  const model = buildScheduleDraftModel(sourceDay);
+  if (!(model.entries || []).length) {
+    showToast("Nao ha linhas suficientes para gerar o documento.", "error");
+    return;
+  }
+
+  try {
+    await runPrintWorkflow({
+      type: "schedule-document",
+      mode,
+      placeholderTitle: "Preparando documento da escala",
+      buildJob: async () => ({
+        title: `${model.documentTitle || "Escala"} - ${model.scheduledDate}`,
+        html: buildSchedulePrintDocument(model),
+      }),
+    });
+    showToast(mode === "pdf" ? "Documento pronto. Na impressao, escolha Salvar como PDF." : "Documento da escala pronto para impressao.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function handleScheduleGenerateDocument() {
+  state.schedule.previewVisible = true;
+  renderScheduleDocumentPreview(true);
+  showToast("Preview da escala atualizado.");
+}
+
+function handleScheduleExportExcel() {
+  const model = buildScheduleDraftModel();
+  if (!(model.entries || []).length) {
+    showToast("Nao ha linhas para exportar.", "error");
+    return;
+  }
+
+  const rows = [
+    ["Data", "Placa", "Local/Rota", "Motorista", "Ajudante", "Horario", "Observacao"].map(csvEscape).join(";"),
+    ...model.entries.map((entry) =>
+      [
+        model.scheduledDate,
+        entry.vehicle,
+        entry.location,
+        entry.driver,
+        entry.assistant,
+        entry.departureTime,
+        entry.notes,
+      ]
+        .map(csvEscape)
+        .join(";")
+    ),
+  ];
+
+  const blob = new Blob(["\ufeff", rows.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `escala-${(model.scheduledDate || currentLocalDate()).toLowerCase()}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  showToast("Arquivo CSV exportado. Ele pode ser aberto no Excel.");
+}
+
+async function openScheduleHistoryDay(scheduleDayId, options = {}) {
+  const response = await api(`/api/schedules/${scheduleDayId}`);
+  const day = response.day;
+  if (!day) {
+    throw new Error("Escala historica nao encontrada.");
+  }
+
+  if (options.printMode) {
+    await handleSchedulePrint(options.printMode, {
+      ...day,
+      documentMode: refs.scheduleForm.elements.documentMode?.value || "filled",
+    });
+    return;
+  }
+
+  if (options.duplicate) {
+    refs.scheduleForm.elements.id.value = "";
+    refs.scheduleForm.elements.documentTitle.value = day.documentTitle || "ESCALA OPERACIONAL DIARIA";
+    refs.scheduleForm.elements.responsibleName.value = day.responsibleName || state.user?.name || "";
+    refs.scheduleForm.elements.generalNotes.value = day.generalNotes || "";
+    state.schedule.dayId = null;
+    state.schedule.day = null;
+    state.schedule.draftLines = normalizeScheduleDraftLines(
+      (day.entries || []).map((entry) => ({ ...entry, id: null, localId: "" }))
+    );
+    state.schedule.previewVisible = true;
+    state.schedule.hasUnsavedChanges = true;
+    renderScheduleLinesEditor();
+    renderSchedules();
+    renderScheduleDocumentPreview();
+    showToast("Historico carregado como nova base de escala.");
+    return;
+  }
+
+  refs.scheduleForm.elements.scheduledDate.value = day.scheduledDate || currentLocalDate();
+  hydrateScheduleWorkspaceFromDay(day);
+  setSection("schedules");
+}
+
+function openBarcodeImagePicker(targetId) {
+  if (!refs.barcodeImageInput) {
+    showToast("Selecao por imagem indisponivel neste navegador.", "error");
+    return;
+  }
+
+  refs.barcodeImageInput.dataset.targetId = targetId;
+  refs.barcodeImageInput.value = "";
+  refs.barcodeImageInput.click();
+}
+
+async function decodeBarcodeFromImageFile(file) {
+  if (!("BarcodeDetector" in window) || !("createImageBitmap" in window)) {
+    throw new Error("Leitura por imagem indisponivel neste navegador.");
+  }
+
+  const detector = new window.BarcodeDetector({
+    formats: ["code_128", "ean_13", "ean_8", "upc_a", "upc_e"],
+  });
+  const bitmap = await createImageBitmap(file);
+  try {
+    const results = await detector.detect(bitmap);
+    if (!results.length || !results[0].rawValue) {
+      throw new Error("Nenhum codigo de barras foi encontrado na imagem selecionada.");
+    }
+    return String(results[0].rawValue || "").trim();
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+async function handleBarcodeImageSelection(event) {
+  const file = event.target.files?.[0];
+  const targetId = event.target.dataset.targetId || "";
+  event.target.value = "";
+  delete event.target.dataset.targetId;
+
+  if (!file || !targetId) {
+    return;
+  }
+
+  try {
+    const barcode = await decodeBarcodeFromImageFile(file);
+    const target = $(targetId);
+    if (target) {
+      target.value = barcode;
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    if (targetId === "movement-barcode-input") {
+      try {
+        const item = await lookupProductByBarcodeValue(barcode, { stockType: "COMMON" });
+        showToast(`Produto encontrado: ${item.name}`);
+      } catch (error) {
+        if (isBarcodeNotFoundError(error)) {
+          await prepareNewProductFromBarcode(barcode);
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    if (targetId === "product-barcode-input") {
+      await handleBarcodeForProductRegistration(barcode);
+      return;
+    }
+
+    showToast(`Codigo lido: ${barcode}`);
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function openScanner(targetId) {
+  if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) {
+    showToast("Seu navegador nao permite acesso a camera. Use a digitacao manual.", "error");
+    return;
+  }
+
+  try {
+    closeScanner();
+    refs.scannerModal.classList.remove("hidden");
+    refs.scannerStatus.textContent = "Preparando leitura por camera...";
+    state.scanner = {
+      ...state.scanner,
+      targetId,
+      engine: "",
+      controls: null,
+      codeReader: null,
+      detector: null,
+      stream: null,
+      timer: null,
+      sessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      isClosing: false,
+      lastValue: "",
+      lastDetectedAt: 0,
+    };
+
+    if ("BarcodeDetector" in window) {
+      try {
+        await startNativeBarcodeScanner(targetId);
+        return;
+      } catch (nativeError) {
+        if (getScannerFallbackReader()) {
+          refs.scannerStatus.textContent = "Leitor nativo indisponivel. Ativando modo alternativo...";
+          closeScanner();
+          refs.scannerModal.classList.remove("hidden");
+          state.scanner = {
+            ...state.scanner,
+            targetId,
+            sessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            isClosing: false,
+            lastValue: "",
+            lastDetectedAt: 0,
+          };
+          await startFallbackBarcodeScanner(targetId);
+          return;
+        }
+        throw nativeError;
+      }
+    }
+
+    await startFallbackBarcodeScanner(targetId);
+  } catch (error) {
+    showToast(describeScannerError(error), "error");
+    closeScanner();
+  }
+}
+
+async function scanLoop() {
+  if (
+    state.scanner.engine !== "native" ||
+    !state.scanner.detector ||
+    !refs.scannerVideo?.srcObject ||
+    state.scanner.isClosing
+  ) {
+    return;
+  }
+
+  try {
+    const results = await state.scanner.detector.detect(refs.scannerVideo);
+    if (results.length) {
+      refs.scannerStatus.textContent = "Codigo detectado. Validando item...";
+      await handleScannerBarcodeDetected(results[0].rawValue || "", state.scanner.sessionId);
+      return;
+    }
+  } catch (error) {
+    refs.scannerStatus.textContent = "Camera ativa. Ajuste o foco ou aproxime o codigo.";
+  }
+
+  state.scanner.timer = window.setTimeout(scanLoop, 260);
+}
+
+function closeScanner() {
+  state.scanner.isClosing = true;
+
+  if (state.scanner.timer) {
+    window.clearTimeout(state.scanner.timer);
+  }
+
+  try {
+    state.scanner.controls?.stop?.();
+  } catch (error) {
+    // Ignora falhas ao interromper o leitor.
+  }
+
+  try {
+    state.scanner.codeReader?.reset?.();
+  } catch (error) {
+    // Ignora falhas ao limpar o leitor alternativo.
+  }
+
+  state.scanner.stream?.getTracks?.().forEach((track) => track.stop());
+  if (refs.scannerVideo) {
+    refs.scannerVideo.pause?.();
+    refs.scannerVideo.srcObject = null;
+  }
+
+  refs.scannerModal.classList.add("hidden");
+  refs.scannerStatus.textContent = "Aguardando camera...";
+  state.scanner = {
+    stream: null,
+    timer: null,
+    targetId: null,
+    detector: null,
+    engine: "",
+    sessionId: 0,
+    isClosing: false,
+    controls: null,
+    codeReader: null,
+    lastValue: "",
+    lastDetectedAt: 0,
+  };
+}
+
+async function lookupProductByBarcode() {
+  const barcode = refs.movementBarcodeInput.value.trim();
+  if (!barcode) {
+    showToast("Informe um codigo de barras.", "error");
+    return;
+  }
+
+  try {
+    const item = await lookupProductByBarcodeValue(barcode, { stockType: "COMMON" });
+    showToast(`Produto encontrado: ${item.name}`);
+  } catch (error) {
+    if (isBarcodeNotFoundError(error)) {
+      await prepareNewProductFromBarcode(barcode);
+      return;
+    }
+    showToast(error.message, "error");
+  }
+}
+
+function handleInteractivePanels(event) {
+  const dashboardActionButton = event.target.closest("[data-dashboard-save-odometer], [data-dashboard-clear-odometer]");
+  if (dashboardActionButton) {
+    const recordId =
+      dashboardActionButton.dataset.dashboardSaveOdometer ||
+      dashboardActionButton.dataset.dashboardClearOdometer ||
+      "";
+    saveDashboardOdometerChange(recordId, dashboardActionButton.hasAttribute("data-dashboard-clear-odometer")).catch(
+      (error) => showToast(error.message, "error")
+    );
+    return;
+  }
+
+  const dashboardLazyButton = event.target.closest("[data-dashboard-load-chart]");
+  if (dashboardLazyButton) {
+    if (dashboardLazyButton.dataset.dashboardLoadChart === "fuel") {
+      state.dashboard.lazy.fuelChartLoaded = true;
+      renderDashboard();
+    }
+    return;
+  }
+
+  const noteSaveButton = event.target.closest("[data-note-inline-save]");
+  if (noteSaveButton) {
+    saveInlineNoteEditing(noteSaveButton.dataset.noteInlineSave).catch((error) => showToast(error.message, "error"));
+    return;
+  }
+
+  const noteCancelButton = event.target.closest("[data-note-inline-cancel]");
+  if (noteCancelButton) {
+    cancelInlineNoteEditing();
+    return;
+  }
+
+  const noteFinanceNowButton = event.target.closest("[data-note-set-finance-today]");
+  if (noteFinanceNowButton) {
+    setInlineNoteFinanceNow(noteFinanceNowButton.dataset.noteSetFinanceToday);
+    return;
+  }
+
+  const scheduleDuplicateLineButton = event.target.closest("[data-schedule-line-duplicate]");
+  if (scheduleDuplicateLineButton) {
+    duplicateScheduleDraftLine(scheduleDuplicateLineButton.dataset.scheduleLineDuplicate);
+    return;
+  }
+
+  const scheduleRemoveLineButton = event.target.closest("[data-schedule-line-remove]");
+  if (scheduleRemoveLineButton) {
+    removeScheduleDraftLine(scheduleRemoveLineButton.dataset.scheduleLineRemove);
+    return;
+  }
+
+  const scheduleFocusLineButton = event.target.closest("[data-schedule-focus-line]");
+  if (scheduleFocusLineButton) {
+    focusScheduleLine(scheduleFocusLineButton.dataset.scheduleFocusLine);
+    return;
+  }
+
+  const scheduleHistoryOpenButton = event.target.closest("[data-schedule-history-open]");
+  if (scheduleHistoryOpenButton) {
+    openScheduleHistoryDay(scheduleHistoryOpenButton.dataset.scheduleHistoryOpen).catch((error) =>
+      showToast(error.message, "error")
+    );
+    return;
+  }
+
+  const scheduleHistoryDuplicateButton = event.target.closest("[data-schedule-history-duplicate]");
+  if (scheduleHistoryDuplicateButton) {
+    openScheduleHistoryDay(scheduleHistoryDuplicateButton.dataset.scheduleHistoryDuplicate, { duplicate: true }).catch(
+      (error) => showToast(error.message, "error")
+    );
+    return;
+  }
+
+  const scheduleHistoryPrintButton = event.target.closest("[data-schedule-history-print]");
+  if (scheduleHistoryPrintButton) {
+    openScheduleHistoryDay(scheduleHistoryPrintButton.dataset.scheduleHistoryPrint, { printMode: "pdf" }).catch(
+      (error) => showToast(error.message, "error")
+    );
+    return;
+  }
+
+  const dossierNavigationButton = event.target.closest("[data-dossier-navigate]");
+  if (dossierNavigationButton) {
+    navigateVehicleDossierContext(dossierNavigationButton.dataset.dossierNavigate);
+    return;
+  }
+
+  const shortcut = event.target.closest("[data-fuel-shortcut]");
+  if (shortcut) {
+    const action = shortcut.dataset.fuelShortcut;
+    if (action === "new") {
+      scrollToElement(refs.fuelForm);
+      refs.fuelForm.elements.vehicleId.focus();
+    }
+
+    if (action === "last7") {
+      const end = currentLocalDateTime();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - 6);
+      refs.fuelFilterFrom.value = toLocalDateTimeInput(startDate.toISOString()).slice(0, 16);
+      refs.fuelFilterTo.value = end;
+      refreshFuel();
+    }
+
+    if (action === "today") {
+      const now = new Date();
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      refs.fuelFilterFrom.value = toLocalDateTimeInput(start.toISOString()).slice(0, 16);
+      refs.fuelFilterTo.value = currentLocalDateTime();
+      refreshFuel();
+    }
+
+    if (action === "clear") {
+      refs.fuelFilterStorage.value = "";
+      refs.fuelFilterFrom.value = "";
+      refs.fuelFilterTo.value = "";
+      if (refs.fuelFilterPlate) refs.fuelFilterPlate.value = "";
+      refreshFuel();
+    }
+    return;
+  }
+
+  const categoryToggle = event.target.closest("[data-checklist-category-toggle]");
+  if (categoryToggle) {
+    const category = categoryToggle.dataset.checklistCategoryToggle;
+    state.checklistCollapsedCategories = {
+      ...state.checklistCollapsedCategories,
+      [category]: !state.checklistCollapsedCategories[category],
+    };
+    renderChecklistComposer();
+    return;
+  }
+
+  const checklistStatusButton = event.target.closest("[data-checklist-status-button]");
+  if (!checklistStatusButton) {
+    return;
+  }
+
+  const { checklistKey, checklistStatus } = checklistStatusButton.dataset;
+  state.checklistDraftItems = ensureChecklistDraft().map((item) =>
+    item.key === checklistKey ? { ...item, status: checklistStatus } : item
+  );
+  renderChecklistComposer();
+}
+
+function handleInteractiveChanges(event) {
+  const focusPlateField = event.target.closest("[data-dashboard-focus-plate]");
+  if (focusPlateField) {
+    handleDashboardFocusPlateChange(focusPlateField.value).catch((error) => showToast(error.message, "error"));
+    return;
+  }
+
+  const scheduleField = event.target.closest("[data-schedule-line-field]");
+  if (scheduleField) {
+    updateScheduleDraftField(
+      scheduleField.dataset.scheduleLineId,
+      scheduleField.dataset.scheduleLineField,
+      scheduleField.value
+    );
+  }
+}
+
+function handleInteractiveInputs(event) {
+  const scheduleField = event.target.closest("[data-schedule-line-field]");
+  if (scheduleField) {
+    updateScheduleDraftField(
+      scheduleField.dataset.scheduleLineId,
+      scheduleField.dataset.scheduleLineField,
+      scheduleField.value
+    );
+    return;
+  }
+
+  const notesField = event.target.closest("[data-checklist-item-notes]");
+  if (!notesField) {
+    return;
+  }
+
+  const checklistKey = notesField.dataset.checklistItemNotes;
+  state.checklistDraftItems = ensureChecklistDraft().map((item) =>
+    item.key === checklistKey ? { ...item, notes: notesField.value } : item
+  );
 }
 
 async function handleFineSubmit(event) {
@@ -4813,10 +6718,51 @@ function formatChecklistSnapshot(item) {
   return `${item.itemSummary?.ok || 0} OK • ${item.itemSummary?.attention || 0} atencao • ${item.itemSummary?.critical || 0} critico`;
 }
 
+function getVehicleDossierOverallStatusMeta(dossier) {
+  const alerts = Array.isArray(dossier?.alerts) ? dossier.alerts : [];
+  if (alerts.some((item) => item.status === "CRITICAL" || item.status === "OVERDUE")) {
+    return { key: "danger", label: "Critico", detail: "Existe pendencia com impacto operacional imediato." };
+  }
+  if (alerts.some((item) => item.status === "ATTENTION") || dossier?.summary?.status === "MAINTENANCE") {
+    return { key: "warning", label: "Atencao", detail: "O veiculo exige conferencia antes da decisao final." };
+  }
+  return { key: "ok", label: "OK", detail: "Sem bloqueio critico consolidado no momento." };
+}
+
+function buildVehicleDossierActionState(title, description, actionLabel, action) {
+  return `
+    <div class="dashboard-empty">
+      <strong>${escapeHtml(title)}</strong>
+      <p class="muted">${escapeHtml(description)}</p>
+      ${
+        actionLabel && action
+          ? `<button type="button" class="secondary-button" data-dossier-navigate="${escapeHtml(action)}">${escapeHtml(actionLabel)}</button>`
+          : ""
+      }
+    </div>
+  `;
+}
+
 function buildVehicleDossierSummary(dossier) {
   const summary = dossier.summary || {};
   const vehicle = dossier.vehicle || {};
   const scheduleEntry = dossier.todaySchedule?.entries?.[0] || null;
+  const lastRecord = dossier.fuel?.lastRecord || null;
+  const statusMeta = getVehicleDossierOverallStatusMeta(dossier);
+  const fuelRecordsCount = Array.isArray(dossier.fuel?.records) ? dossier.fuel.records.length : 0;
+  const scheduleValue = scheduleEntry?.driver || "Sem escala";
+  const scheduleNote = scheduleEntry
+    ? [scheduleEntry.location || "Rota nao informada", scheduleEntry.assistant || "Sem ajudante", scheduleEntry.departureTime || ""]
+        .filter(Boolean)
+        .join(" | ")
+    : "Veiculo sem escala ativa hoje.";
+  const sectorNote = [summary.sector || "Setor nao informado", summary.brandModel || ""].filter(Boolean).join(" | ");
+  const kmSinceLastFuel =
+    lastRecord &&
+    Number.isFinite(Number(lastRecord.effectiveKm)) &&
+    Number.isFinite(Number(lastRecord.referenceKmUsed))
+      ? Math.max(Number(lastRecord.effectiveKm) - Number(lastRecord.referenceKmUsed), 0)
+      : null;
 
   return `
     <div class="dossier-summary-top">
@@ -4824,47 +6770,57 @@ function buildVehicleDossierSummary(dossier) {
         <span class="eyebrow">Placa consultada</span>
         <h3>${escapeHtml(vehicle.plate || "-")}</h3>
         <p class="muted">${escapeHtml(summary.brandModel || "Sem marca/modelo cadastrado.")}</p>
+        <p class="muted">${escapeHtml(statusMeta.detail)}</p>
       </div>
       <div class="dossier-summary-badges">
+        <span class="dashboard-status-pill dashboard-status-pill--${escapeHtml(statusMeta.key)}">${escapeHtml(statusMeta.label)}</span>
         ${statusBadge(summary.status)}
         ${
           summary.isAvailableToday
             ? `<span class="status-badge status-green">Disponivel hoje</span>`
-            : `<span class="status-badge status-yellow">Nao disponivel hoje</span>`
+            : `<span class="status-badge status-yellow">Com restricao hoje</span>`
         }
       </div>
     </div>
     <div class="dossier-summary-grid">
       <article class="dossier-summary-card">
-        <span class="eyebrow">Combustivel</span>
-        <strong>${escapeHtml(formatVehicleFuelProfile(summary.fuelProfile))}</strong>
-        <p class="muted">Perfil atual do veiculo</p>
-      </article>
-      <article class="dossier-summary-card">
-        <span class="eyebrow">Setor / operacao</span>
-        <strong>${escapeHtml(summary.sector || "-")}</strong>
-        <p class="muted">Alocacao principal</p>
-      </article>
-      <article class="dossier-summary-card">
-        <span class="eyebrow">Ultimo KM</span>
+        <span class="eyebrow">KM atual</span>
         <strong>${escapeHtml(formatOptionalDistance(summary.lastKnownKm))}</strong>
-        <p class="muted">${escapeHtml(summary.lastKmSource ? `Fonte: ${summary.lastKmSource}` : "Sem KM consolidado")}</p>
+        <p class="muted">${escapeHtml(summary.lastKmSource ? `Fonte consolidada: ${summary.lastKmSource}` : "Sem KM consolidado ainda.")}</p>
       </article>
       <article class="dossier-summary-card">
-        <span class="eyebrow">Ultima atualizacao</span>
-        <strong>${escapeHtml(formatOptionalDateTime(summary.lastUpdateAt))}</strong>
-        <p class="muted">Ultimo evento consolidado</p>
+        <span class="eyebrow">KM desde o ultimo abastecimento</span>
+        <strong>${escapeHtml(kmSinceLastFuel === null ? "-" : formatDistance(kmSinceLastFuel))}</strong>
+        <p class="muted">${escapeHtml(lastRecord ? `Baseado em ${formatOptionalDateTime(lastRecord.occurredAt)}` : "Sem abastecimento recente para comparar.")}</p>
       </article>
       <article class="dossier-summary-card">
-        <span class="eyebrow">Alertas criticos</span>
-        <strong>${escapeHtml(formatNumber(summary.criticalAlertCount || 0))}</strong>
-        <p class="muted">Pendencias que exigem acao</p>
+        <span class="eyebrow">Media KM/L real</span>
+        <strong>${escapeHtml(formatKmPerLiter(dossier.fuel?.averageKmPerLiter || 0))}</strong>
+        <p class="muted">${escapeHtml(fuelRecordsCount ? `Leitura consolidada em ${formatNumber(fuelRecordsCount)} abastecimento(s).` : "Aguardando historico suficiente de abastecimento.")}</p>
       </article>
       <article class="dossier-summary-card">
-        <span class="eyebrow">Escala de hoje</span>
-        <strong>${escapeHtml(scheduleEntry?.driver || "Sem escala")}</strong>
-        <p class="muted">${escapeHtml(scheduleEntry ? `${scheduleEntry.location || "Rota nao informada"}${scheduleEntry.departureTime ? ` • ${scheduleEntry.departureTime}` : ""}` : "Veiculo sem escala para a data atual.")}</p>
+        <span class="eyebrow">Status geral</span>
+        <strong>${escapeHtml(statusMeta.label)}</strong>
+        <p class="muted">${escapeHtml(
+          `${statusMeta.detail}${Number(summary.criticalAlertCount || 0) ? ` ${formatNumber(summary.criticalAlertCount || 0)} alerta(s) critico(s) em aberto.` : ""}`
+        )}</p>
       </article>
+      <article class="dossier-summary-card">
+        <span class="eyebrow">Operacao do dia</span>
+        <strong>${escapeHtml(scheduleValue)}</strong>
+        <p class="muted">${escapeHtml(scheduleNote)}</p>
+      </article>
+      <article class="dossier-summary-card">
+        <span class="eyebrow">Combustivel / operacao</span>
+        <strong>${escapeHtml(formatVehicleFuelProfile(summary.fuelProfile))}</strong>
+        <p class="muted">${escapeHtml(sectorNote || "Sem setor principal informado.")}</p>
+      </article>
+    </div>
+    <div class="dossier-summary-actions">
+      <button type="button" class="dossier-action-card" data-dossier-navigate="fuel">Ver abastecimento</button>
+      <button type="button" class="dossier-action-card" data-dossier-navigate="checklist">Registrar checklist</button>
+      <button type="button" class="dossier-action-card" data-dossier-navigate="schedule">Abrir escala</button>
+      <button type="button" class="dossier-action-card" data-dossier-navigate="fine">Registrar multa</button>
     </div>
   `;
 }
@@ -4993,7 +6949,12 @@ function buildVehicleDossierTodayScheduleSection(dossier) {
     return buildVehicleDossierSection(
       "Escala de hoje",
       "Consulta se o veiculo esta escalado na data atual.",
-      buildVehicleDossierEmptyState("Veiculo sem escala para a data atual.", "Nao ha motorista, ajudante ou rota vinculados para hoje.")
+      buildVehicleDossierActionState(
+        "Veiculo sem escala para a data atual.",
+        "Nao ha motorista, ajudante ou rota vinculados para hoje.",
+        "Abrir escala",
+        "schedule"
+      )
     );
   }
 
@@ -5235,6 +7196,19 @@ function buildVehicleDossierChecklistSection(dossier) {
   const checklist = dossier.checklist?.last || null;
   const highlights = dossier.checklist?.highlights || [];
 
+  if (!checklist) {
+    return buildVehicleDossierSection(
+      "Checklist",
+      "Ultima vistoria do veiculo, itens em atencao e observacoes principais.",
+      buildVehicleDossierActionState(
+        "Sem checklist recente",
+        "Registre a vistoria para liberar uma leitura operacional mais confiavel da placa.",
+        "Registrar checklist",
+        "checklist"
+      )
+    );
+  }
+
   return buildVehicleDossierSection(
     "Checklist",
     "Ultima vistoria do veiculo, itens em atencao e observacoes principais.",
@@ -5276,7 +7250,12 @@ function buildVehicleDossierChecklistSection(dossier) {
           ? `<div class="dossier-inline-notes">
               ${highlights.map((item) => `<article class="dossier-inline-note">${escapeHtml(item)}</article>`).join("")}
             </div>`
-          : buildVehicleDossierEmptyState("Sem observacoes criticas.", "O ultimo checklist nao trouxe observacoes adicionais.")
+          : buildVehicleDossierActionState(
+              "Sem observacoes criticas.",
+              "O ultimo checklist nao trouxe pendencias adicionais. Se necessario, registre uma nova conferencia.",
+              "Registrar checklist",
+              "checklist"
+            )
       }
     `
   );
@@ -5285,6 +7264,7 @@ function buildVehicleDossierChecklistSection(dossier) {
 function buildVehicleDossierFinesSection(dossier) {
   const fines = dossier.fines || {};
   const summary = fines.summary || {};
+  const records = fines.records || [];
 
   return buildVehicleDossierSection(
     "Multas",
@@ -5307,24 +7287,33 @@ function buildVehicleDossierFinesSection(dossier) {
           note: "Demandam tratativa financeira",
         },
       ])}
-      ${buildVehicleDossierTable(
-        ["Data", "Condutor", "Valor", "Status", "Observacao", "Documento"],
-        (fines.records || [])
-          .map(
-            (item) => `
-              <tr>
-                <td>${escapeHtml(formatOptionalDate(item.fineDate))}</td>
-                <td>${escapeHtml(item.driver || "-")}</td>
-                <td>${escapeHtml(formatCurrency(item.amount || 0))}</td>
-                <td>${statusBadge(item.status)}</td>
-                <td>${escapeHtml(item.notes || "-")}</td>
-                <td>${escapeHtml(item.documentName || item.documentUrl || "-")}</td>
-              </tr>
-            `
-          )
-          .join(""),
-        "Sem multas em aberto."
-      )}
+      ${
+        records.length
+          ? buildVehicleDossierTable(
+              ["Data", "Condutor", "Valor", "Status", "Observacao", "Documento"],
+              records
+                .map(
+                  (item) => `
+                    <tr>
+                      <td>${escapeHtml(formatOptionalDate(item.fineDate))}</td>
+                      <td>${escapeHtml(item.driver || "-")}</td>
+                      <td>${escapeHtml(formatCurrency(item.amount || 0))}</td>
+                      <td>${statusBadge(item.status)}</td>
+                      <td>${escapeHtml(item.notes || "-")}</td>
+                      <td>${escapeHtml(item.documentName || item.documentUrl || "-")}</td>
+                    </tr>
+                  `
+                )
+                .join(""),
+              "Sem multas em aberto."
+            )
+          : buildVehicleDossierActionState(
+              "Sem multas vinculadas",
+              "Quando houver autuacao ou divergencia financeira, registre a multa para acompanhar por placa.",
+              "Registrar multa",
+              "fine"
+            )
+      }
     `
   );
 }
@@ -5403,17 +7392,55 @@ function renderVehicleDossier() {
   refs.dossierContent.classList.remove("hidden");
   refs.dossierSummaryShell.innerHTML = buildVehicleDossierSummary(dossier);
   refs.dossierAlertCards.innerHTML = buildVehicleDossierAlertCards(dossier);
-  refs.dossierSections.innerHTML = [
-    buildVehicleDossierSummarySection(dossier),
-    buildVehicleDossierTodayScheduleSection(dossier),
-    buildVehicleDossierFuelSection(dossier),
-    buildVehicleDossierMaintenanceSection(dossier),
-    buildVehicleDossierTireSection(dossier),
-    buildVehicleDossierChecklistSection(dossier),
-    buildVehicleDossierFinesSection(dossier),
-    buildVehicleDossierTimelineSection(dossier),
-    buildVehicleDossierDocumentsSection(dossier),
-  ].join("");
+  refs.dossierSections.innerHTML = `
+    <div class="dossier-group-grid">
+      <section class="panel dossier-group-panel">
+        <div class="dossier-group-panel__title">
+          <span class="eyebrow">Status</span>
+          <h4>KM, consumo e condicao</h4>
+          <p class="muted">Leitura consolidada para decidir rapido se a placa pode operar.</p>
+        </div>
+        ${buildVehicleDossierSummarySection(dossier)}
+        ${buildVehicleDossierFuelSection(dossier)}
+      </section>
+      <section class="panel dossier-group-panel">
+        <div class="dossier-group-panel__title">
+          <span class="eyebrow">Operacao</span>
+          <h4>Escala e checklist</h4>
+          <p class="muted">Equipe, rota e conferencia do dia na mesma area.</p>
+        </div>
+        ${buildVehicleDossierTodayScheduleSection(dossier)}
+        ${buildVehicleDossierChecklistSection(dossier)}
+      </section>
+      <section class="panel dossier-group-panel">
+        <div class="dossier-group-panel__title">
+          <span class="eyebrow">Financeiro</span>
+          <h4>Multas e pendencias</h4>
+          <p class="muted">Tudo o que impacta baixa, tratativa e rastreabilidade financeira.</p>
+        </div>
+        ${buildVehicleDossierFinesSection(dossier)}
+      </section>
+      <section class="panel dossier-group-panel">
+        <div class="dossier-group-panel__title">
+          <span class="eyebrow">Manutencao</span>
+          <h4>Preventiva, oleo e pneus</h4>
+          <p class="muted">Base para manter a frota confiavel e sem surpresa no campo.</p>
+        </div>
+        ${buildVehicleDossierMaintenanceSection(dossier)}
+        ${buildVehicleDossierTireSection(dossier)}
+      </section>
+      <section class="panel dossier-group-panel">
+        <div class="dossier-group-panel__title">
+          <span class="eyebrow">Historico</span>
+          <h4>Rastreabilidade completa</h4>
+          <p class="muted">Linha do tempo, exportacao e documento consolidado do veiculo.</p>
+        </div>
+        ${buildVehicleDossierTimelineSection(dossier)}
+        ${buildVehicleDossierDocumentsSection(dossier)}
+      </section>
+    </div>
+  `;
+  syncResponsiveTableLabels(refs.dossierContent);
 }
 
 function handleVehicleDossierSectionActions(event) {
@@ -5626,8 +7653,101 @@ function openVehicleDossierRelatedReport() {
     refs.fuelFilterPlate.value = plate;
   }
   renderFuel();
-  document.getElementById("fuel-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  scrollToElement(document.getElementById("fuel-section"));
   showToast("Modulo Combustivel filtrado para a placa selecionada.");
+}
+
+function navigateVehicleDossierContext(action) {
+  const plate = state.dossier.item?.vehicle?.plate || state.dossier.selectedPlate || "";
+  const scheduleEntry = state.dossier.item?.todaySchedule?.entries?.[0] || null;
+  if (!plate) {
+    showToast("Selecione um veiculo antes de abrir o modulo relacionado.", "error");
+    return;
+  }
+
+  if (action === "fuel") {
+    openVehicleDossierRelatedReport();
+    return;
+  }
+
+  if (action === "checklist") {
+    setSection("checklists");
+    if (refs.checklistForm?.elements?.vehicle) {
+      refs.checklistForm.elements.vehicle.value = plate;
+    }
+    if (!refs.checklistForm?.elements?.driverName?.value && scheduleEntry?.driver) {
+      refs.checklistForm.elements.driverName.value = scheduleEntry.driver;
+    }
+    scrollToElement(refs.checklistForm);
+    refs.checklistForm?.elements?.vehicle?.focus();
+    showToast("Checklist preparado para a placa selecionada.");
+    return;
+  }
+
+  if (action === "fine") {
+    setSection("fines");
+    if (refs.fineForm?.elements?.plate) {
+      refs.fineForm.elements.plate.value = plate;
+    }
+    if (!refs.fineForm?.elements?.driver?.value && scheduleEntry?.driver) {
+      refs.fineForm.elements.driver.value = scheduleEntry.driver;
+    }
+    scrollToElement(refs.fineForm);
+    refs.fineForm?.elements?.plate?.focus();
+    showToast("Formulario de multa preparado para a placa selecionada.");
+    return;
+  }
+
+  if (action === "schedule") {
+    setSection("schedules");
+    const currentLines = normalizeScheduleDraftLines(state.schedule.draftLines || []);
+    const existingLine = currentLines.find(
+      (line) => normalizeClientPlateKey(line.vehicle) === normalizeClientPlateKey(plate)
+    );
+    const emptyLine = currentLines.find(
+      (line) =>
+        ![line.vehicle, line.location, line.driver, line.assistant, line.departureTime, line.notes].some((value) =>
+          String(value || "").trim()
+        )
+    );
+
+    let targetLineId = existingLine?.localId || "";
+    if (existingLine) {
+      state.schedule.draftLines = currentLines;
+    } else if (emptyLine) {
+      state.schedule.draftLines = currentLines.map((line) =>
+        line.localId === emptyLine.localId
+          ? {
+              ...line,
+              vehicle: plate,
+              location: line.location || scheduleEntry?.location || "",
+              driver: line.driver || scheduleEntry?.driver || "",
+              assistant: line.assistant || scheduleEntry?.assistant || "",
+            }
+          : line
+      );
+      targetLineId = emptyLine.localId;
+    } else {
+      const newLine = createScheduleDraftLine({
+        vehicle: plate,
+        location: scheduleEntry?.location || "",
+        driver: scheduleEntry?.driver || "",
+        assistant: scheduleEntry?.assistant || "",
+      });
+      state.schedule.draftLines = [...currentLines, newLine].map((line, index) => ({ ...line, lineOrder: index + 1 }));
+      targetLineId = newLine.localId;
+    }
+
+    state.schedule.previewVisible = true;
+    state.schedule.hasUnsavedChanges = true;
+    renderScheduleLinesEditor();
+    renderSchedules();
+    renderScheduleDocumentPreview();
+    if (targetLineId) {
+      focusScheduleLine(targetLineId);
+    }
+    showToast("Escala do dia preparada para a placa selecionada.");
+  }
 }
 
 function openVehicleDossierFromList(id) {
@@ -5656,31 +7776,172 @@ async function refreshVehicles() {
   }
 }
 
+function getVehicleOperationalSnapshot(vehicle) {
+  const plateKey = normalizeClientPlateKey(vehicle?.plate);
+  const efficiency =
+    (state.dashboard.analytics?.efficiencyRanking || []).find(
+      (item) => normalizeClientPlateKey(item.plate) === plateKey
+    ) || null;
+  const plateAlerts = (state.dashboard.analytics?.operationalAlerts || []).filter(
+    (item) => normalizeClientPlateKey(item.plate) === plateKey
+  );
+  const criticalAlerts = plateAlerts.filter((item) => item.severity === "CRITICAL").length;
+  const warningAlerts = plateAlerts.filter((item) => item.severity === "WARNING").length;
+  const todaySchedule =
+    (state.dashboard.todaySchedules || []).find(
+      (item) => normalizeClientPlateKey(item.vehicle) === plateKey
+    ) || null;
+  const currentKm =
+    efficiency && Number(efficiency.lastOdometerKm || 0) > 0 ? Number(efficiency.lastOdometerKm) : null;
+  const averageKmPerLiter = Number(
+    efficiency?.recentAverageKmPerLiter || efficiency?.kmPerLiter || efficiency?.currentKmPerLiter || 0
+  );
+
+  let healthTone = "success";
+  let healthLabel = "OK";
+  let healthDetail = "Operacao estavel no periodo.";
+  if (vehicle?.status === "INACTIVE") {
+    healthTone = "danger";
+    healthLabel = "Critico";
+    healthDetail = "Veiculo marcado como inativo.";
+  } else if (vehicle?.status === "MAINTENANCE" || criticalAlerts > 0) {
+    healthTone = "danger";
+    healthLabel = "Critico";
+    healthDetail =
+      vehicle?.status === "MAINTENANCE"
+        ? "Veiculo em manutencao."
+        : `${formatNumber(criticalAlerts)} alerta(s) critico(s) vinculado(s).`;
+  } else if (warningAlerts > 0 || vehicle?.status === "AVAILABLE") {
+    healthTone = "warning";
+    healthLabel = "Atencao";
+    healthDetail =
+      warningAlerts > 0
+        ? `${formatNumber(warningAlerts)} alerta(s) em atencao.`
+        : "Disponivel, mas exige conferencia operacional.";
+  }
+
+  return {
+    currentKm,
+    averageKmPerLiter,
+    todaySchedule,
+    criticalAlerts,
+    warningAlerts,
+    healthTone,
+    healthLabel,
+    healthDetail,
+  };
+}
+
+function renderVehicleSummaryCards(snapshots = []) {
+  if (!refs.vehiclesSummaryCards) {
+    return;
+  }
+
+  const criticalCount = snapshots.filter((item) => item.healthTone === "danger").length;
+  const attentionCount = snapshots.filter((item) => item.healthTone === "warning").length;
+  const withKmCount = snapshots.filter((item) => item.currentKm !== null).length;
+
+  refs.vehiclesSummaryCards.innerHTML = [
+    {
+      label: "Veiculos ativos",
+      value: formatNumber(state.vehicles.filter((item) => item.active).length),
+      note: "Base operacional disponivel",
+      icon: "vehicle",
+      tone: "brand",
+    },
+    {
+      label: "Com KM atualizado",
+      value: formatNumber(withKmCount),
+      note: "Leitura consolidada por placa",
+      icon: "analytics",
+      tone: "neutral",
+    },
+    {
+      label: "Media da frota",
+      value: formatKmPerLiter(state.dashboard.analytics?.efficiencySummary?.averageKmPerLiter || 0),
+      note: "KM/L valido no periodo",
+      icon: "efficiency",
+      tone: "success",
+    },
+    {
+      label: "Atenção / critico",
+      value: `${formatNumber(attentionCount)} / ${formatNumber(criticalCount)}`,
+      note: "Status geral por placa",
+      icon: "alert",
+      tone: criticalCount > 0 ? "danger" : attentionCount > 0 ? "warning" : "success",
+    },
+  ]
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card operations-kpi-card--compact",
+        label: item.label,
+        value: item.value,
+        note: item.note,
+        icon: item.icon,
+        tone: item.tone,
+      })
+    )
+    .join("");
+}
+
 function renderVehicles() {
-  refs.vehiclesTableBody.innerHTML = state.vehicles.length
+  const rows = state.vehicles.map((vehicle) => ({
+    vehicle,
+    snapshot: getVehicleOperationalSnapshot(vehicle),
+  }));
+  renderVehicleSummaryCards(rows.map((item) => item.snapshot));
+
+  refs.vehiclesTableBody.innerHTML = rows.length
     ? state.vehicles
-        .map(
-          (vehicle) => `
+        .map((vehicle) => {
+          const snapshot = rows.find((item) => item.vehicle.id === vehicle.id)?.snapshot || getVehicleOperationalSnapshot(vehicle);
+          const operationCopy = [
+            [vehicle.brand, vehicle.model].filter(Boolean).join(" / "),
+            vehicle.sector || "",
+            snapshot.todaySchedule?.driver ? `Motorista: ${snapshot.todaySchedule.driver}` : "",
+          ]
+            .filter(Boolean)
+            .join(" | ");
+
+          return `
             <tr>
               <td>
                 <strong>${escapeHtml(vehicle.plate)}</strong>
-                <div class="muted">${escapeHtml(vehicle.notes || "-")}</div>
+                <div class="muted">${escapeHtml(vehicle.notes || "Sem observacao operacional.")}</div>
               </td>
+              <td>
+                <strong>${escapeHtml(snapshot.currentKm !== null ? formatDistance(snapshot.currentKm) : "-")}</strong>
+                <div class="muted">${escapeHtml(
+                  snapshot.todaySchedule?.location || "Sem rota do dia vinculada"
+                )}</div>
+              </td>
+              <td>
+                <strong>${escapeHtml(formatKmPerLiter(snapshot.averageKmPerLiter || 0))}</strong>
+                <div class="muted">${escapeHtml(
+                  snapshot.averageKmPerLiter ? "Media real dos ultimos abastecimentos coerentes" : "Aguardando historico suficiente"
+                )}</div>
+              </td>
+              <td>
+                <span class="status-badge status-${snapshot.healthTone === "danger" ? "red" : snapshot.healthTone === "warning" ? "yellow" : "green"}">${escapeHtml(snapshot.healthLabel)}</span>
+                <div class="muted">${escapeHtml(snapshot.healthDetail)}</div>
+              </td>
+              <td>${escapeHtml(operationCopy || "Sem escala ou operacao vinculada")}</td>
               <td>${escapeHtml(formatVehicleFuelProfile(vehicle.fuelProfile))}</td>
-              <td>${escapeHtml([vehicle.brand, vehicle.model].filter(Boolean).join(" / ") || "-")}</td>
-              <td>${escapeHtml(vehicle.sector || "-")}</td>
-              <td>${statusBadge(vehicle.status || (vehicle.active ? "ACTIVE" : "INACTIVE"))}</td>
               <td>
                 <div class="row-actions">
-                  ${buildRowActionButton("open-dossier", vehicle.id, "Abrir dossie do veiculo", "&#128269;")}
+                  <button type="button" class="ghost-button compact-button" data-action="open-dossier" data-id="${vehicle.id}">
+                    Ver dossie completo
+                  </button>
                   ${buildRowActionButton("edit-vehicle", vehicle.id, "Editar veiculo", "&#9998;")}
                 </div>
               </td>
             </tr>
-          `
-        )
+          `;
+        })
         .join("")
-    : emptyRow("Nenhum veiculo cadastrado.", 6);
+    : emptyRow("Nenhum veiculo cadastrado.", 7);
+
+  syncResponsiveTableLabels();
 }
 
 function handleRowActions(event) {
@@ -7117,11 +9378,98 @@ function buildPrintableCompanyHeader(company, title, subtitle = "") {
 }
 
 function handleInteractivePanels(event) {
+  const dashboardActionButton = event.target.closest("[data-dashboard-save-odometer], [data-dashboard-clear-odometer]");
+  if (dashboardActionButton) {
+    const recordId =
+      dashboardActionButton.dataset.dashboardSaveOdometer ||
+      dashboardActionButton.dataset.dashboardClearOdometer ||
+      "";
+    saveDashboardOdometerChange(recordId, dashboardActionButton.hasAttribute("data-dashboard-clear-odometer")).catch(
+      (error) => showToast(error.message, "error")
+    );
+    return;
+  }
+
+  const dashboardLazyButton = event.target.closest("[data-dashboard-load-chart]");
+  if (dashboardLazyButton) {
+    if (dashboardLazyButton.dataset.dashboardLoadChart === "fuel") {
+      state.dashboard.lazy.fuelChartLoaded = true;
+      renderDashboard();
+    }
+    return;
+  }
+
+  const noteSaveButton = event.target.closest("[data-note-inline-save]");
+  if (noteSaveButton) {
+    saveInlineNoteEditing(noteSaveButton.dataset.noteInlineSave).catch((error) => showToast(error.message, "error"));
+    return;
+  }
+
+  const noteCancelButton = event.target.closest("[data-note-inline-cancel]");
+  if (noteCancelButton) {
+    cancelInlineNoteEditing();
+    return;
+  }
+
+  const noteFinanceNowButton = event.target.closest("[data-note-set-finance-today]");
+  if (noteFinanceNowButton) {
+    setInlineNoteFinanceNow(noteFinanceNowButton.dataset.noteSetFinanceToday);
+    return;
+  }
+
+  const scheduleDuplicateLineButton = event.target.closest("[data-schedule-line-duplicate]");
+  if (scheduleDuplicateLineButton) {
+    duplicateScheduleDraftLine(scheduleDuplicateLineButton.dataset.scheduleLineDuplicate);
+    return;
+  }
+
+  const scheduleRemoveLineButton = event.target.closest("[data-schedule-line-remove]");
+  if (scheduleRemoveLineButton) {
+    removeScheduleDraftLine(scheduleRemoveLineButton.dataset.scheduleLineRemove);
+    return;
+  }
+
+  const scheduleFocusLineButton = event.target.closest("[data-schedule-focus-line]");
+  if (scheduleFocusLineButton) {
+    focusScheduleLine(scheduleFocusLineButton.dataset.scheduleFocusLine);
+    return;
+  }
+
+  const scheduleHistoryOpenButton = event.target.closest("[data-schedule-history-open]");
+  if (scheduleHistoryOpenButton) {
+    openScheduleHistoryDay(scheduleHistoryOpenButton.dataset.scheduleHistoryOpen).catch((error) =>
+      showToast(error.message, "error")
+    );
+    return;
+  }
+
+  const scheduleHistoryDuplicateButton = event.target.closest("[data-schedule-history-duplicate]");
+  if (scheduleHistoryDuplicateButton) {
+    openScheduleHistoryDay(scheduleHistoryDuplicateButton.dataset.scheduleHistoryDuplicate, { duplicate: true }).catch(
+      (error) => showToast(error.message, "error")
+    );
+    return;
+  }
+
+  const scheduleHistoryPrintButton = event.target.closest("[data-schedule-history-print]");
+  if (scheduleHistoryPrintButton) {
+    openScheduleHistoryDay(scheduleHistoryPrintButton.dataset.scheduleHistoryPrint, { printMode: "pdf" }).catch(
+      (error) => showToast(error.message, "error")
+    );
+    return;
+  }
+
+  const dossierNavigationButton = event.target.closest("[data-dossier-navigate]");
+  if (dossierNavigationButton) {
+    navigateVehicleDossierContext(dossierNavigationButton.dataset.dossierNavigate);
+    return;
+  }
+
   const shortcut = event.target.closest("[data-fuel-shortcut]");
   if (shortcut) {
     const action = shortcut.dataset.fuelShortcut;
     if (action === "new") {
-      refs.fuelForm.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollToElement(refs.fuelForm);
       refs.fuelForm.elements.vehicleId.focus();
     }
 
@@ -7175,7 +9523,34 @@ function handleInteractivePanels(event) {
   renderChecklistComposer();
 }
 
+function handleInteractiveChanges(event) {
+  const focusPlateField = event.target.closest("[data-dashboard-focus-plate]");
+  if (focusPlateField) {
+    handleDashboardFocusPlateChange(focusPlateField.value).catch((error) => showToast(error.message, "error"));
+    return;
+  }
+
+  const scheduleField = event.target.closest("[data-schedule-line-field]");
+  if (scheduleField) {
+    updateScheduleDraftField(
+      scheduleField.dataset.scheduleLineId,
+      scheduleField.dataset.scheduleLineField,
+      scheduleField.value
+    );
+  }
+}
+
 function handleInteractiveInputs(event) {
+  const scheduleField = event.target.closest("[data-schedule-line-field]");
+  if (scheduleField) {
+    updateScheduleDraftField(
+      scheduleField.dataset.scheduleLineId,
+      scheduleField.dataset.scheduleLineField,
+      scheduleField.value
+    );
+    return;
+  }
+
   const notesField = event.target.closest("[data-checklist-item-notes]");
   if (!notesField) {
     return;
@@ -7230,22 +9605,23 @@ function addTemporaryChecklistItem() {
 }
 
 function refreshScheduleSummary() {
-  const items = state.schedules;
+  const items = getSchedulePreviewItems();
   const uniqueVehicles = new Set(items.map((item) => item.vehicle).filter(Boolean));
   const uniqueDrivers = new Set(items.map((item) => item.driver).filter(Boolean));
   const assistants = items.filter((item) => item.assistant).length;
 
   refs.scheduleSummaryCards.innerHTML = [
-    { label: "Total de veiculos", value: uniqueVehicles.size, icon: "vehicle", tone: "brand" },
-    { label: "Total de motoristas", value: uniqueDrivers.size, icon: "team", tone: "neutral" },
-    { label: "Total de ajudantes", value: assistants, icon: "schedules", tone: "warning" },
+    { label: "Linhas do dia", value: items.length, icon: "schedules", tone: "brand" },
+    { label: "Placas", value: uniqueVehicles.size, icon: "vehicle", tone: "neutral" },
+    { label: "Motoristas", value: uniqueDrivers.size, icon: "team", tone: "warning" },
+    { label: "Ajudantes", value: assistants, icon: "dashboard", tone: "success" },
   ]
     .map((item) =>
       buildStatCard({
         className: "operations-kpi-card operations-kpi-card--compact",
         label: item.label,
         value: formatNumber(item.value),
-        note: "Escala filtrada",
+        note: "Baseado na edicao atual",
         icon: item.icon,
         tone: item.tone,
       })
@@ -7259,7 +9635,7 @@ function refreshScheduleSummary() {
         .map(
           (item) => `
             <article class="stack-item">
-              <strong>${escapeHtml(item.vehicle)}</strong>
+              <strong>${escapeHtml(item.vehicle || "Sem placa")}</strong>
               <p class="muted">${escapeHtml(item.location || "Rota nao informada")}</p>
               <p class="muted">${escapeHtml(item.notes)}</p>
             </article>
@@ -7267,7 +9643,7 @@ function refreshScheduleSummary() {
         )
         .join("") ||
       `<div class="stack-item"><strong>Sem observacoes adicionais</strong><p class="muted">Cadastre notas operacionais na escala para aparecerem aqui.</p></div>`
-    : `<div class="stack-item"><strong>Nenhuma escala do dia</strong><p class="muted">Selecione uma data para acompanhar as linhas operacionais.</p></div>`;
+    : `<div class="stack-item"><strong>Nenhuma escala do dia</strong><p class="muted">Adicione linhas para visualizar o resumo operacional.</p></div>`;
 }
 
 function renderFuel() {
@@ -7405,35 +9781,34 @@ function renderFuel() {
 }
 
 function renderSchedules() {
-  refs.schedulesTableBody.innerHTML = state.schedules.length
-    ? state.schedules
+  const items = getSchedulePreviewItems();
+  refs.schedulesTableBody.innerHTML = items.length
+    ? items
         .map(
           (item, index) => `
             <tr>
               <td>${escapeHtml(formatNumber(index + 1))}</td>
               <td>
-                <strong>${escapeHtml(item.vehicle)}</strong>
-                <div class="muted">${escapeHtml(formatDateOnly(item.scheduledDate))}</div>
+                <strong>${escapeHtml(item.vehicle || "-")}</strong>
+                <div class="muted">${escapeHtml(formatDateOnly(refs.scheduleForm.elements.scheduledDate.value || currentLocalDate()))}</div>
               </td>
               <td>${escapeHtml(item.location || "Rota nao informada")}</td>
-              <td>
-                <strong>${escapeHtml(item.driver)}</strong>
-                <div class="muted">${escapeHtml(item.responsibleName || item.userName || "-")}</div>
-              </td>
+              <td>${escapeHtml(item.driver || "-")}</td>
               <td>${escapeHtml(item.assistant || "-")}</td>
-              <td>${escapeHtml(item.notes || "-")}</td>
+              <td>${escapeHtml(item.departureTime || "-")}</td>
               <td>
                 <div class="row-actions">
-                  ${buildRowActionButton("edit-schedule", item.id, "Editar escala", "&#9998;")}
+                  <button type="button" class="ghost-button compact-button" data-schedule-focus-line="${escapeHtml(item.localId || String(item.id || ""))}">Editar</button>
                 </div>
               </td>
             </tr>
           `
         )
         .join("")
-    : emptyRow("Nenhuma escala cadastrada para a data selecionada.", 7);
+    : emptyRow("Nenhuma linha adicionada para a escala selecionada.", 7);
 
   refreshScheduleSummary();
+  syncResponsiveTableLabels();
 }
 
 function renderChecklists() {
@@ -7464,67 +9839,134 @@ function renderChecklists() {
 
   renderChecklistComposer();
   renderChecklistTemplateTable();
+  syncResponsiveTableLabels();
 }
 
 async function refreshSchedules() {
   const query = new URLSearchParams();
-  const selectedDate = refs.scheduleForm?.elements.scheduledDate?.value || "";
-  if (selectedDate) {
-    query.set("date", selectedDate);
-  }
-  const suffix = query.toString() ? `?${query.toString()}` : "";
-  const response = await api(`/api/schedules${suffix}`);
+  const selectedDate = refs.scheduleForm?.elements.scheduledDate?.value || currentLocalDate();
+  query.set("date", selectedDate);
+  if (refs.scheduleHistoryDate?.value) query.set("historyDate", refs.scheduleHistoryDate.value);
+  if (refs.scheduleHistoryPlate?.value.trim()) query.set("plate", refs.scheduleHistoryPlate.value.trim());
+  if (refs.scheduleHistoryDriver?.value.trim()) query.set("driver", refs.scheduleHistoryDriver.value.trim());
+
+  const response = await api(`/api/schedules?${query.toString()}`);
   state.schedules = response.items || [];
+  state.schedule.history = response.history || [];
+  state.schedule.suggestions = response.suggestions || state.schedule.suggestions;
+
+  const currentSelectedDate = refs.scheduleForm?.elements.scheduledDate?.value || selectedDate;
+  const shouldHydrate =
+    !state.schedule.hasUnsavedChanges ||
+    currentSelectedDate !== (state.schedule.day?.scheduledDate || "") ||
+    Number(response.day?.id || 0) !== Number(state.schedule.dayId || 0);
+
+  if (response.day && shouldHydrate) {
+    hydrateScheduleWorkspaceFromDay(response.day);
+    syncResponsiveTableLabels();
+    return;
+  }
+
+  if (!response.day && shouldHydrate) {
+    refs.scheduleForm.elements.id.value = "";
+    refs.scheduleForm.elements.scheduledDate.value = response.selectedDate || selectedDate;
+    if (!refs.scheduleForm.elements.documentTitle.value) {
+      refs.scheduleForm.elements.documentTitle.value = "ESCALA OPERACIONAL DIARIA";
+    }
+    if (!refs.scheduleForm.elements.responsibleName.value) {
+      refs.scheduleForm.elements.responsibleName.value = state.user?.name || "";
+    }
+    state.schedule.dayId = null;
+    state.schedule.day = null;
+    state.schedule.draftLines = normalizeScheduleDraftLines([]);
+    state.schedule.hasUnsavedChanges = false;
+    state.schedule.previewVisible = false;
+  }
+
+  renderScheduleSuggestions();
+  renderScheduleLinesEditor();
   renderSchedules();
+  renderScheduleHistory();
+  renderScheduleDocumentPreview();
+  syncResponsiveTableLabels();
 }
 
 async function handleScheduleSubmit(event) {
   event.preventDefault();
-  const id = refs.scheduleForm.elements.id.value;
-
+  const model = buildScheduleDraftModel();
   const payload = {
-    scheduledDate: refs.scheduleForm.elements.scheduledDate.value,
-    vehicle: refs.scheduleForm.elements.vehicle.value,
-    location: refs.scheduleForm.elements.location.value,
-    driver: refs.scheduleForm.elements.driver.value,
-    assistant: refs.scheduleForm.elements.assistant.value,
-    responsibleName: refs.scheduleForm.elements.responsibleName.value,
-    notes: refs.scheduleForm.elements.notes.value,
+    scheduledDate: model.scheduledDate,
+    documentTitle: model.documentTitle,
+    responsibleName: model.responsibleName,
+    generalNotes: model.generalNotes,
+    entries: model.entries.map((entry, index) => ({
+      vehicle: entry.vehicle,
+      location: entry.location,
+      driver: entry.driver,
+      assistant: entry.assistant,
+      departureTime: entry.departureTime,
+      notes: entry.notes,
+      lineOrder: index + 1,
+    })),
   };
 
+  if (!payload.entries.length) {
+    showToast("Adicione ao menos uma linha operacional para salvar a escala.", "error");
+    return;
+  }
+
   try {
-    await api(id ? `/api/schedules/${id}` : "/api/schedules", {
-      method: id ? "PUT" : "POST",
+    const scheduleDayId = state.schedule.dayId || refs.scheduleForm.elements.id.value;
+    await api(scheduleDayId ? `/api/schedules/${scheduleDayId}` : "/api/schedules", {
+      method: scheduleDayId ? "PUT" : "POST",
       body: payload,
     });
-    resetScheduleForm();
+    state.schedule.previewVisible = true;
     await Promise.all([refreshSchedules(), refreshDashboard(), maybeRefreshAdmin()]);
-    showToast(id ? "Escala atualizada." : "Escala cadastrada.");
+
+    if (
+      state.dossier.selectedPlate &&
+      payload.entries.some((entry) => normalizeClientPlateKey(entry.vehicle) === normalizeClientPlateKey(state.dossier.selectedPlate))
+    ) {
+      await loadVehicleDossierByPlate(state.dossier.selectedPlate, { silent: true });
+    }
+
+    showToast(scheduleDayId ? "Escala atualizada com sucesso." : "Escala salva com sucesso.");
   } catch (error) {
+    if (error.status === 409 && error.data?.day) {
+      hydrateScheduleWorkspaceFromDay(error.data.day, { preservePreview: true });
+      showToast("Ja existe uma escala para esta data. A versao salva foi carregada para revisao.", "error");
+      return;
+    }
     showToast(error.message, "error");
   }
 }
 
 function editSchedule(id) {
-  const item = findById(state.schedules, id);
-  if (!item) return;
-
-  refs.scheduleForm.elements.id.value = item.id;
-  refs.scheduleForm.elements.scheduledDate.value = item.scheduledDate;
-  refs.scheduleForm.elements.vehicle.value = item.vehicle;
-  refs.scheduleForm.elements.location.value = item.location || "";
-  refs.scheduleForm.elements.driver.value = item.driver;
-  refs.scheduleForm.elements.assistant.value = item.assistant || "";
-  refs.scheduleForm.elements.responsibleName.value = item.responsibleName || "";
-  refs.scheduleForm.elements.notes.value = item.notes || "";
-  setSection("schedules");
+  const line = getSchedulePreviewItems().find(
+    (item) => Number(item.id || 0) === Number(id) || String(item.localId || "") === String(id)
+  );
+  if (!line) {
+    return;
+  }
+  focusScheduleLine(line.localId || String(id));
 }
 
 function resetScheduleForm() {
   refs.scheduleForm.reset();
   refs.scheduleForm.elements.id.value = "";
   refs.scheduleForm.elements.scheduledDate.value = currentLocalDate();
+  refs.scheduleForm.elements.documentTitle.value = "ESCALA OPERACIONAL DIARIA";
   refs.scheduleForm.elements.responsibleName.value = state.user?.name || "";
+  refs.scheduleForm.elements.documentMode.value = "filled";
+  state.schedule.dayId = null;
+  state.schedule.day = null;
+  state.schedule.draftLines = normalizeScheduleDraftLines([]);
+  state.schedule.previewVisible = false;
+  state.schedule.hasUnsavedChanges = false;
+  renderScheduleLinesEditor();
+  renderSchedules();
+  renderScheduleDocumentPreview();
 }
 
 async function handleChecklistSubmit(event) {
@@ -7926,6 +10368,8 @@ function renderProducts() {
         )
         .join("")
     : emptyRow("Nenhum item de almoxarifado cadastrado.", 7);
+
+  syncResponsiveTableLabels();
 }
 
 function renderInventoryMovements() {
@@ -7950,6 +10394,8 @@ function renderInventoryMovements() {
         )
         .join("")
     : emptyRow("Nenhuma movimentacao de almoxarifado registrada.", 9);
+
+  syncResponsiveTableLabels();
 }
 
 function renderFuelInventoryMovements() {
@@ -8498,6 +10944,7 @@ function renderFuel() {
   );
 
   refs.fuelSideInsights.innerHTML = buildFuelSideInsights(analytics);
+  syncResponsiveTableLabels();
 }
 
 async function handleFuelSubmit(event) {

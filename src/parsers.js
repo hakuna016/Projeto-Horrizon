@@ -16,6 +16,11 @@ const xmlParser = new XMLParser({
   processEntities: true,
 });
 
+function normalizeTaxId(value) {
+  const digits = String(value ?? "").replace(/\D+/g, "");
+  return digits || "";
+}
+
 function deepGet(target, path) {
   return path.split(".").reduce((current, key) => {
     if (Array.isArray(current)) {
@@ -77,9 +82,20 @@ function parseInvoiceXml(content, fileName = "") {
       "infNFe.Id",
     ])
   );
+  const supplierTaxId = normalizeTaxId(
+    pickFirst(parsed, [
+      "nfeProc.NFe.infNFe.emit.CNPJ",
+      "NFe.infNFe.emit.CNPJ",
+      "infNFe.emit.CNPJ",
+      "nfeProc.NFe.infNFe.emit.CPF",
+      "NFe.infNFe.emit.CPF",
+      "infNFe.emit.CPF",
+    ])
+  );
 
   return {
     supplierName: supplierName || fileName.replace(/\.[^.]+$/, "") || "Fornecedor nao identificado",
+    supplierTaxId,
     totalValue,
     danfe,
     issueDate,
@@ -117,6 +133,16 @@ function parseSpreadsheet(contentBase64) {
 
       return {
         supplierName,
+        supplierTaxId: normalizeTaxId(
+          pickRecordValue(normalized, [
+            "cnpj",
+            "cpf_cnpj",
+            "cnpj_cpf",
+            "cnpj_fornecedor",
+            "documento",
+            "tax_id",
+          ])
+        ),
         totalValue: toNumber(
           pickRecordValue(normalized, ["valor", "valor_total", "total", "v_nf"])
         ),

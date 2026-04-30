@@ -184,71 +184,66 @@
             </div>
           </div>
 
-          <div id="dashboard-view-switcher" class="dashboard-view-switcher" role="group" aria-label="Filtros do dashboard">
+          <section class="panel dashboard-command-bar">
+            <div class="dashboard-command-bar__copy">
+              <span class="eyebrow">Operacao diaria</span>
+              <strong id="dashboard-context-title">Visao Geral</strong>
+              <p id="dashboard-context-description" class="muted">
+                Combustivel, eficiencia e alertas em uma leitura direta para a rotina operacional.
+              </p>
+            </div>
+            <div class="dashboard-command-bar__controls">
+              <div class="dashboard-command-bar__filters">
+                <label id="dashboard-vehicle-group" class="dashboard-filter-field">
+                  <span>Placa</span>
+                  <select id="dashboard-plate-filter">
+                    <option value="">Todas as placas</option>
+                  </select>
+                </label>
+                <label id="dashboard-quick-period-group" class="dashboard-filter-field">
+                  <span>Periodo</span>
+                  <select id="dashboard-period-filter">
+                    <option value="1">Hoje</option>
+                    <option value="7">Ultimos 7 dias</option>
+                    <option value="30" selected>Ultimos 30 dias</option>
+                  </select>
+                </label>
+                <label class="dashboard-filter-field">
+                  <span>Tipo</span>
+                  <select id="dashboard-data-filter">
+                    <option value="overview">Geral</option>
+                    <option value="fuel">Combustivel</option>
+                    <option value="efficiency">Eficiencia</option>
+                  </select>
+                </label>
+              </div>
+              <div id="dashboard-period-range-group" class="dashboard-range-controls">
+                <label class="dashboard-filter-field">
+                  <span>De</span>
+                  <input id="dashboard-date-from" type="date" />
+                </label>
+                <label class="dashboard-filter-field">
+                  <span>Ate</span>
+                  <input id="dashboard-date-to" type="date" />
+                </label>
+                <div id="dashboard-period-actions" class="dashboard-period-actions">
+                  <button id="dashboard-period-apply-button" type="button" class="secondary-button">Aplicar datas</button>
+                  <button id="dashboard-period-reset-button" type="button" class="ghost-button">Voltar 30 dias</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div id="dashboard-view-switcher" class="dashboard-view-switcher" role="group" aria-label="Navegacao do dashboard">
             <button type="button" class="dashboard-view-button active" data-dashboard-view="overview" aria-pressed="true">
               Visao Geral
-            </button>
-            <button type="button" class="dashboard-view-button" data-dashboard-view="vehicle" aria-pressed="false">
-              Por Veiculo
             </button>
             <button type="button" class="dashboard-view-button" data-dashboard-view="fuel" aria-pressed="false">
               Combustivel
             </button>
-            <button type="button" class="dashboard-view-button" data-dashboard-view="period" aria-pressed="false">
-              Periodo
+            <button type="button" class="dashboard-view-button" data-dashboard-view="efficiency" aria-pressed="false">
+              Eficiencia
             </button>
-            <button type="button" class="dashboard-view-button" data-dashboard-view="alerts" aria-pressed="false">
-              Alertas
-            </button>
-          </div>
-
-          <div class="dashboard-context-bar">
-            <div class="dashboard-context-copy">
-              <span class="eyebrow">Leitura ativa</span>
-              <strong id="dashboard-context-title">Visao Geral</strong>
-              <p id="dashboard-context-description" class="muted">
-                Resumo compacto da operacao com foco nas decisoes do dia.
-              </p>
-            </div>
-            <div class="dashboard-context-toolbar">
-              <label id="dashboard-quick-period-group" class="dashboard-inline-control">
-                <span>Janela</span>
-                <select id="dashboard-period-filter">
-                  <option value="7">Ultimos 7 dias</option>
-                  <option value="15">Ultimos 15 dias</option>
-                  <option value="30" selected>Ultimos 30 dias</option>
-                  <option value="60">Ultimos 60 dias</option>
-                  <option value="90">Ultimos 90 dias</option>
-                </select>
-              </label>
-
-              <label id="dashboard-vehicle-group" class="dashboard-inline-control hidden">
-                <span>Veiculo</span>
-                <select id="dashboard-plate-filter">
-                  <option value="">Selecione um veiculo</option>
-                </select>
-              </label>
-
-              <div id="dashboard-period-range-group" class="dashboard-range-controls hidden">
-                <label class="dashboard-inline-control">
-                  <span>De</span>
-                  <input id="dashboard-date-from" type="date" />
-                </label>
-                <label class="dashboard-inline-control">
-                  <span>Ate</span>
-                  <input id="dashboard-date-to" type="date" />
-                </label>
-              </div>
-
-              <div id="dashboard-period-actions" class="dashboard-period-actions hidden">
-                <button id="dashboard-period-apply-button" type="button" class="secondary-button">
-                  Aplicar periodo
-                </button>
-                <button id="dashboard-period-reset-button" type="button" class="ghost-button">
-                  Voltar aos 30 dias
-                </button>
-              </div>
-            </div>
           </div>
 
           <div id="dashboard-summary" class="dashboard-summary-grid dashboard-summary-grid--decision"></div>
@@ -322,6 +317,11 @@
             </div>
             <div class="header-actions">
               <input id="notes-search" type="search" placeholder="Buscar fornecedor ou DANFE" />
+              <select id="notes-workflow-filter">
+                <option value="ACTIVE">Ativas</option>
+                <option value="FINANCE">Enviadas ao financeiro</option>
+                <option value="ARCHIVED">Baixadas (historico)</option>
+              </select>
               <select id="notes-status-filter">
                 <option value="">Todos os status</option>
                 <option value="NEW">Nova</option>
@@ -337,6 +337,8 @@
               </select>
             </div>
           </div>
+
+          <div id="notes-summary-cards" class="operations-kpi-grid operations-kpi-grid--compact notes-summary-cards"></div>
 
           <div class="schedule-workspace-grid">
             <form id="note-form" class="panel form-card">
@@ -411,6 +413,9 @@
               <button id="spreadsheet-import-button" type="button" class="secondary-button">
                 Processar planilha
               </button>
+              <div id="notes-import-summary" class="notes-import-summary muted">
+                Reimportacoes duplicadas serao ignoradas automaticamente e o resumo aparecera aqui.
+              </div>
               <p class="muted">
                 O sistema extrai fornecedor, valor e DANFE automaticamente e aprende a categoria por fornecedor.
               </p>
@@ -427,7 +432,7 @@
                     <th>Valor</th>
                     <th>Categoria</th>
                     <th>Status</th>
-                    <th>Origem</th>
+                    <th>Baixa</th>
                     <th>Financeiro</th>
                     <th>Ações</th>
                   </tr>
@@ -443,7 +448,7 @@
             <div>
               <span class="eyebrow">Almoxarifado</span>
               <h2>Estoque</h2>
-              <p class="section-description">Entrada e saida apenas de materiais, pecas, ferramentas e itens do almoxarifado.</p>
+              <p class="section-description">Fluxo rapido: selecionar produto, informar quantidade, escolher entrada ou saida e salvar.</p>
             </div>
           </div>
 
@@ -477,6 +482,9 @@
                     <button type="button" class="ghost-button compact-button" data-scan-target="product-barcode-input">
                       Câmera
                     </button>
+                    <button type="button" class="ghost-button compact-button" data-scan-image-target="product-barcode-input">
+                      Imagem
+                    </button>
                   </div>
                 </label>
                 <label>
@@ -503,7 +511,7 @@
                 <span class="eyebrow">Movimentação comum</span>
                 <h3>Entrada e saída do almoxarifado</h3>
               </div>
-              <div class="form-grid">
+              <div class="form-grid inventory-movement-grid">
                 <label class="full-width">
                   <span>Buscar por código de barras</span>
                   <div class="inline-input">
@@ -511,10 +519,13 @@
                     <button type="button" class="ghost-button compact-button" data-scan-target="movement-barcode-input">
                       Câmera
                     </button>
+                    <button type="button" class="ghost-button compact-button" data-scan-image-target="movement-barcode-input">
+                      Imagem
+                    </button>
                     <button id="lookup-barcode-button" type="button" class="ghost-button compact-button">Buscar</button>
                   </div>
                 </label>
-                <label>
+                <label class="inventory-movement-grid__primary">
                   <span>Produto</span>
                   <select id="movement-product-select" name="productId"></select>
                 </label>
@@ -616,9 +627,10 @@
             <div>
               <span class="eyebrow">Frota cadastrada</span>
               <h2>Veiculos</h2>
-              <p class="section-description">Cadastro unico de placas para reduzir erro humano nos abastecimentos.</p>
+              <p class="section-description">Base operacional por placa com leitura direta de KM atual, consumo medio e acesso imediato ao dossie.</p>
             </div>
           </div>
+          <div id="vehicles-summary-cards" class="operations-kpi-grid operations-kpi-grid--compact vehicles-summary-cards"></div>
           <div class="two-column-grid">
             <form id="vehicle-form" class="panel form-card">
               <input type="hidden" name="id" />
@@ -681,10 +693,11 @@
                   <thead>
                     <tr>
                       <th>Placa</th>
+                      <th>KM atual</th>
+                      <th>Consumo medio</th>
+                      <th>Status geral</th>
+                      <th>Operacao</th>
                       <th>Combustivel</th>
-                      <th>Marca / modelo</th>
-                      <th>Setor</th>
-                      <th>Status</th>
                       <th>Acoes</th>
                     </tr>
                   </thead>
@@ -1125,6 +1138,7 @@
                         <th>Motorista</th>
                         <th>Ajudante</th>
                         <th>Hora</th>
+                        <th>Acoes</th>
                       </tr>
                     </thead>
                     <tbody id="schedules-table-body"></tbody>
@@ -1219,7 +1233,7 @@
                 </label>
                 <label>
                   <span>Placa</span>
-                  <input type="text" name="plate" required />
+                  <input type="text" name="plate" list="dossier-vehicle-list" required />
                 </label>
                 <label>
                   <span>Condutor</span>
@@ -1292,7 +1306,7 @@
               <div class="form-grid">
                 <label>
                   <span>Veículo</span>
-                  <input type="text" name="vehicle" required />
+                  <input type="text" name="vehicle" list="dossier-vehicle-list" required />
                 </label>
                 <label>
                   <span>Data</span>
@@ -1421,15 +1435,7 @@
                   </label>
                   <label>
                     <span>Categoria</span>
-                    <select name="category">
-                      <option value="Seguranca">Seguranca</option>
-                      <option value="Mecanica">Mecanica</option>
-                      <option value="Eletrica">Eletrica</option>
-                      <option value="Documentacao">Documentacao</option>
-                      <option value="Carroceria/Bau">Carroceria/Bau</option>
-                      <option value="Conservacao">Conservacao</option>
-                      <option value="Outros">Outros</option>
-                    </select>
+                    <input type="text" name="category" list="checklist-category-list" placeholder="Seguranca" />
                   </label>
                   <label>
                     <span>Obrigatorio</span>
@@ -1483,6 +1489,15 @@
                 </div>
               </div>
             </div>
+            <datalist id="checklist-category-list">
+              <option value="Seguranca"></option>
+              <option value="Mecanica"></option>
+              <option value="Eletrica"></option>
+              <option value="Documentacao"></option>
+              <option value="Carroceria/Bau"></option>
+              <option value="Conservacao"></option>
+              <option value="Outros"></option>
+            </datalist>
           </section>
         </section>
 
@@ -1686,6 +1701,8 @@
         </section>
       </main>
     </div>
+
+    <input id="barcode-image-input" type="file" accept="image/*" class="hidden" />
 
     <div id="scanner-modal" class="scanner-modal hidden">
       <div class="scanner-card">

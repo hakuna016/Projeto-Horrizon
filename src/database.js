@@ -269,6 +269,7 @@ function createTables() {
     CREATE TABLE IF NOT EXISTS notes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       supplier_name TEXT NOT NULL,
+      supplier_tax_id TEXT,
       total_value REAL NOT NULL DEFAULT 0,
       danfe TEXT,
       xml_key TEXT,
@@ -278,6 +279,7 @@ function createTables() {
       source TEXT NOT NULL DEFAULT 'MANUAL',
       finance_notes TEXT,
       sent_to_finance_at TEXT,
+      archived_at TEXT,
       sent_to_finance_by INTEGER,
       created_by INTEGER,
       updated_by INTEGER,
@@ -943,6 +945,16 @@ function migrateBrandingSchema() {
   ensureColumn("company_settings", "created_at", "TEXT");
   ensureColumn("company_settings", "updated_at", "TEXT");
   ensureColumn("company_settings", "updated_by", "INTEGER");
+}
+
+function migrateNotesWorkflowSchema() {
+  ensureColumn("notes", "supplier_tax_id", "TEXT");
+  ensureColumn("notes", "archived_at", "TEXT");
+  runScript(`
+    CREATE INDEX IF NOT EXISTS idx_notes_supplier_tax_id ON notes(supplier_tax_id);
+    CREATE INDEX IF NOT EXISTS idx_notes_workflow ON notes(archived_at, sent_to_finance_at, status);
+    CREATE INDEX IF NOT EXISTS idx_notes_danfe_tax_id ON notes(danfe, supplier_tax_id);
+  `);
 }
 
 function migrateChecklistTemplateSchema() {
@@ -1775,6 +1787,7 @@ async function initDatabase() {
   migrateOperationalSchema();
   migrateAuthSchema();
   migrateBrandingSchema();
+  migrateNotesWorkflowSchema();
   migrateChecklistTemplateSchema();
   seedDatabase();
   syncMasterAdminFromEnvironment();
