@@ -5966,6 +5966,367 @@ tbody tr:hover {
   box-shadow: none !important;
 }
 
+/* Stable Horizon topbar */
+
+:root {
+  --shell-topbar-height: 5.4rem;
+}
+
+.main-content {
+  gap: clamp(1rem, 1.8vw, 1.35rem);
+}
+
+.content-section,
+.main-content [id] {
+  scroll-margin-top: calc(var(--shell-topbar-height) + 1.25rem);
+}
+
+.topbar,
+body[data-theme="dark"] .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1.1fr) minmax(18rem, 1fr);
+  align-items: center;
+  gap: 1rem;
+  height: var(--shell-topbar-height);
+  min-height: var(--shell-topbar-height);
+  max-height: var(--shell-topbar-height);
+  padding: 0 1rem;
+  border-radius: 18px;
+  background: #121820;
+  color: #f7fafc;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom-color: rgba(209, 22, 31, 0.78);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+  isolation: isolate;
+  backdrop-filter: none;
+}
+
+.topbar::after {
+  content: none;
+}
+
+.topbar-start,
+.topbar-end {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.topbar-end {
+  justify-content: flex-end;
+}
+
+.topbar-end > * {
+  flex: 0 0 auto;
+}
+
+.topbar-system {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.topbar-logo {
+  width: 2.6rem;
+  height: 2.6rem;
+  object-fit: cover;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 0.12rem;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.16);
+}
+
+.topbar-system-copy {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+}
+
+.topbar-system-label,
+.topbar-system-copy .eyebrow {
+  margin: 0;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.topbar-system-name {
+  color: #ffffff;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+.topbar-page {
+  display: grid;
+  justify-items: center;
+  gap: 0.12rem;
+  min-width: 0;
+  text-align: center;
+}
+
+.topbar-page-title {
+  margin: 0;
+  max-width: 100%;
+  color: #ffffff;
+  font-size: 1.12rem;
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-page-subtitle {
+  margin: 0;
+  max-width: 100%;
+  color: rgba(255, 255, 255, 0.64);
+  font-size: 0.79rem;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar .sidebar-toggle-button,
+body[data-theme="dark"] .topbar .sidebar-toggle-button,
+.topbar-icon-button,
+.topbar-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  height: 2.75rem;
+  min-width: 2.75rem;
+  padding: 0 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #f7fafc;
+  box-shadow: none;
+}
+
+.topbar-icon-button {
+  width: 2.75rem;
+  padding: 0;
+}
+
+.topbar-action-button--logout {
+  padding-inline: 0.9rem 1rem;
+}
+
+.topbar-action-button__icon,
+.topbar .sidebar-toggle-button .ui-icon {
+  display: inline-flex;
+  width: 1.05rem;
+  height: 1.05rem;
+  color: currentColor;
+}
+
+.topbar-action-button__icon .ui-icon,
+.topbar .sidebar-toggle-button .ui-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.topbar-action-button__label {
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.topbar-theme-button.is-dark {
+  background: rgba(209, 22, 31, 0.18);
+  border-color: rgba(209, 22, 31, 0.44);
+}
+
+.topbar-theme-button.is-light {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.topbar .sidebar-toggle-button:hover,
+body[data-theme="dark"] .topbar .sidebar-toggle-button:hover,
+.topbar-icon-button:hover,
+.topbar-action-button:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(209, 22, 31, 0.3);
+}
+
+.topbar .sidebar-toggle-button:focus-visible,
+.topbar-icon-button:focus-visible,
+.topbar-action-button:focus-visible {
+  outline: 2px solid rgba(209, 22, 31, 0.44);
+  outline-offset: 2px;
+}
+
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.35rem 0.7rem 0.35rem 0.45rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.topbar-user-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(209, 22, 31, 0.96), rgba(151, 13, 19, 0.96));
+  color: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  box-shadow: 0 10px 18px rgba(125, 0, 0, 0.26);
+}
+
+.topbar-user-meta {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+}
+
+#topbar-user-name {
+  margin: 0;
+  max-width: 12rem;
+  color: #ffffff;
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-user-role,
+#topbar-user-role {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.76rem;
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1180px) {
+  .topbar,
+  body[data-theme="dark"] .topbar {
+    grid-template-columns: minmax(10.5rem, 1fr) minmax(10rem, 1fr) auto;
+    padding-inline: 0.85rem;
+  }
+
+  #topbar-user-name {
+    max-width: 9rem;
+  }
+}
+
+@media (max-width: 860px) {
+  :root {
+    --shell-topbar-height: 4.95rem;
+  }
+
+  .topbar,
+  body[data-theme="dark"] .topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.65rem;
+    padding-inline: 0.75rem;
+  }
+
+  .topbar-end {
+    gap: 0.45rem;
+  }
+
+  .topbar-system-label,
+  .topbar-system-copy .eyebrow,
+  .topbar-page-subtitle,
+  .topbar-user-role,
+  #topbar-user-role,
+  .topbar-action-button__label {
+    display: none;
+  }
+
+  .topbar-theme-button {
+    width: 2.75rem;
+    padding: 0;
+  }
+
+  .topbar-user {
+    padding: 0.3rem;
+  }
+
+  #topbar-user-name {
+    max-width: 6.5rem;
+    font-size: 0.86rem;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --shell-topbar-height: 4.5rem;
+  }
+
+  .main-content {
+    padding: 0 0.8rem 0.8rem;
+  }
+
+  .topbar,
+  body[data-theme="dark"] .topbar {
+    border-radius: 16px;
+  }
+
+  .topbar-logo {
+    width: 2.2rem;
+    height: 2.2rem;
+  }
+
+  .topbar-system-name {
+    font-size: 0.92rem;
+    letter-spacing: 0.1em;
+  }
+
+  .topbar-user-meta {
+    display: none;
+  }
+
+  .topbar-user {
+    padding: 0.22rem;
+    border-radius: 14px;
+  }
+
+  .topbar-user-avatar {
+    width: 2.1rem;
+    height: 2.1rem;
+    font-size: 0.75rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .topbar-start {
+    gap: 0.55rem;
+  }
+
+  .topbar-end {
+    gap: 0.35rem;
+  }
+
+  .topbar-page-title {
+    font-size: 1rem;
+  }
+}
+
 @media (max-width: 1180px) {
   .dashboard-command-bar__controls,
   .inventory-movement-grid,

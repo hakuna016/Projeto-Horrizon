@@ -49,12 +49,25 @@ const UI_ICONS = {
     '<path d="M12 4.5 20 19H4L12 4.5Z" /><path d="M12 10v4.5" /><path d="M12 17.2h.01" />',
   team:
     '<circle cx="9" cy="9" r="2.25" /><circle cx="16.5" cy="10.5" r="1.75" /><path d="M5.5 18a3.5 3.5 0 0 1 7 0" /><path d="M13.75 18a2.75 2.75 0 0 1 5.5 0" />',
+  search:
+    '<circle cx="11" cy="11" r="5.5" /><path d="m15 15 4 4" />',
+  refresh:
+    '<path d="M20 6v5h-5" /><path d="M4 18v-5h5" /><path d="M7.5 9A6.5 6.5 0 0 1 18.2 6.8L20 8" /><path d="M16.5 15A6.5 6.5 0 0 1 5.8 17.2L4 16" />',
+  menu:
+    '<path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" />',
+  moon:
+    '<path d="M18 14.5A6.5 6.5 0 0 1 9.5 6a7.5 7.5 0 1 0 8.5 8.5Z" />',
+  sun:
+    '<circle cx="12" cy="12" r="3.5" /><path d="M12 2.5v2.25" /><path d="M12 19.25v2.25" /><path d="m4.93 4.93 1.59 1.59" /><path d="m17.48 17.48 1.59 1.59" /><path d="M2.5 12h2.25" /><path d="M19.25 12h2.25" /><path d="m4.93 19.07 1.59-1.59" /><path d="m17.48 6.52 1.59-1.59" />',
+  logout:
+    '<path d="M14 5.5h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3" /><path d="M10 8.5 13.5 12 10 15.5" /><path d="M13.5 12H5" />',
 };
 const NAV_ICONS = {
   dashboard: "dashboard",
   notes: "notes",
   inventory: "inventory",
   vehicles: "vehicle",
+  dossier: "vehicle",
   fuel: "fuel",
   reports: "notes",
   schedules: "schedules",
@@ -68,6 +81,7 @@ const SECTION_ICONS = {
   notes: "notes",
   inventory: "inventory",
   vehicles: "vehicle",
+  dossier: "vehicle",
   fuel: "fuel",
   reports: "notes",
   schedules: "schedules",
@@ -77,6 +91,44 @@ const SECTION_ICONS = {
   admin: "admin",
 };
 const DASHBOARD_TITLE_ICONS = ["analytics", "efficiency", "vehicle", "fuel", "notes", "alert", "schedules"];
+const SECTION_META = {
+  dashboard: { title: "Dashboard", subtitle: "Visao geral da operacao" },
+  notes: { title: "Notas fiscais", subtitle: "Financeiro, DANFE e rastreabilidade" },
+  inventory: { title: "Estoque", subtitle: "Controle de estoque e movimentacoes" },
+  vehicles: { title: "Veiculos", subtitle: "Frota ativa e dados por placa" },
+  dossier: { title: "Dossie do Veiculo", subtitle: "Historico completo por veiculo" },
+  fuel: { title: "Combustivel", subtitle: "Kardex e abastecimento da frota" },
+  reports: { title: "Relatorios", subtitle: "Prestacao de contas e ficha Kardex" },
+  schedules: { title: "Escala", subtitle: "Planejamento e documento operacional" },
+  fines: { title: "Multas", subtitle: "Ocorrencias e tratativas da frota" },
+  checklists: { title: "Checklists", subtitle: "Inspecao operacional da saida" },
+  emails: { title: "Central de Emails", subtitle: "Processamento e leitura automatica" },
+  admin: { title: "Gestao", subtitle: "Usuarios, perfis e auditoria" },
+};
+const TOPBAR_SEARCH_TARGETS = {
+  dashboard: "#dashboard-data-filter, #dashboard-plate-filter, #dashboard-date-from",
+  notes: "#notes-search",
+  inventory: "#movement-barcode-input, #movement-product-select, #product-form input[name='name']",
+  vehicles: "#vehicle-form input[name='plate']",
+  dossier: "#dossier-plate-search",
+  fuel: "#fuel-filter-plate, #fuel-storage-select, #fuel-vehicle-select",
+  reports: "#kardex-product-select, #kardex-form input[type='date']",
+  schedules: "#schedule-history-plate, #schedule-date-filter",
+  fines: "#fine-form input[name='plate']",
+  checklists: "#checklist-form input[name='vehicle']",
+  emails: "#email-form input[name='sender'], #email-form input[name='subject']",
+  admin: "#admin-user-form input[name='name'], #admin-user-form input[name='email']",
+};
+const TOPBAR_FALLBACK_FOCUS_SELECTOR = [
+  "input[type='search']:not([disabled])",
+  "input[list]:not([disabled])",
+  "input[type='text']:not([disabled]):not([type='hidden'])",
+  "input[type='date']:not([disabled])",
+  "input[type='datetime-local']:not([disabled])",
+  "input[type='number']:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+].join(", ");
 const DASHBOARD_VIEW_META = {
   overview: {
     label: "Visao Geral",
@@ -359,9 +411,13 @@ const refs = {
   logoutButton: $("logout-button"),
   refreshAllButton: $("refresh-all-button"),
   appTopbar: $("app-topbar"),
+  topbarSearchButton: $("topbar-search-button"),
+  topbarThemeButton: $("topbar-theme-button"),
+  topbarPageTitle: $("topbar-page-title"),
+  topbarPageSubtitle: $("topbar-page-subtitle"),
+  topbarUserAvatar: $("topbar-user-avatar"),
   topbarUserName: $("topbar-user-name"),
   topbarUserRole: $("topbar-user-role"),
-  topbarThemeSlot: $("topbar-theme-slot"),
   adminNavButton: $("admin-nav-button"),
   dashboardViewSwitcher: $("dashboard-view-switcher"),
   dashboardContextTitle: $("dashboard-context-title"),
@@ -493,6 +549,7 @@ async function initialize() {
   applyTheme(resolveInitialTheme());
   syncThemeSwitcherPlacement();
   decorateStaticInterface();
+  updateTopbarContext();
   bindEvents();
   syncSidebarLayout();
   switchAuthMode("login");
@@ -584,6 +641,8 @@ function bindEvents() {
   refs.showLoginButton?.addEventListener("click", () => switchAuthMode("login"));
   refs.logoutButton.addEventListener("click", handleLogout);
   refs.refreshAllButton.addEventListener("click", refreshAll);
+  refs.topbarSearchButton?.addEventListener("click", handleTopbarSearch);
+  refs.topbarThemeButton?.addEventListener("click", toggleTheme);
   refs.sidebarToggleButton?.addEventListener("click", toggleSidebar);
   refs.sidebarBackdrop?.addEventListener("click", closeSidebarOverlay);
   refs.dashboardViewSwitcher?.addEventListener("click", handleDashboardViewSwitch);
@@ -695,10 +754,11 @@ function applyTheme(theme) {
   refs.themeDarkButton.classList.toggle("is-active", nextTheme === "dark");
   refs.themeLightButton.setAttribute("aria-pressed", nextTheme === "light" ? "true" : "false");
   refs.themeDarkButton.setAttribute("aria-pressed", nextTheme === "dark" ? "true" : "false");
+  syncTopbarThemeButton();
 
   const metaTheme = document.querySelector('meta[name="theme-color"]');
   if (metaTheme) {
-    metaTheme.setAttribute("content", nextTheme === "dark" ? "#0d1117" : "#c40000");
+    metaTheme.setAttribute("content", nextTheme === "dark" ? "#0d1117" : "#121820");
   }
 
   const nextLogo = THEME_LOGOS[nextTheme];
@@ -716,18 +776,128 @@ function syncThemeSwitcherPlacement() {
     return;
   }
 
-  if (state.user && refs.topbarThemeSlot) {
-    if (refs.themeSwitcher.parentElement !== refs.topbarThemeSlot) {
-      refs.topbarThemeSlot.appendChild(refs.themeSwitcher);
-    }
-    refs.themeSwitcher.dataset.context = "topbar";
-    return;
-  }
-
   if (refs.authScreen && refs.themeSwitcher.parentElement !== document.body) {
     document.body.insertBefore(refs.themeSwitcher, refs.authScreen);
   }
+
+  if (state.user) {
+    refs.themeSwitcher.classList.add("hidden");
+    refs.themeSwitcher.dataset.context = "hidden";
+    return;
+  }
+
+  refs.themeSwitcher.classList.remove("hidden");
   refs.themeSwitcher.dataset.context = "floating";
+}
+
+function toggleTheme() {
+  applyTheme(state.theme === "dark" ? "light" : "dark");
+}
+
+function syncTopbarThemeButton() {
+  if (!refs.topbarThemeButton) {
+    return;
+  }
+
+  const isDark = state.theme === "dark";
+  const activeLabel = isDark ? "Dark" : "Light";
+  const nextThemeLabel = isDark ? "claro" : "escuro";
+  const iconSlot = refs.topbarThemeButton.querySelector("[data-topbar-theme-icon]");
+  const labelSlot = refs.topbarThemeButton.querySelector(".topbar-action-button__label");
+  const buttonLabel = `Tema ativo ${activeLabel}. Alternar para tema ${nextThemeLabel}.`;
+
+  if (iconSlot) {
+    iconSlot.innerHTML = iconMarkup(isDark ? "moon" : "sun");
+  }
+
+  if (labelSlot) {
+    labelSlot.textContent = activeLabel;
+  }
+
+  refs.topbarThemeButton.classList.toggle("is-dark", isDark);
+  refs.topbarThemeButton.classList.toggle("is-light", !isDark);
+  refs.topbarThemeButton.setAttribute("aria-label", buttonLabel);
+  refs.topbarThemeButton.setAttribute("title", buttonLabel);
+  refs.topbarThemeButton.setAttribute("aria-pressed", isDark ? "true" : "false");
+}
+
+function buildUserInitials(name = "") {
+  const parts = String(name)
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!parts.length) {
+    return "--";
+  }
+
+  return parts
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+}
+
+function updateTopbarContext(section = state.section) {
+  if (!refs.topbarPageTitle || !refs.topbarPageSubtitle) {
+    return;
+  }
+
+  const sectionMeta = resolveSectionMeta(section);
+  refs.topbarPageTitle.textContent = sectionMeta.title;
+  refs.topbarPageSubtitle.textContent = sectionMeta.subtitle || "";
+  refs.topbarPageSubtitle.classList.toggle("hidden", !sectionMeta.subtitle);
+  refs.appTopbar?.setAttribute("data-section", section || "dashboard");
+}
+
+function resolveSectionMeta(section = state.section) {
+  const fallback = SECTION_META.dashboard;
+  const panel = document.getElementById(`${section}-section`);
+  const titleNode = panel?.querySelector(".section-header h2, .section-header h1, .section-header h3");
+  const subtitleNode = panel?.querySelector(".section-header .section-description, .section-header .eyebrow");
+  const mappedMeta = SECTION_META[section] || {};
+
+  return {
+    title: mappedMeta.title || titleNode?.textContent?.trim() || fallback.title,
+    subtitle: mappedMeta.subtitle || subtitleNode?.textContent?.trim() || fallback.subtitle,
+  };
+}
+
+function isElementVisible(element) {
+  return Boolean(element) && !element.closest(".hidden") && element.getClientRects().length > 0;
+}
+
+function findTopbarSearchTarget() {
+  const activeSection = document.getElementById(`${state.section}-section`);
+  if (!activeSection) {
+    return null;
+  }
+
+  const preferredSelector = TOPBAR_SEARCH_TARGETS[state.section];
+  const preferredTarget =
+    preferredSelector &&
+    Array.from(activeSection.querySelectorAll(preferredSelector)).find((element) => isElementVisible(element) && !element.disabled);
+
+  if (preferredTarget) {
+    return preferredTarget;
+  }
+
+  return Array.from(activeSection.querySelectorAll(TOPBAR_FALLBACK_FOCUS_SELECTOR)).find(
+    (element) => isElementVisible(element) && !element.disabled
+  );
+}
+
+function handleTopbarSearch() {
+  const target = findTopbarSearchTarget();
+  if (!target) {
+    showToast("Nenhum campo de busca disponivel nesta pagina.", "info");
+    return;
+  }
+
+  scrollToElement(target, "center");
+  target.focus({ preventScroll: true });
+  if (typeof target.select === "function" && /^(INPUT|TEXTAREA)$/.test(target.tagName)) {
+    target.select();
+  }
 }
 
 function resolveSidebarViewport() {
@@ -1452,6 +1622,35 @@ function decorateStaticInterface() {
     button.dataset.decorated = "true";
   });
 
+  const topbarSystemLabel = refs.appTopbar?.querySelector(".topbar-system-copy .eyebrow");
+  if (topbarSystemLabel) {
+    topbarSystemLabel.textContent = "Painel operacional";
+    topbarSystemLabel.classList.add("topbar-system-label");
+  }
+
+  if (refs.sidebarToggleButton && refs.sidebarToggleButton.dataset.decorated !== "true") {
+    refs.sidebarToggleButton.innerHTML = iconMarkup("menu");
+    refs.sidebarToggleButton.dataset.decorated = "true";
+  }
+
+  [
+    [refs.topbarSearchButton, "search"],
+    [refs.refreshAllButton, "refresh"],
+    [refs.logoutButton, "logout"],
+  ].forEach(([button, icon]) => {
+    if (!button || button.dataset.decorated === "true") {
+      return;
+    }
+
+    const iconSlot = button.querySelector("[data-topbar-icon]");
+    if (iconSlot) {
+      iconSlot.innerHTML = iconMarkup(icon);
+    }
+    button.dataset.decorated = "true";
+  });
+
+  syncTopbarThemeButton();
+
   document.querySelectorAll(".content-section").forEach((panel) => {
     const header = panel.querySelector(".section-header > div:first-child");
     const title = header?.querySelector("h2");
@@ -1519,14 +1718,23 @@ function setUser(user) {
     switchAuthMode("login");
     refs.loginForm.reset();
     refs.activationForm.reset();
+    if (refs.topbarUserAvatar) {
+      refs.topbarUserAvatar.textContent = "--";
+      refs.topbarUserAvatar.setAttribute("title", "Nenhum usuario conectado");
+    }
     refs.topbarUserName.textContent = "-";
     refs.topbarUserRole.textContent = "-";
     setSection("dashboard");
     return;
   }
 
+  if (refs.topbarUserAvatar) {
+    refs.topbarUserAvatar.textContent = buildUserInitials(user.name);
+    refs.topbarUserAvatar.setAttribute("title", user.name);
+  }
   refs.topbarUserName.textContent = user.name;
   refs.topbarUserRole.textContent = roleLabels[user.role] || user.role;
+  updateTopbarContext(state.section);
 
   if (!canAccessAdmin && state.section === "admin") {
     setSection("dashboard");
@@ -1544,6 +1752,7 @@ function setSection(section) {
     panel.classList.toggle("active", panel.id === `${nextSection}-section`);
   });
 
+  updateTopbarContext(nextSection);
   closeSidebarOverlay();
 }
 

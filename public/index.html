@@ -36,7 +36,7 @@
     <section id="auth-screen" class="auth-screen">
       <div class="auth-brand">
         <div class="brand-mark">
-            <img
+              <img
             data-theme-logo
             class="brand-logo-image"
             src="./assets/horizon-brand-premium.jpeg"
@@ -146,7 +146,7 @@
 
       <main class="main-content">
         <header class="topbar" id="app-topbar">
-          <div class="topbar-brand">
+          <div class="topbar-start">
             <button
               id="sidebar-toggle-button"
               class="sidebar-toggle-button"
@@ -154,25 +154,70 @@
               aria-label="Alternar menu lateral"
               aria-controls="app-sidebar"
               aria-expanded="true"
-            >
-              <span aria-hidden="true">&#9776;</span>
-            </button>
-            <img
+            ></button>
+            <div class="topbar-system">
+              <img
               data-theme-logo
               class="topbar-logo"
               src="./assets/horizon-brand-premium.jpeg"
               alt="HORIZON - Gestão que gera resultados"
             />
-            <div class="topbar-user-meta">
+              <div class="topbar-system-copy">
               <span class="eyebrow">Usuário conectado</span>
-              <h1 id="topbar-user-name">-</h1>
+                <strong class="topbar-system-name">HORIZON</strong>
+            </div>
             </div>
           </div>
-          <div class="topbar-actions">
-            <span id="topbar-user-role" class="role-chip topbar-role-chip">-</span>
-            <div id="topbar-theme-slot" class="topbar-theme-slot"></div>
-            <button id="refresh-all-button" class="ghost-button topbar-action-button topbar-action-button--refresh" type="button">Atualizar</button>
-            <button id="logout-button" class="ghost-button topbar-action-button topbar-action-button--logout" type="button">Sair</button>
+          <div class="topbar-page" aria-live="polite">
+            <h1 id="topbar-page-title" class="topbar-page-title">Dashboard</h1>
+            <p id="topbar-page-subtitle" class="topbar-page-subtitle">Visao geral da operacao</p>
+          </div>
+          <div class="topbar-end">
+            <button
+              id="topbar-search-button"
+              class="topbar-icon-button"
+              type="button"
+              aria-label="Buscar na pagina"
+              title="Buscar na pagina"
+            >
+              <span class="topbar-action-button__icon" data-topbar-icon="search"></span>
+            </button>
+            <button
+              id="refresh-all-button"
+              class="topbar-icon-button topbar-icon-button--refresh"
+              type="button"
+              aria-label="Atualizar dados"
+              title="Atualizar dados"
+            >
+              <span class="topbar-action-button__icon" data-topbar-icon="refresh"></span>
+            </button>
+            <button
+              id="topbar-theme-button"
+              class="topbar-action-button topbar-theme-button"
+              type="button"
+              aria-label="Alternar tema"
+              title="Alternar tema"
+            >
+              <span class="topbar-action-button__icon" data-topbar-theme-icon></span>
+              <span class="topbar-action-button__label">Dark</span>
+            </button>
+            <div class="topbar-user">
+              <span id="topbar-user-avatar" class="topbar-user-avatar" aria-hidden="true">--</span>
+              <div class="topbar-user-meta">
+                <strong id="topbar-user-name">-</strong>
+                <span id="topbar-user-role" class="topbar-user-role">-</span>
+              </div>
+            </div>
+            <button
+              id="logout-button"
+              class="topbar-action-button topbar-action-button--logout"
+              type="button"
+              aria-label="Sair do sistema"
+              title="Sair do sistema"
+            >
+              <span class="topbar-action-button__icon" data-topbar-icon="logout"></span>
+              <span class="topbar-action-button__label">Sair</span>
+            </button>
           </div>
         </header>
 
