@@ -5157,68 +5157,78 @@ function renderScheduleLinesEditor() {
     .map(
       (line, index) => `
         <article class="schedule-line-card" data-schedule-line-card="${escapeHtml(line.localId)}">
-          <div class="schedule-line-number">#${escapeHtml(formatNumber(index + 1))}</div>
-          <label>
-            <span>Placa</span>
-            <input
-              type="text"
-              value="${escapeHtml(line.vehicle)}"
-              list="schedule-vehicle-list"
-              data-schedule-line-field="vehicle"
-              data-schedule-line-id="${escapeHtml(line.localId)}"
-            />
-          </label>
-          <label>
-            <span>Local / rota</span>
-            <input
-              type="text"
-              value="${escapeHtml(line.location)}"
-              list="schedule-location-list"
-              data-schedule-line-field="location"
-              data-schedule-line-id="${escapeHtml(line.localId)}"
-            />
-          </label>
-          <label>
-            <span>Motorista</span>
-            <input
-              type="text"
-              value="${escapeHtml(line.driver)}"
-              list="schedule-driver-list"
-              data-schedule-line-field="driver"
-              data-schedule-line-id="${escapeHtml(line.localId)}"
-            />
-          </label>
-          <label>
-            <span>Ajudante</span>
-            <input
-              type="text"
-              value="${escapeHtml(line.assistant)}"
-              list="schedule-assistant-list"
-              data-schedule-line-field="assistant"
-              data-schedule-line-id="${escapeHtml(line.localId)}"
-            />
-          </label>
-          <label>
-            <span>Horario</span>
-            <input
-              type="time"
-              value="${escapeHtml(line.departureTime || "")}"
-              data-schedule-line-field="departureTime"
-              data-schedule-line-id="${escapeHtml(line.localId)}"
-            />
-          </label>
-          <div class="schedule-line-actions">
-            <button type="button" class="ghost-button" data-schedule-line-duplicate="${escapeHtml(line.localId)}">Duplicar</button>
-            <button type="button" class="ghost-button" data-schedule-line-remove="${escapeHtml(line.localId)}">Remover</button>
+          <div class="container-linha-escala">
+            <div class="schedule-line-number">#${escapeHtml(formatNumber(index + 1))}</div>
+            <label class="schedule-line-field">
+              <span>Placa</span>
+              <input
+                class="input-escala"
+                type="text"
+                value="${escapeHtml(line.vehicle)}"
+                list="schedule-vehicle-list"
+                data-schedule-line-field="vehicle"
+                data-schedule-line-id="${escapeHtml(line.localId)}"
+              />
+            </label>
+            <label class="schedule-line-field">
+              <span>Local / rota</span>
+              <input
+                class="input-escala"
+                type="text"
+                value="${escapeHtml(line.location)}"
+                list="schedule-location-list"
+                data-schedule-line-field="location"
+                data-schedule-line-id="${escapeHtml(line.localId)}"
+              />
+            </label>
+            <label class="schedule-line-field">
+              <span>Motorista</span>
+              <input
+                class="input-escala"
+                type="text"
+                value="${escapeHtml(line.driver)}"
+                list="schedule-driver-list"
+                data-schedule-line-field="driver"
+                data-schedule-line-id="${escapeHtml(line.localId)}"
+              />
+            </label>
+            <label class="schedule-line-field">
+              <span>Ajudante</span>
+              <input
+                class="input-escala"
+                type="text"
+                value="${escapeHtml(line.assistant)}"
+                list="schedule-assistant-list"
+                data-schedule-line-field="assistant"
+                data-schedule-line-id="${escapeHtml(line.localId)}"
+              />
+            </label>
+            <div class="schedule-line-meta">
+              <label class="schedule-line-time">
+                <span>Horario</span>
+                <input
+                  class="input-escala"
+                  type="time"
+                  value="${escapeHtml(line.departureTime || "")}"
+                  data-schedule-line-field="departureTime"
+                  data-schedule-line-id="${escapeHtml(line.localId)}"
+                />
+              </label>
+              <div class="schedule-line-actions">
+                <button type="button" class="ghost-button" data-schedule-line-duplicate="${escapeHtml(line.localId)}">Duplicar</button>
+                <button type="button" class="ghost-button" data-schedule-line-remove="${escapeHtml(line.localId)}">Remover</button>
+              </div>
+            </div>
+            <label class="schedule-line-notes observacao-linha">
+              <span>Observacao da linha</span>
+              <textarea
+                class="textarea-escala"
+                rows="3"
+                data-schedule-line-field="notes"
+                data-schedule-line-id="${escapeHtml(line.localId)}"
+              >${escapeHtml(line.notes || "")}</textarea>
+            </label>
           </div>
-          <label class="schedule-line-notes">
-            <span>Observacao da linha</span>
-            <textarea
-              rows="3"
-              data-schedule-line-field="notes"
-              data-schedule-line-id="${escapeHtml(line.localId)}"
-            >${escapeHtml(line.notes || "")}</textarea>
-          </label>
         </article>
       `
     )
@@ -11188,3 +11198,4 @@ async function handleFuelSubmit(event) {
     showToast(error.message, "error");
   }
 }
+
