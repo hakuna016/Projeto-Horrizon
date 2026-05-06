@@ -311,6 +311,7 @@ function createTables() {
       product_id INTEGER NOT NULL,
       type TEXT NOT NULL,
       quantity REAL NOT NULL,
+      balance_before REAL NOT NULL DEFAULT 0,
       balance_after REAL NOT NULL,
       document TEXT,
       branch_name TEXT,
@@ -321,6 +322,13 @@ function createTables() {
       notes TEXT,
       source_type TEXT,
       source_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      cancel_reason TEXT,
+      canceled_at TEXT,
+      canceled_by INTEGER,
+      corrected_at TEXT,
+      corrected_by INTEGER,
+      updated_at TEXT,
       occurred_at TEXT NOT NULL,
       created_by INTEGER,
       created_at TEXT NOT NULL,
@@ -370,6 +378,20 @@ function createTables() {
       odometer_km REAL,
       balance_before REAL NOT NULL DEFAULT 0,
       balance_after REAL NOT NULL,
+      document TEXT,
+      entry_origin TEXT NOT NULL DEFAULT 'MANUAL',
+      operation_kind TEXT NOT NULL DEFAULT 'OPERATIONAL',
+      adjustment_kind TEXT,
+      batch_reference TEXT,
+      raw_payload TEXT,
+      normalized_payload TEXT,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      cancel_reason TEXT,
+      canceled_at TEXT,
+      canceled_by INTEGER,
+      corrected_at TEXT,
+      corrected_by INTEGER,
+      updated_at TEXT,
       notes TEXT,
       occurred_at TEXT NOT NULL,
       created_by INTEGER,
@@ -484,6 +506,19 @@ function createTables() {
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS fuel_history_audits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_kind TEXT NOT NULL,
+      source_id INTEGER NOT NULL,
+      action_type TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      old_payload TEXT,
+      new_payload TEXT,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_notes_status ON notes(status);
     CREATE INDEX IF NOT EXISTS idx_notes_supplier ON notes(supplier_name);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_product ON inventory_movements(product_id);
@@ -493,6 +528,7 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_schedules_date ON schedules(scheduled_date);
     CREATE INDEX IF NOT EXISTS idx_checklist_items_category ON checklist_items(category, active, sort_order);
     CREATE INDEX IF NOT EXISTS idx_action_logs_created_at ON action_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_fuel_history_audits_source ON fuel_history_audits(source_kind, source_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_activation_codes_user ON activation_codes(user_id, active, expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_xml_key ON notes(xml_key) WHERE xml_key IS NOT NULL AND xml_key <> '';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode ON inventory_products(barcode) WHERE barcode IS NOT NULL AND barcode <> '';
@@ -501,6 +537,7 @@ function createTables() {
 }
 
 function migrateInventorySchema() {
+  ensureColumn("inventory_movements", "balance_before", "REAL NOT NULL DEFAULT 0");
   ensureColumn("inventory_products", "stock_type", "TEXT NOT NULL DEFAULT 'COMMON'");
   ensureColumn("inventory_products", "default_cost", "REAL NOT NULL DEFAULT 0");
   ensureColumn("inventory_movements", "document", "TEXT");
@@ -511,6 +548,13 @@ function migrateInventorySchema() {
   ensureColumn("inventory_movements", "total_cost", "REAL NOT NULL DEFAULT 0");
   ensureColumn("inventory_movements", "source_type", "TEXT");
   ensureColumn("inventory_movements", "source_id", "INTEGER");
+  ensureColumn("inventory_movements", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'");
+  ensureColumn("inventory_movements", "cancel_reason", "TEXT");
+  ensureColumn("inventory_movements", "canceled_at", "TEXT");
+  ensureColumn("inventory_movements", "canceled_by", "INTEGER");
+  ensureColumn("inventory_movements", "corrected_at", "TEXT");
+  ensureColumn("inventory_movements", "corrected_by", "INTEGER");
+  ensureColumn("inventory_movements", "updated_at", "TEXT");
 
   write(
     `
@@ -656,6 +700,7 @@ function migrateVehicleDossierSchema() {
       source_type TEXT NOT NULL DEFAULT 'FUEL',
       source_id INTEGER,
       original_km REAL NOT NULL,
+      original_was_missing INTEGER NOT NULL DEFAULT 0,
       corrected_km REAL NOT NULL,
       reason TEXT,
       created_by INTEGER,
@@ -687,12 +732,41 @@ function migrateFuelSchema() {
   ensureColumn("fuel_records", "vehicle_id", "INTEGER");
   ensureColumn("fuel_records", "odometer_km", "REAL");
   ensureColumn("fuel_records", "balance_before", "REAL NOT NULL DEFAULT 0");
+  ensureColumn("fuel_records", "document", "TEXT");
+  ensureColumn("fuel_records", "entry_origin", "TEXT NOT NULL DEFAULT 'MANUAL'");
+  ensureColumn("fuel_records", "operation_kind", "TEXT NOT NULL DEFAULT 'OPERATIONAL'");
+  ensureColumn("fuel_records", "adjustment_kind", "TEXT");
+  ensureColumn("fuel_records", "batch_reference", "TEXT");
+  ensureColumn("fuel_records", "raw_payload", "TEXT");
+  ensureColumn("fuel_records", "normalized_payload", "TEXT");
+  ensureColumn("fuel_records", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'");
+  ensureColumn("fuel_records", "cancel_reason", "TEXT");
+  ensureColumn("fuel_records", "canceled_at", "TEXT");
+  ensureColumn("fuel_records", "canceled_by", "INTEGER");
+  ensureColumn("fuel_records", "corrected_at", "TEXT");
+  ensureColumn("fuel_records", "corrected_by", "INTEGER");
+  ensureColumn("fuel_records", "updated_at", "TEXT");
+  ensureColumn("vehicle_odometer_corrections", "original_was_missing", "INTEGER NOT NULL DEFAULT 0");
   runScript(
     `
+      CREATE TABLE IF NOT EXISTS fuel_history_audits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_kind TEXT NOT NULL,
+        source_id INTEGER NOT NULL,
+        action_type TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        old_payload TEXT,
+        new_payload TEXT,
+        created_by INTEGER,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(created_by) REFERENCES users(id)
+      );
       CREATE INDEX IF NOT EXISTS idx_fuel_records_storage ON fuel_records(storage_id, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_fuel_records_plate ON fuel_records(plate, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_fuel_records_vehicle ON fuel_records(vehicle_id, occurred_at);
+      CREATE INDEX IF NOT EXISTS idx_fuel_records_batch_reference ON fuel_records(batch_reference, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_fuel_storages_product ON fuel_storages(product_id, active);
+      CREATE INDEX IF NOT EXISTS idx_fuel_history_audits_source ON fuel_history_audits(source_kind, source_id, created_at);
     `
   );
 }

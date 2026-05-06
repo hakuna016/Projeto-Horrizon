@@ -247,6 +247,7 @@ const state = {
         kmErrors: 0,
         outliers: 0,
         missingOdometer: 0,
+        suspiciousRecords: 0,
       },
       odometerCoverage: {
         totalRecords: 0,
@@ -281,6 +282,22 @@ const state = {
   theme: "light",
 };
 
+state.fuelHistory = {
+  items: [],
+  users: [],
+  pagination: {
+    page: 1,
+    pageSize: 20,
+    total: 0,
+    totalPages: 1,
+  },
+  activeItem: null,
+  audits: [],
+  panelMode: "details",
+  selectedHistoryId: "",
+  isLoading: false,
+};
+
 const statusMeta = {
   NEW: { label: "Nova", className: "status-gray" },
   PENDING_ACK: { label: "Aguardando reconhecimento", className: "status-yellow" },
@@ -306,6 +323,16 @@ const statusMeta = {
   ACTIVE: { label: "Ativo", className: "status-green" },
   BLOCKED: { label: "Bloqueado", className: "status-red" },
 };
+
+Object.assign(statusMeta, {
+  CANCELLED: { label: "Cancelado", className: "status-gray" },
+  ADJUSTMENT: { label: "Ajuste", className: "status-yellow" },
+  INITIAL_BALANCE: { label: "Saldo inicial", className: "status-gray" },
+  CORRECTION: { label: "Correcao", className: "status-blue" },
+  OPERATIONAL_EXIT: { label: "Saida operacional", className: "status-red" },
+  CORRECTED: { label: "Corrigido", className: "status-blue" },
+  SUSPECT: { label: "Suspeito", className: "status-yellow" },
+});
 
 const roleLabels = {
   ADMIN: "Administrador",
@@ -463,10 +490,24 @@ const refs = {
   lookupBarcodeButton: $("lookup-barcode-button"),
   barcodeImageInput: $("barcode-image-input"),
   fuelStockForm: $("fuel-stock-form"),
-  fuelStockProductSelect: $("fuel-stock-product-select"),
-  fuelForm: $("fuel-form"),
-  fuelStorageSelect: $("fuel-storage-select"),
-  fuelVehicleSelect: $("fuel-vehicle-select"),
+  fuelStockProductSelect: $("fuel-launch-stock-product-select"),
+  fuelForm: $("fuel-launch-form"),
+  fuelStorageSelect: $("fuel-launch-storage-select"),
+  fuelVehicleSelect: $("fuel-launch-vehicle-id"),
+  fuelVehicleInput: $("fuel-launch-plate-input"),
+  fuelVehicleList: $("fuel-launch-vehicle-list"),
+  fuelComposerModeButtons: $("fuel-launch-mode-buttons"),
+  fuelContextHint: $("fuel-launch-context-hint"),
+  fuelNotesLabel: $("fuel-launch-notes-label"),
+  fuelBatchPanel: $("fuel-batch-panel"),
+  fuelBatchRowsBody: $("fuel-batch-rows-body"),
+  fuelBatchAddRowButton: $("fuel-batch-add-row-button"),
+  fuelBatchClearButton: $("fuel-batch-clear-button"),
+  fuelBatchSaveButton: $("fuel-batch-save-button"),
+  fuelBatchPreview: $("fuel-batch-preview"),
+  fuelBatchSummary: $("fuel-batch-summary"),
+  fuelBatchTableWrapper: $("fuel-batch-table-wrapper"),
+  fuelBatchPlateList: $("fuel-batch-plate-list"),
   fuelPrintSheetButton: $("fuel-print-sheet-button"),
   fuelFilterStorage: $("fuel-filter-storage"),
   fuelFilterFrom: $("fuel-filter-from"),
@@ -542,6 +583,22 @@ const refs = {
   toastRoot: $("toast-root"),
   appLoading: $("app-loading"),
 };
+
+Object.assign(refs, {
+  fuelHistoryMovementKind: $("fuel-history-movement-kind"),
+  fuelHistoryUser: $("fuel-history-user"),
+  fuelHistoryDocument: $("fuel-history-document"),
+  fuelHistoryStatus: $("fuel-history-status"),
+  fuelHistorySearch: $("fuel-history-search"),
+  fuelHistoryApplyButton: $("fuel-history-apply-button"),
+  fuelHistoryClearButton: $("fuel-history-clear-button"),
+  fuelHistorySummary: $("fuel-history-summary"),
+  fuelHistoryTableBody: $("fuel-history-table-body"),
+  fuelHistoryPagination: $("fuel-history-pagination"),
+  fuelHistoryDetailPanel: $("fuel-history-detail-panel"),
+  fuelHistoryDetailTitle: $("fuel-history-detail-title"),
+  fuelHistoryDetailContent: $("fuel-history-detail-content"),
+});
 
 document.addEventListener("DOMContentLoaded", initialize);
 
@@ -670,9 +727,19 @@ function bindEvents() {
   refs.movementForm.addEventListener("submit", handleMovementSubmit);
   refs.lookupBarcodeButton.addEventListener("click", lookupProductByBarcode);
   refs.fuelStockForm?.addEventListener("submit", handleFuelStockMovementSubmit);
-  refs.fuelForm.addEventListener("submit", handleFuelSubmit);
-  refs.fuelForm.elements.type.addEventListener("change", syncFuelFormState);
-  refs.fuelStorageSelect.addEventListener("change", syncFuelFormState);
+  refs.fuelForm?.addEventListener("submit", handleFuelSubmit);
+  refs.fuelForm?.elements?.type?.addEventListener("change", syncFuelFormState);
+  refs.fuelStorageSelect?.addEventListener("change", syncFuelFormState);
+  refs.fuelVehicleInput?.addEventListener("input", handleFuelVehicleInputChange);
+  refs.fuelVehicleInput?.addEventListener("change", handleFuelVehicleInputChange);
+  refs.fuelComposerModeButtons?.addEventListener("click", handleFuelComposerModeClick);
+  refs.fuelBatchAddRowButton?.addEventListener("click", () => addFuelBatchRow());
+  refs.fuelBatchClearButton?.addEventListener("click", () => resetFuelBatchComposer(true));
+  refs.fuelBatchSaveButton?.addEventListener("click", handleFuelBatchSubmit);
+  refs.fuelBatchRowsBody?.addEventListener("input", handleFuelBatchRowInput);
+  refs.fuelBatchRowsBody?.addEventListener("keydown", handleFuelBatchRowKeydown);
+  refs.fuelBatchRowsBody?.addEventListener("click", handleFuelBatchRowClick);
+  refs.fuelBatchTableWrapper?.addEventListener("paste", handleFuelBatchPaste);
   refs.fuelPrintSheetButton?.addEventListener("click", handleFuelDailySheetPrint);
   refs.fuelFilterStorage.addEventListener("change", refreshFuel);
   refs.fuelFilterFrom.addEventListener("change", refreshFuel);
@@ -732,6 +799,7 @@ function bindEvents() {
     button.addEventListener("click", () => openBarcodeImagePicker(button.dataset.scanImageTarget));
   });
   refs.barcodeImageInput?.addEventListener("change", handleBarcodeImageSelection);
+  bindFuelHistoryEvents();
 }
 
 function resolveInitialTheme() {
@@ -915,10 +983,10 @@ function resolveSidebarViewport() {
 function readStoredSidebarMode(viewport) {
   const storageKey = `${SIDEBAR_STORAGE_KEY}:${viewport}`;
   const storedMode = window.localStorage.getItem(storageKey);
-  if (storedMode === "expanded" || storedMode === "hidden") {
+  if (storedMode === "expanded" || storedMode === "compact") {
     return storedMode;
   }
-  return storedMode === "compact" ? "hidden" : null;
+  return storedMode === "hidden" ? "compact" : null;
 }
 
 function resolveSidebarModeForViewport(viewport) {
@@ -926,7 +994,7 @@ function resolveSidebarModeForViewport(viewport) {
     return "hidden";
   }
 
-  return readStoredSidebarMode(viewport) || (viewport === "tablet" ? "hidden" : "expanded");
+  return readStoredSidebarMode(viewport) || (viewport === "tablet" ? "compact" : "expanded");
 }
 
 function syncSidebarLayout() {
@@ -948,9 +1016,10 @@ function syncSidebarLayout() {
 
 function applySidebarLayout() {
   const viewport = runtimeState.sidebarViewport || resolveSidebarViewport();
-  const mode = viewport === "mobile" ? "hidden" : runtimeState.sidebarMode;
+  const mode = viewport === "mobile" ? "hidden" : runtimeState.sidebarMode === "expanded" ? "expanded" : "compact";
   const isOverlayOpen = viewport === "mobile" && runtimeState.sidebarOpen;
   const isExpanded = viewport === "mobile" ? isOverlayOpen : mode === "expanded";
+  const isSidebarInteractive = viewport !== "mobile" || isOverlayOpen;
   const toggleLabel =
     viewport === "mobile"
       ? isOverlayOpen
@@ -963,7 +1032,8 @@ function applySidebarLayout() {
   refs.appShell?.setAttribute("data-sidebar-mode", mode);
   refs.appShell?.setAttribute("data-sidebar-open", isOverlayOpen ? "true" : "false");
   refs.appShell?.setAttribute("data-sidebar-viewport", viewport);
-  refs.appSidebar?.setAttribute("aria-hidden", viewport === "mobile" && !isOverlayOpen ? "true" : "false");
+  refs.appSidebar?.setAttribute("aria-hidden", isSidebarInteractive ? "false" : "true");
+  refs.appSidebar?.toggleAttribute("inert", !isSidebarInteractive);
   refs.sidebarBackdrop?.setAttribute("aria-hidden", isOverlayOpen ? "false" : "true");
   refs.sidebarToggleButton?.setAttribute("aria-expanded", isExpanded ? "true" : "false");
   refs.sidebarToggleButton?.setAttribute("aria-label", toggleLabel);
@@ -971,14 +1041,24 @@ function applySidebarLayout() {
   document.body.classList.toggle("sidebar-mobile-open", isOverlayOpen);
 }
 
+function focusSidebarPrimaryAction() {
+  const focusTarget = refs.appSidebar?.querySelector(".nav-item.active, .nav-item");
+  if (focusTarget instanceof HTMLElement) {
+    focusTarget.focus();
+  }
+}
+
 function toggleSidebar() {
   if (runtimeState.sidebarViewport === "mobile") {
     runtimeState.sidebarOpen = !runtimeState.sidebarOpen;
     applySidebarLayout();
+    if (runtimeState.sidebarOpen) {
+      window.requestAnimationFrame(focusSidebarPrimaryAction);
+    }
     return;
   }
 
-  runtimeState.sidebarMode = runtimeState.sidebarMode === "expanded" ? "hidden" : "expanded";
+  runtimeState.sidebarMode = runtimeState.sidebarMode === "expanded" ? "compact" : "expanded";
   window.localStorage.setItem(`${SIDEBAR_STORAGE_KEY}:${runtimeState.sidebarViewport}`, runtimeState.sidebarMode);
   applySidebarLayout();
 }
@@ -990,6 +1070,7 @@ function closeSidebarOverlay() {
 
   runtimeState.sidebarOpen = false;
   applySidebarLayout();
+  refs.sidebarToggleButton?.focus();
 }
 
 function handleGlobalKeydown(event) {
@@ -1104,18 +1185,115 @@ function normalizeClientKey(value) {
     .replace(/^_+|_+$/g, "");
 }
 
+function sanitizeBrazilianNumberString(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/R\$/gi, "")
+    .replace(/[^\d,.\-+]/g, "");
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.includes(",")) {
+    return normalized.replace(/\./g, "").replace(",", ".");
+  }
+
+  if (/^[+-]?\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+    return normalized.replace(/\./g, "");
+  }
+
+  return normalized;
+}
+
+function parseBrazilianNumber(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : Number.NaN;
+  }
+
+  const normalized = sanitizeBrazilianNumberString(value);
+  if (!normalized) {
+    return Number.NaN;
+  }
+
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(normalized)) {
+    return Number.NaN;
+  }
+
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function toClientNumber(value, fallback = 0) {
+  const parsed = parseBrazilianNumber(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function numbersMatch(left, right, tolerance = 0.000001) {
+  const leftValue = parseBrazilianNumber(left);
+  const rightValue = parseBrazilianNumber(right);
+  if (!Number.isFinite(leftValue) || !Number.isFinite(rightValue)) {
+    return false;
+  }
+  return Math.abs(leftValue - rightValue) <= tolerance;
+}
+
+function readBrazilianNumberField(input, { label, required = false, min = null } = {}) {
+  const rawValue = input?.value?.trim?.() ?? "";
+  if (!rawValue) {
+    if (required) {
+      throw new Error(`Informe ${label}.`);
+    }
+    return null;
+  }
+
+  const parsed = parseBrazilianNumber(rawValue);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Informe ${label} valido.`);
+  }
+
+  if (min !== null && parsed < min) {
+    if (min > 0) {
+      throw new Error(`${label} deve ser maior que zero.`);
+    }
+    throw new Error(`${label} nao pode ser negativo.`);
+  }
+
+  return parsed;
+}
+
+function formatDecimalInputValue(value, digits = 2) {
+  const parsed = parseBrazilianNumber(value);
+  if (!Number.isFinite(parsed)) {
+    return "";
+  }
+  return new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(parsed);
+}
+
+function confirmSuspiciousFuelValues(warnings = []) {
+  if (!warnings.length) {
+    return true;
+  }
+
+  return window.confirm(`${warnings.join("\n")}\n\nConfirme se o lançamento está correto.`);
+}
+
 function formatCurrency(value) {
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
     currency: "BRL",
-  }).format(Number(value || 0));
+  }).format(toClientNumber(value, 0));
 }
 
 function formatLiters(value) {
   return new Intl.NumberFormat("pt-BR", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(Number(value || 0));
+  }).format(toClientNumber(value, 0));
 }
 
 function formatDateTime(value) {
@@ -1142,7 +1320,7 @@ function formatNumber(value, minimumFractionDigits = 0, maximumFractionDigits = 
   return new Intl.NumberFormat("pt-BR", {
     minimumFractionDigits,
     maximumFractionDigits,
-  }).format(Number(value || 0));
+  }).format(toClientNumber(value, 0));
 }
 
 function formatPercent(value, digits = 0) {
@@ -1154,7 +1332,11 @@ function formatDistance(value) {
 }
 
 function formatKmPerLiter(value) {
-  return Number(value || 0) > 0 ? `${formatNumber(value, 2, 2)} km/L` : "-";
+  return toClientNumber(value, 0) > 0 ? `${formatNumber(value, 2, 2)} km/L` : "-";
+}
+
+function formatKmPerLiterText(value) {
+  return toClientNumber(value, 0) > 0 ? `${formatNumber(value, 2, 2)} km por litro` : "-";
 }
 
 function formatShortDate(value) {
@@ -2086,18 +2268,18 @@ function renderDashboard() {
     },
     {
       label: "Estoque de combustível",
-      value: `${state.dashboard.metrics.fuelBalance.toFixed(2)} L`,
+      value: `${formatLiters(state.dashboard.metrics.fuelBalance || 0)} L`,
     },
   ];
 
   metrics.push(
     {
       label: "S-500",
-      value: `${Number(fuelByKind.S500 || 0).toFixed(2)} L`,
+      value: `${formatLiters(fuelByKind.S500 || 0)} L`,
     },
     {
       label: "S-10",
-      value: `${Number(fuelByKind.S10 || 0).toFixed(2)} L`,
+      value: `${formatLiters(fuelByKind.S10 || 0)} L`,
     }
   );
 
@@ -2661,8 +2843,18 @@ async function saveDashboardOdometerChange(recordId, clearValue = false) {
 
   const odometerInput = document.querySelector(`[data-dashboard-odometer-input="${safeRecordId}"]`);
   const reasonInput = document.querySelector(`[data-dashboard-odometer-reason="${safeRecordId}"]`);
+  const panel = document.querySelector(`[data-dashboard-correction-panel="${safeRecordId}"]`);
   const rawValue = clearValue ? "" : odometerInput?.value?.trim() || "";
-  const nextValue = rawValue === "" ? null : Number(rawValue);
+  const nextValue = rawValue === "" ? null : parseBrazilianNumber(rawValue);
+  const currentValue = odometerInput?.dataset.currentValue ?? "";
+  const originalValue = odometerInput?.dataset.originalKm ?? "";
+  const currentReason = reasonInput?.dataset.currentReason ?? "";
+  const originalWasMissing = odometerInput?.dataset.originalWasMissing === "true";
+  const reason = reasonInput?.value?.trim() || "";
+  const sameValue =
+    (rawValue === "" && currentValue === "") ||
+    (rawValue !== "" && currentValue !== "" && numbersMatch(nextValue, currentValue));
+  const sameReason = reason === currentReason;
 
   if (rawValue && (!Number.isFinite(nextValue) || nextValue < 0)) {
     showToast("Informe um KM valido para salvar a correcao.", "error");
@@ -2670,17 +2862,84 @@ async function saveDashboardOdometerChange(recordId, clearValue = false) {
     return;
   }
 
+  if (!clearValue && sameValue && sameReason) {
+    cancelDashboardOdometerEditor(safeRecordId);
+    return;
+  }
+
+  const restoringOriginal =
+    !originalWasMissing &&
+    rawValue !== "" &&
+    originalValue !== "" &&
+    numbersMatch(nextValue, originalValue);
+  const requiresReason = !clearValue && nextValue !== null && (originalWasMissing || !restoringOriginal);
+
+  if (requiresReason && !reason) {
+    showToast("Informe o motivo da correcao manual.", "error");
+    reasonInput?.focus();
+    return;
+  }
+
+  if (panel) {
+    panel.classList.add("is-saving");
+  }
+
   await api(`/api/dashboard/fuel-records/${safeRecordId}/odometer`, {
     method: "PUT",
     body: {
       odometerKm: nextValue,
-      reason: reasonInput?.value?.trim() || "",
+      reason,
     },
   });
 
   state.dashboard.cache.clear();
   await refreshDashboard({ useCache: false });
-  showToast(clearValue ? "Leitura de KM restaurada." : "Leitura de KM atualizada.");
+  showToast(clearValue ? "Leitura de KM restaurada." : "Leitura corrigida e recalculada.");
+}
+
+function toggleDashboardOdometerEditor(recordId) {
+  const safeRecordId = Number(recordId || 0);
+  const card = document.querySelector(`[data-dashboard-record-id="${safeRecordId}"]`);
+  const panel = document.querySelector(`[data-dashboard-correction-panel="${safeRecordId}"]`);
+  const input = document.querySelector(`[data-dashboard-odometer-input="${safeRecordId}"]`);
+  if (!card || !panel) {
+    return;
+  }
+
+  const willOpen = panel.classList.contains("hidden");
+  document.querySelectorAll("[data-dashboard-correction-panel]").forEach((element) => {
+    element.classList.add("hidden");
+    element.classList.remove("is-saving");
+  });
+  document.querySelectorAll("[data-dashboard-record-id]").forEach((element) => {
+    element.classList.remove("is-editing");
+  });
+
+  if (willOpen) {
+    panel.classList.remove("hidden");
+    card.classList.add("is-editing");
+    window.requestAnimationFrame(() => input?.focus());
+  }
+}
+
+function cancelDashboardOdometerEditor(recordId) {
+  const safeRecordId = Number(recordId || 0);
+  const card = document.querySelector(`[data-dashboard-record-id="${safeRecordId}"]`);
+  const panel = document.querySelector(`[data-dashboard-correction-panel="${safeRecordId}"]`);
+  const odometerInput = document.querySelector(`[data-dashboard-odometer-input="${safeRecordId}"]`);
+  const reasonInput = document.querySelector(`[data-dashboard-odometer-reason="${safeRecordId}"]`);
+
+  if (odometerInput) {
+    odometerInput.value = odometerInput.dataset.currentValue ?? "";
+  }
+  if (reasonInput) {
+    reasonInput.value = reasonInput.dataset.currentReason ?? "";
+  }
+  if (panel) {
+    panel.classList.add("hidden");
+    panel.classList.remove("is-saving");
+  }
+  card?.classList.remove("is-editing");
 }
 
 function buildDashboardPeriodLabel(analytics = state.dashboard.analytics) {
@@ -2877,19 +3136,60 @@ function getDashboardTankMeta(percent) {
 }
 
 function getDashboardRecordStatus(record) {
+  const toneToClassName = {
+    success: "status-green",
+    warning: "status-yellow",
+    danger: "status-red",
+    neutral: "status-gray",
+  };
+
+  if (record.statusLabel) {
+    return {
+      className: toneToClassName[record.statusTone] || "status-gray",
+      label: record.statusLabel,
+      tone: record.statusTone || "neutral",
+      description: record.statusDescription || "",
+    };
+  }
+
   if (record.kmInconsistent) {
-    return { className: "status-red", label: "KM incoerente" };
+    return {
+      className: "status-red",
+      label: "Erro de KM",
+      tone: "danger",
+      description: "KM atual menor ou igual ao abastecimento anterior.",
+    };
   }
   if (record.averageOutOfPattern) {
-    return { className: "status-yellow", label: "Fora do padrao" };
+    return {
+      className: "status-yellow",
+      label: "Possivel erro",
+      tone: "warning",
+      description: "Consumo fora da faixa esperada. Confira KM e litros.",
+    };
   }
   if (record.usedInAverage) {
-    return { className: "status-green", label: "Utilizado" };
+    return {
+      className: "status-green",
+      label: "Valido",
+      tone: "success",
+      description: "Par consistente usado no consumo medio.",
+    };
   }
   if (record.effectiveKm === null || record.effectiveKm === undefined) {
-    return { className: "status-gray", label: "Sem KM" };
+    return {
+      className: "status-gray",
+      label: "Aguardando KM",
+      tone: "neutral",
+      description: "Informe o KM atual para liberar o calculo.",
+    };
   }
-  return { className: "status-gray", label: "Aguardando par" };
+  return {
+    className: "status-gray",
+    label: "Aguardando par",
+    tone: "neutral",
+    description: "Este abastecimento precisa de um anterior para comparar o consumo.",
+  };
 }
 
 function buildDashboardTankCard(label, balance, dailyAverage, consumption, participation, capacity, averageKmPerLiter = 0) {
@@ -3278,56 +3578,116 @@ function buildDashboardEfficiencyView(derived) {
           const status = getDashboardRecordStatus(record);
           const effectiveKmValue =
             record.effectiveKm === null || record.effectiveKm === undefined ? "" : String(record.effectiveKm);
-          const formulaLabel =
-            record.referenceKmUsed !== null &&
-            record.referenceKmUsed !== undefined &&
-            record.averageKmPerLiter !== null &&
-            record.averageKmPerLiter !== undefined
-              ? `(${formatNumber(record.effectiveKm || 0, 0, 0)} - ${formatNumber(record.referenceKmUsed || 0, 0, 0)}) / ${formatLiters(record.quantity || 0)}`
-              : "Leitura aguardando par valido";
+          const originalKmValue =
+            record.originalKm === null || record.originalKm === undefined ? "" : String(record.originalKm);
+          const currentReason = record.correctionReason || "";
+          const correctionSummary =
+            record.correctedKm !== null && record.correctedKm !== undefined
+              ? record.originalWasMissing
+                ? "KM incluido manualmente para liberar o calculo."
+                : `KM original preservado: ${formatDistance(record.originalKm || 0)}.`
+              : status.description;
+          const distanceLabel =
+            record.distanceKm !== null && record.distanceKm !== undefined
+              ? formatDistance(record.distanceKm)
+              : "-";
+          const averageLabel = formatKmPerLiter(record.averageKmPerLiter || 0);
+          const averageTextLabel = formatKmPerLiterText(record.averageKmPerLiter || 0);
+          const comparedAt = record.referenceOccurredAt ? formatDateTime(record.referenceOccurredAt) : "";
 
           return `
-            <article class="dashboard-efficiency-record">
+            <article class="dashboard-efficiency-record dashboard-efficiency-record--${escapeHtml(status.tone || "neutral")}" data-dashboard-record-id="${record.id}">
               <div class="dashboard-efficiency-record__top">
-                <div>
-                  <strong>${escapeHtml(`${formatDateOnly(record.occurredAt)} | ${formatFuelKindLabel(record.fuelKind)}`)}</strong>
-                  <p class="muted">${escapeHtml(`${formatLiters(record.quantity || 0)} L | ${formatDateTime(record.occurredAt)}`)}</p>
+                <div class="dashboard-efficiency-record__identity">
+                  <strong>${escapeHtml(`${formatDateOnly(record.occurredAt)} | ${record.plate || selectedVehicle?.plate || derived.focusPlate}`)}</strong>
+                  <p class="muted">${escapeHtml(`${formatDateTime(record.occurredAt)} | ${formatFuelKindLabel(record.fuelKind)} | ${formatLiters(record.quantity || 0)} L`)}</p>
                 </div>
                 <span class="status-badge ${status.className}">${escapeHtml(status.label)}</span>
               </div>
+
               <div class="dashboard-efficiency-record__summary">
                 <article>
-                  <span class="eyebrow">KM/L</span>
-                  <strong>${escapeHtml(formatKmPerLiter(record.averageKmPerLiter || 0))}</strong>
+                  <span class="eyebrow">KM inicial</span>
+                  <strong>${escapeHtml(
+                    record.referenceKmUsed !== null && record.referenceKmUsed !== undefined
+                      ? formatDistance(record.referenceKmUsed)
+                      : "-"
+                  )}</strong>
+                  <span class="muted">${escapeHtml(comparedAt ? `Abastecimento anterior: ${comparedAt}` : "Aguardando abastecimento anterior valido")}</span>
                 </article>
                 <article>
-                  <span class="eyebrow">Formula</span>
-                  <strong>${escapeHtml(formulaLabel)}</strong>
+                  <span class="eyebrow">KM final</span>
+                  <strong>${escapeHtml(
+                    record.effectiveKm !== null && record.effectiveKm !== undefined
+                      ? formatDistance(record.effectiveKm)
+                      : "-"
+                  )}</strong>
+                  <span class="muted">${escapeHtml(
+                    record.correctedKm !== null && record.correctedKm !== undefined
+                      ? "Leitura corrigida manualmente"
+                      : "Leitura atual do abastecimento"
+                  )}</span>
+                </article>
+                <article>
+                  <span class="eyebrow">Distancia rodada</span>
+                  <strong>${escapeHtml(distanceLabel)}</strong>
+                  <span class="muted">${escapeHtml(
+                    record.distanceKm !== null && record.distanceKm !== undefined
+                      ? "Calculado automaticamente"
+                      : "Distancia pendente"
+                  )}</span>
+                </article>
+                <article>
+                  <span class="eyebrow">Litros abastecidos</span>
+                  <strong>${escapeHtml(`${formatLiters(record.quantity || 0)} L`)}</strong>
+                  <span class="muted">${escapeHtml("Volume informado no abastecimento")}</span>
+                </article>
+                <article class="dashboard-efficiency-record__summary-primary">
+                  <span class="eyebrow">Consumo medio</span>
+                  <strong>${escapeHtml(averageLabel)}</strong>
+                  <span class="muted">${escapeHtml(
+                    Number(record.averageKmPerLiter || 0) > 0 ? averageTextLabel : status.description
+                  )}</span>
                 </article>
               </div>
-              <div class="dashboard-efficiency-record__edit">
-                <label class="dashboard-filter-field">
-                  <span>KM usado</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value="${escapeHtml(effectiveKmValue)}"
-                    data-dashboard-odometer-input="${record.id}"
-                  />
-                </label>
-                <label class="dashboard-filter-field">
-                  <span>Motivo da correcao</span>
-                  <input
-                    type="text"
-                    value="${escapeHtml(record.correctionReason || "")}"
-                    placeholder="Descreva a justificativa"
-                    data-dashboard-odometer-reason="${record.id}"
-                  />
-                </label>
+
+              <div class="dashboard-efficiency-record__meta">
+                <span>${escapeHtml(correctionSummary)}</span>
+                ${record.correctionReason ? `<span>${escapeHtml(`Motivo: ${record.correctionReason}`)}</span>` : ""}
+              </div>
+
+              <div class="dashboard-efficiency-record__toolbar">
+                <button type="button" class="secondary-button" data-dashboard-toggle-odometer="${record.id}">Corrigir leitura</button>
+              </div>
+
+              <div class="dashboard-efficiency-record__edit hidden" data-dashboard-correction-panel="${record.id}">
+                <div class="dashboard-efficiency-record__edit-grid">
+                  <label class="dashboard-filter-field">
+                    <span>KM correto</span>
+                    <input
+                      type="text"
+                      inputmode="decimal"
+                      value="${escapeHtml(effectiveKmValue)}"
+                      data-current-value="${escapeHtml(effectiveKmValue)}"
+                      data-original-km="${escapeHtml(originalKmValue)}"
+                      data-original-was-missing="${record.originalWasMissing ? "true" : "false"}"
+                      data-dashboard-odometer-input="${record.id}"
+                    />
+                  </label>
+                  <label class="dashboard-filter-field">
+                    <span>Motivo da correcao</span>
+                    <input
+                      type="text"
+                      value="${escapeHtml(currentReason)}"
+                      data-current-reason="${escapeHtml(currentReason)}"
+                      placeholder="Obrigatorio ao corrigir a leitura"
+                      data-dashboard-odometer-reason="${record.id}"
+                    />
+                  </label>
+                </div>
                 <div class="dashboard-efficiency-record__actions">
-                  <button type="button" class="secondary-button" data-dashboard-save-odometer="${record.id}">Salvar</button>
-                  <button type="button" class="ghost-button" data-dashboard-clear-odometer="${record.id}">Restaurar</button>
+                  <button type="button" class="secondary-button" data-dashboard-save-odometer="${record.id}">Salvar correcao</button>
+                  <button type="button" class="ghost-button" data-dashboard-cancel-odometer="${record.id}">Cancelar</button>
                 </div>
               </div>
             </article>
@@ -3339,60 +3699,88 @@ function buildDashboardEfficiencyView(derived) {
         "Selecione uma placa com ao menos dois abastecimentos para apurar o KM/L."
       );
 
+  const historyMarkup = records.length
+    ? `
+        <div class="dashboard-efficiency-history">
+          ${records
+            .map((record) => {
+              const status = getDashboardRecordStatus(record);
+              return `
+                <article class="dashboard-efficiency-history__item">
+                  <div>
+                    <strong>${escapeHtml(`${formatDateOnly(record.occurredAt)} | ${record.plate || selectedVehicle?.plate || derived.focusPlate}`)}</strong>
+                    <p class="muted">${escapeHtml(`Consumo: ${formatKmPerLiter(record.averageKmPerLiter || 0)}`)}</p>
+                  </div>
+                  <span class="status-badge ${status.className}">${escapeHtml(status.label)}</span>
+                </article>
+              `;
+            })
+            .join("")}
+        </div>
+      `
+    : renderDashboardEmpty(
+        "Sem historico para exibir",
+        "Os abastecimentos desta placa aparecerao aqui em ordem cronologica."
+      );
+
   return {
     primary: `
       ${buildDashboardPanelHeader(
         "Prioridade alta",
-        "KM/L por veiculo",
-        "A leitura usa os ultimos abastecimentos coerentes e permite correcao manual do KM quando necessario."
+        "Consumo por veiculo",
+        "Cada leitura compara o abastecimento atual com o anterior e mostra apenas os dados que o operador precisa entender."
       )}
       <div class="dashboard-stage-grid dashboard-stage-grid--efficiency">
         <article class="dashboard-priority-card">
           <div class="dashboard-priority-card__top">
             <div>
-              <span class="eyebrow">Placa em foco</span>
+              <span class="eyebrow">Veiculo em foco</span>
               <h4>${escapeHtml(selectedVehicle?.plate || derived.focusPlate || "Selecione uma placa")}</h4>
-              <p class="muted">KM/L = (KM atual - KM anterior) / litros abastecidos.</p>
+              <p class="muted">O sistema calcula automaticamente: KM rodado, litros abastecidos e consumo medio do par.</p>
             </div>
             ${buildIconBadge("vehicle", selectedVehicle?.samples ? "success" : "warning")}
           </div>
           <label class="dashboard-filter-field">
-            <span>Selecionar placa</span>
+            <span>Selecionar veiculo</span>
             <select data-dashboard-focus-plate ${derived.selectedPlate ? "disabled" : ""}>
               ${selectorOptions}
             </select>
           </label>
           ${
             derived.selectedPlate
-              ? `<p class="muted">O filtro global por placa esta ativo. Para comparar outra placa, limpe o filtro do topo.</p>`
+              ? `<p class="muted">O filtro global por placa esta ativo. Para comparar outro veiculo, limpe o filtro do topo.</p>`
               : ""
           }
           <div class="dashboard-kpi-hero">
             <article>
-              <span class="eyebrow">KM/L atual</span>
+              <span class="eyebrow">Consumo medio</span>
               <strong>${escapeHtml(formatKmPerLiter(derived.currentVehicleKmPerLiter))}</strong>
-              <span class="muted">${escapeHtml(selectedVehicle?.lastFuelAt ? formatDateTime(selectedVehicle.lastFuelAt) : "Sem leitura recente")}</span>
+              <span class="muted">${escapeHtml(
+                Number(derived.currentVehicleKmPerLiter || 0) > 0
+                  ? formatKmPerLiterText(derived.currentVehicleKmPerLiter)
+                  : "Aguardando par valido para calcular"
+              )}</span>
             </article>
             <article>
               <span class="eyebrow">Media recente</span>
               <strong>${escapeHtml(formatKmPerLiter(derived.recentAverageKmPerLiter))}</strong>
-              <span class="muted">${escapeHtml(`${formatNumber(derived.recentValidRecords.length)} leitura(s) coerentes usadas`)}</span>
+              <span class="muted">${escapeHtml(`${formatNumber(derived.recentValidRecords.length)} leitura(s) validas recentes`)}</span>
             </article>
           </div>
           <div class="dashboard-mini-kpi-grid">
             ${buildStatCard({
               className: "dashboard-mini-kpi",
-              label: "Distancia analisada",
+              label: "KM rodado",
               value: formatDistance(selectedVehicle?.totalDistanceKm || 0),
-              note: "Somente leituras coerentes",
+              note: "Somente pares validos",
               icon: "vehicle",
               tone: "neutral",
             })}
             ${buildStatCard({
               className: "dashboard-mini-kpi",
-              label: "Litros usados",
+              label: "Litros analisados",
               value: `${formatLiters(selectedVehicle?.totalLiters || 0)} L`,
-              note: "Base do calculo recente",
+              note: "Base do calculo",
               icon: "fuel",
               tone: "brand",
             })}
@@ -3400,7 +3788,7 @@ function buildDashboardEfficiencyView(derived) {
               className: "dashboard-mini-kpi",
               label: "Leituras validas",
               value: formatNumber(selectedVehicle?.samples || 0),
-              note: "Pares com KM coerente",
+              note: "Pares consistentes",
               icon: "analytics",
               tone: selectedVehicle?.samples ? "success" : "warning",
             })}
@@ -3411,7 +3799,7 @@ function buildDashboardEfficiencyView(derived) {
                 selectedVehicle?.lastOdometerKm && Number(selectedVehicle.lastOdometerKm) > 0
                   ? formatDistance(selectedVehicle.lastOdometerKm)
                   : "-",
-              note: selectedVehicle?.lastFuelKind ? formatFuelKindLabel(selectedVehicle.lastFuelKind) : "Sem ultima leitura",
+              note: selectedVehicle?.lastFuelAt ? formatDateTime(selectedVehicle.lastFuelAt) : "Sem leitura recente",
               icon: "efficiency",
               tone: "warning",
             })}
@@ -3419,41 +3807,17 @@ function buildDashboardEfficiencyView(derived) {
         </article>
 
         <article class="dashboard-subsection-card">
-          <span class="eyebrow">Abastecimentos usados</span>
-          <h4>Ultimos pares considerados no calculo</h4>
-          ${
-            derived.recentValidRecords.length
-              ? `
-                  <div class="dashboard-used-records">
-                    ${derived.recentValidRecords
-                      .map(
-                        (record) => `
-                          <article class="dashboard-used-record">
-                            <strong>${escapeHtml(formatDateOnly(record.occurredAt))}</strong>
-                            <span>${escapeHtml(formatKmPerLiter(record.averageKmPerLiter || 0))}</span>
-                            <p class="muted">${escapeHtml(
-                              record.referenceKmUsed !== null && record.referenceKmUsed !== undefined
-                                ? `${formatNumber(record.effectiveKm || 0, 0, 0)} - ${formatNumber(record.referenceKmUsed || 0, 0, 0)} em ${formatLiters(record.quantity || 0)} L`
-                                : "Leitura aguardando historico valido"
-                            )}</p>
-                          </article>
-                        `
-                      )
-                      .join("")}
-                  </div>
-                `
-              : renderDashboardEmpty(
-                  "Sem pares coerentes",
-                  "Registre ao menos dois abastecimentos com KM coerente para liberar a conferencia."
-                )
-          }
+          <span class="eyebrow">Historico limpo</span>
+          <h4>Resumo rapido por abastecimento</h4>
+          <p class="muted">Data, veiculo, consumo e status em uma leitura curta para a operacao.</p>
+          ${historyMarkup}
         </article>
       </div>
 
       <article class="dashboard-detail-card">
-        <span class="eyebrow">Intervencao manual</span>
-        <h4>Ajuste o KM usado no calculo</h4>
-        <p class="muted">Edite o valor quando houver erro de digitacao ou necessidade de conferencia operacional.</p>
+        <span class="eyebrow">Conferencia operacional</span>
+        <h4>Detalhes do calculo por abastecimento</h4>
+        <p class="muted">Cada card mostra o par usado no calculo e permite corrigir a leitura de KM quando necessario.</p>
         <div class="dashboard-efficiency-records">
           ${recordsMarkup}
         </div>
@@ -3462,13 +3826,13 @@ function buildDashboardEfficiencyView(derived) {
     detail: `
       ${buildDashboardPanelHeader(
         "Prioridade media e baixa",
-        "Alertas e ranking de eficiencia",
-        "Primeiro a placa em foco, depois alertas da leitura e ranking para comparacao da frota."
+        "Alertas e ranking de consumo",
+        "Use os alertas para encontrar digitacao suspeita e o ranking para comparar o desempenho da frota."
       )}
       <div class="dashboard-detail-stack dashboard-detail-stack--split">
         <div class="dashboard-detail-card">
           <span class="eyebrow">Alertas da placa</span>
-          <h4>Conferencia da leitura atual</h4>
+          <h4>Leituras que pedem conferencia</h4>
           ${buildDashboardAlertFeed(
             vehicleSpecificAlerts,
             "Sem alertas para a placa",
@@ -3477,7 +3841,7 @@ function buildDashboardEfficiencyView(derived) {
         </div>
         <div class="dashboard-detail-card">
           <span class="eyebrow">Ranking da frota</span>
-          <h4>Comparativo de KM/L</h4>
+          <h4>Comparativo de consumo</h4>
           ${renderMeterList(
             (derived.analytics.efficiencyRanking || []).slice(0, 6).map((item) => ({
               label: item.plate,
@@ -3621,8 +3985,8 @@ function renderProducts() {
                 <strong>${escapeHtml(product.name)}</strong>
                 ${product.lowStock ? `<div><span class="status-badge status-red">Estoque mínimo</span></div>` : ""}
               </td>
-              <td>${escapeHtml(product.currentStock.toFixed(2))} ${escapeHtml(product.unit)}</td>
-              <td>${escapeHtml(product.minStock.toFixed(2))} ${escapeHtml(product.unit)}</td>
+              <td>${escapeHtml(formatNumber(product.currentStock || 0, 2, 2))} ${escapeHtml(product.unit)}</td>
+              <td>${escapeHtml(formatNumber(product.minStock || 0, 2, 2))} ${escapeHtml(product.unit)}</td>
               <td>${escapeHtml(formatCurrency(product.defaultCost || 0))}</td>
               <td>${escapeHtml(product.barcode || "-")}</td>
               <td>
@@ -3645,11 +4009,11 @@ function renderInventoryMovements() {
             <tr>
               <td>${escapeHtml(movement.productName)}</td>
               <td>${statusBadge(movement.type)}</td>
-              <td>${escapeHtml(movement.quantity.toFixed(2))}</td>
+              <td>${escapeHtml(formatNumber(movement.quantity || 0, 2, 2))}</td>
               <td>${escapeHtml(movement.document || "-")}</td>
               <td>${escapeHtml(formatCurrency(movement.unitCost || 0))}</td>
               <td>${escapeHtml(formatCurrency(movement.totalCost || 0))}</td>
-              <td>${escapeHtml(movement.balanceAfter.toFixed(2))}</td>
+              <td>${escapeHtml(formatNumber(movement.balanceAfter || 0, 2, 2))}</td>
               <td>${escapeHtml(movement.userName || "-")}</td>
               <td>${escapeHtml(formatDateTime(movement.occurredAt))}</td>
             </tr>
@@ -3844,10 +4208,10 @@ function renderFuel() {
               <td>${escapeHtml(formatFuelKindLabel(item.fuelKind))}</td>
               <td>${statusBadge(item.type)}</td>
               <td>${escapeHtml(item.plate)}</td>
-              <td>${escapeHtml(item.quantity.toFixed(2))} L</td>
+              <td>${escapeHtml(formatNumber(item.quantity || 0, 2, 2))} L</td>
               <td>${escapeHtml(item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}</td>
-              <td>${escapeHtml(item.balanceBefore.toFixed(2))} L</td>
-              <td>${escapeHtml(item.balanceAfter.toFixed(2))} L</td>
+              <td>${escapeHtml(formatNumber(item.balanceBefore || 0, 2, 2))} L</td>
+              <td>${escapeHtml(formatNumber(item.balanceAfter || 0, 2, 2))} L</td>
               <td>${escapeHtml(item.userName || "-")}</td>
               <td>${escapeHtml(formatDateTime(item.occurredAt))}</td>
             </tr>
@@ -4211,7 +4575,7 @@ function updateMovementProductSelect() {
         .map(
           (product) => `
             <option value="${product.id}">
-              ${escapeHtml(product.name)} (${escapeHtml(product.currentStock.toFixed(2))} ${escapeHtml(product.unit)})
+              ${escapeHtml(product.name)} (${escapeHtml(formatNumber(product.currentStock || 0, 2, 2))} ${escapeHtml(product.unit)})
             </option>
           `
         )
@@ -4682,12 +5046,38 @@ async function handleFuelSubmit(event) {
       ? state.vehicles.find((item) => String(item.id) === String(refs.fuelForm.elements.vehicleId.value))
       : null;
 
+  let quantity = 0;
+  let odometerKm = null;
+
+  try {
+    quantity = readBrazilianNumberField(refs.fuelForm.elements.quantity, {
+      label: "litros",
+      required: true,
+      min: 0.000001,
+    });
+    odometerKm = readBrazilianNumberField(refs.fuelForm.elements.odometerKm, {
+      label: "KM",
+      min: 0,
+    });
+  } catch (error) {
+    showToast(error.message, "error");
+    return;
+  }
+
+  const warnings = [];
+  if (isExit && quantity > 500) {
+    warnings.push("Valor de litros muito alto. Confirme se o lançamento está correto.");
+  }
+  if (!confirmSuspiciousFuelValues(warnings)) {
+    return;
+  }
+
   const payload = {
     storageId: refs.fuelForm.elements.storageId.value,
     type: refs.fuelForm.elements.type.value,
     vehicleId: isExit ? refs.fuelForm.elements.vehicleId.value : "",
-    quantity: refs.fuelForm.elements.quantity.value,
-    odometerKm: refs.fuelForm.elements.odometerKm.value,
+    quantity,
+    odometerKm,
     occurredAt: toIsoDateTime(refs.fuelForm.elements.occurredAt.value),
     notes: refs.fuelForm.elements.notes.value,
   };
@@ -4727,6 +5117,2422 @@ async function handleScheduleSubmit(event) {
     }
 
     showToast(id ? "Escala atualizada." : "Escala cadastrada.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function renderFuel() {
+  const analytics = buildFuelPageAnalytics(state.fuelRecords);
+  const currentPlate = refs.fuelFilterPlate?.value || "";
+  if (refs.fuelFilterPlate) {
+    refs.fuelFilterPlate.innerHTML = `<option value="">Todos os veiculos</option>${analytics.plates
+      .map((plate) => `<option value="${escapeHtml(plate)}">${escapeHtml(plate)}</option>`)
+      .join("")}`;
+    refs.fuelFilterPlate.value = analytics.plates.includes(currentPlate) ? currentPlate : "";
+  }
+
+  refs.fuelKpiGrid.innerHTML = [
+    {
+      label: "Abastecimentos",
+      value: formatNumber(analytics.monthExitRecords.length),
+      note: "Saidas no mes atual",
+      icon: "fuel",
+      tone: "brand",
+    },
+    {
+      label: "Total de litros",
+      value: `${formatLiters(analytics.monthLiters)} L`,
+      note: "Consumo do mes atual",
+      icon: "analytics",
+      tone: "neutral",
+    },
+    {
+      label: "Media por lancamento",
+      value: `${formatLiters(analytics.avgLiters)} L`,
+      note: "Considerando apenas saidas",
+      icon: "dashboard",
+      tone: "warning",
+    },
+    {
+      label: "Media km/L",
+      value: formatKmPerLiter(analytics.avgKmPerLiter),
+      note: "Com base nos hodometros informados",
+      icon: "efficiency",
+      tone: "success",
+    },
+  ]
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card",
+        label: item.label,
+        value: item.value,
+        note: item.note,
+        icon: item.icon,
+        tone: item.tone,
+      })
+    )
+    .join("");
+
+  refs.fuelStocksGrid.innerHTML = state.fuelStorages.length
+    ? state.fuelStorages
+        .map((storage) => {
+          const isEmpty = Number(storage.currentBalance || 0) <= 0;
+          const isLow =
+            !isEmpty &&
+            Number(storage.minBalance || 0) > 0 &&
+            Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0);
+          const statusLabel = isEmpty ? "Sem saldo" : isLow ? "Abaixo do minimo" : "Operacional";
+          const toneClass = isEmpty ? "is-empty" : isLow ? "is-low" : "is-ok";
+
+          return `
+            <article class="fuel-stock-card ${toneClass}">
+              <div class="fuel-stock-card__top">
+                <span class="fuel-stock-card__kind">${escapeHtml(formatFuelKindLabel(storage.fuelKind))}</span>
+                <span class="fuel-stock-card__status">${escapeHtml(statusLabel)}</span>
+              </div>
+              <div class="fuel-stock-card__value-row">
+                <strong class="fuel-stock-card__value">${escapeHtml(formatLiters(storage.currentBalance))}</strong>
+                <span class="fuel-stock-card__unit">L</span>
+              </div>
+              <div class="fuel-stock-card__footer">
+                <strong>${escapeHtml(storage.name)}</strong>
+                <span>Saldo disponivel agora</span>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="stack-item"><strong>Nenhum estoque configurado</strong><p class="muted">Cadastre ou revise os estoques principais de combustivel.</p></div>`;
+
+  renderFuelHistoryTable();
+  renderFuelComposerMode();
+  syncFuelFormState();
+  renderFuelBatchComposer();
+
+  refs.fuelConsumptionChart.innerHTML = renderConsumptionChart({
+    consumptionSeries: analytics.consumptionSeries,
+    totalConsumptionLiters: analytics.consumptionSeries.reduce((total, item) => total + item.total, 0),
+    peakConsumption: analytics.peakConsumption,
+    fuelMix: analytics.fuelMix,
+  });
+
+  refs.fuelTopVehicles.innerHTML = renderMeterList(
+    analytics.topVehicles.map((item) => ({
+      label: item.plate,
+      value: item.liters,
+      count: item.count,
+    })),
+    {
+      emptyTitle: "Sem consumo no periodo",
+      emptyDescription: "Assim que houver saidas registradas, os veiculos de maior consumo aparecem aqui.",
+      valueFormatter: (value) => `${formatLiters(value)} L`,
+      secondaryFormatter: (item) => `${item.count} lancamento(s)`,
+    }
+  );
+
+  refs.fuelSideInsights.innerHTML = buildFuelSideInsights(analytics);
+  syncResponsiveTableLabels();
+}
+
+async function handleFuelSubmit(event) {
+  event.preventDefault();
+  if (!refs.fuelForm) {
+    return;
+  }
+
+  const movementType = refs.fuelForm.elements.type.value || "OPERATIONAL_EXIT";
+  const occurredAt = toIsoDateTime(refs.fuelForm.elements.occurredAt.value);
+
+  if (!occurredAt) {
+    showToast("Informe uma data e hora valida.", "error");
+    return;
+  }
+
+  let quantity = 0;
+  let unitCost = null;
+  let odometerKm = null;
+
+  try {
+    quantity = readBrazilianNumberField(refs.fuelForm.elements.quantity, {
+      label: "quantidade",
+      required: true,
+      min: 0.000001,
+    });
+
+    if (movementType === "STOCK_ENTRY") {
+      unitCost = readBrazilianNumberField(refs.fuelForm.elements.unitCost, {
+        label: "valor unitario",
+        min: 0,
+      });
+    }
+
+    if (movementType === "OPERATIONAL_EXIT" && String(refs.fuelForm.elements.odometerKm.value || "").trim()) {
+      odometerKm = readBrazilianNumberField(refs.fuelForm.elements.odometerKm, {
+        label: "KM",
+        min: 0,
+      });
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+    return;
+  }
+
+  const warnings = [];
+  if (quantity > 500) {
+    warnings.push("Valor de litros muito alto. Confirme se o lancamento esta correto.");
+  }
+  if (unitCost !== null && unitCost > 20) {
+    warnings.push("Valor unitario acima de R$ 20,00. Confirme se o lancamento esta correto.");
+  }
+  if (!confirmSuspiciousFuelValues(warnings)) {
+    return;
+  }
+
+  if (movementType === "STOCK_ENTRY") {
+    if (!refs.fuelForm.elements.productId.value) {
+      showToast("Selecione o combustivel da entrada no estoque.", "error");
+      return;
+    }
+
+    const payload = {
+      productId: refs.fuelForm.elements.productId.value,
+      stockType: "FUEL",
+      type: "IN",
+      quantity,
+      unitCost,
+      document: refs.fuelForm.elements.document.value,
+      supplierName: refs.fuelForm.elements.supplierName.value,
+      occurredAt,
+      notes: refs.fuelForm.elements.notes.value,
+    };
+
+    try {
+      await api("/api/inventory/movements", { method: "POST", body: payload });
+      resetFuelForm();
+      await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshFuel(), refreshDashboard()]);
+      showToast("Entrada de combustivel registrada.");
+    } catch (error) {
+      showToast(error.message, "error");
+    }
+    return;
+  }
+
+  const selectedVehicle = resolveFuelVehicleByPlate(refs.fuelVehicleInput?.value || "");
+  if (movementType === "OPERATIONAL_EXIT" && !selectedVehicle) {
+    showToast("Selecione uma placa cadastrada para o abastecimento.", "error");
+    return;
+  }
+
+  const isAdjustment = movementType === "BALANCE_ADJUSTMENT";
+  const storageId = refs.fuelForm.elements.storageId.value;
+  if (!storageId) {
+    showToast("Selecione o combustivel da movimentacao.", "error");
+    return;
+  }
+  const adjustmentKind = refs.fuelForm.elements.adjustmentType.value || "DECREASE";
+  const payload = isAdjustment
+    ? {
+        storageId,
+        type: adjustmentKind === "INCREASE" ? "ENTRY" : "EXIT",
+        operationKind: "ADJUSTMENT",
+        adjustmentKind,
+        quantity,
+        occurredAt,
+        notes: refs.fuelForm.elements.notes.value,
+        entryOrigin: "MANUAL",
+      }
+    : {
+        storageId,
+        type: "EXIT",
+        operationKind: "OPERATIONAL",
+        vehicleId: selectedVehicle ? selectedVehicle.id : "",
+        plate: selectedVehicle ? selectedVehicle.plate : refs.fuelVehicleInput.value,
+        quantity,
+        odometerKm,
+        occurredAt,
+        notes: refs.fuelForm.elements.notes.value,
+        entryOrigin: "MANUAL",
+      };
+
+  payload.rawPayload = {
+    plate: refs.fuelVehicleInput?.value || "",
+    storageId,
+    quantity: refs.fuelForm.elements.quantity.value,
+    odometerKm: refs.fuelForm.elements.odometerKm.value,
+    unitCost: refs.fuelForm.elements.unitCost.value,
+    type: movementType,
+    occurredAt,
+    notes: refs.fuelForm.elements.notes.value,
+  };
+
+  payload.normalizedPayload = {
+    storageId,
+    vehicleId: selectedVehicle ? selectedVehicle.id : null,
+    plate: selectedVehicle ? selectedVehicle.plate : "",
+    quantity,
+    odometerKm,
+    type: payload.type,
+    operationKind: payload.operationKind,
+    adjustmentKind: payload.adjustmentKind || "",
+    occurredAt,
+  };
+
+  try {
+    await api("/api/fuel", { method: "POST", body: payload });
+    resetFuelForm();
+    await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+
+    if (
+      selectedVehicle &&
+      state.dossier.selectedPlate &&
+      normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(selectedVehicle.plate)
+    ) {
+      await loadVehicleDossierByPlate(selectedVehicle.plate, { silent: true });
+    }
+
+    showToast(isAdjustment ? "Ajuste de saldo registrado." : "Abastecimento registrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function bindFuelHistoryEvents() {
+  if (refs.fuelFilterPlate) {
+    refs.fuelFilterPlate.addEventListener("change", () => {
+      refreshFuelHistory({ resetPage: true }).catch((error) => showToast(error.message, "error"));
+    });
+  }
+
+  refs.fuelHistoryApplyButton?.addEventListener("click", () => {
+    refreshFuelHistory({ resetPage: true }).catch((error) => showToast(error.message, "error"));
+  });
+  refs.fuelHistoryClearButton?.addEventListener("click", () => {
+    clearFuelHistoryFilters();
+  });
+
+  [
+    refs.fuelHistoryMovementKind,
+    refs.fuelHistoryUser,
+    refs.fuelHistoryStatus,
+  ].forEach((input) => {
+    input?.addEventListener("change", () => {
+      refreshFuelHistory({ resetPage: true }).catch((error) => showToast(error.message, "error"));
+    });
+  });
+
+  const debouncedRefresh = debounce(() => {
+    refreshFuelHistory({ resetPage: true }).catch((error) => showToast(error.message, "error"));
+  }, 250);
+
+  [refs.fuelHistoryDocument, refs.fuelHistorySearch].forEach((input) => {
+    input?.addEventListener("input", debouncedRefresh);
+  });
+
+  refs.fuelHistoryTableBody?.addEventListener("click", handleFuelHistoryActionClick);
+  refs.fuelHistoryPagination?.addEventListener("click", handleFuelHistoryPaginationClick);
+  refs.fuelHistoryDetailContent?.addEventListener("click", handleFuelHistoryActionClick);
+  refs.fuelHistoryDetailContent?.addEventListener("submit", handleFuelHistoryDetailSubmit);
+}
+
+function getFuelHistoryState() {
+  if (!state.fuelHistory) {
+    state.fuelHistory = {
+      items: [],
+      users: [],
+      pagination: {
+        page: 1,
+        pageSize: 20,
+        total: 0,
+        totalPages: 1,
+      },
+      activeItem: null,
+      audits: [],
+      panelMode: "details",
+      selectedHistoryId: "",
+      isLoading: false,
+    };
+  }
+
+  return state.fuelHistory;
+}
+
+function getFuelHistorySelectedKey(sourceKind, sourceId) {
+  return `${String(sourceKind || "").toUpperCase()}:${Number(sourceId || 0)}`;
+}
+
+function buildFuelHistoryQueryString({ page, resetPage = false } = {}) {
+  const historyState = getFuelHistoryState();
+  const query = new URLSearchParams();
+
+  if (refs.fuelFilterStorage?.value) query.set("storageId", refs.fuelFilterStorage.value);
+  if (refs.fuelFilterFrom?.value) query.set("from", toIsoDateTime(refs.fuelFilterFrom.value));
+  if (refs.fuelFilterTo?.value) query.set("to", toIsoDateTime(refs.fuelFilterTo.value));
+  if (refs.fuelFilterPlate?.value) query.set("plate", refs.fuelFilterPlate.value);
+  if (refs.fuelHistoryMovementKind?.value) query.set("movementKind", refs.fuelHistoryMovementKind.value);
+  if (refs.fuelHistoryUser?.value) query.set("user", refs.fuelHistoryUser.value);
+  if (refs.fuelHistoryDocument?.value?.trim()) query.set("document", refs.fuelHistoryDocument.value.trim());
+  if (refs.fuelHistoryStatus?.value) query.set("status", refs.fuelHistoryStatus.value);
+  if (refs.fuelHistorySearch?.value?.trim()) query.set("search", refs.fuelHistorySearch.value.trim());
+
+  const nextPage =
+    page !== undefined && page !== null
+      ? Math.max(1, Number(page) || 1)
+      : resetPage
+        ? 1
+        : Math.max(1, Number(historyState.pagination?.page || 1));
+  query.set("page", String(nextPage));
+  query.set("pageSize", String(Math.max(5, Number(historyState.pagination?.pageSize || 20))));
+
+  return query.toString();
+}
+
+function applyFuelHistoryResponse(response = {}) {
+  const historyState = getFuelHistoryState();
+  historyState.items = Array.isArray(response.items) ? response.items : [];
+  historyState.users = Array.isArray(response.users) ? response.users : [];
+  historyState.pagination = {
+    page: Number(response.pagination?.page || 1),
+    pageSize: Number(response.pagination?.pageSize || historyState.pagination?.pageSize || 20),
+    total: Number(response.pagination?.total || 0),
+    totalPages: Number(response.pagination?.totalPages || 1),
+  };
+
+  if (
+    historyState.selectedHistoryId &&
+    !historyState.items.some((item) => getFuelHistorySelectedKey(item.sourceKind, item.sourceId) === historyState.selectedHistoryId)
+  ) {
+    historyState.selectedHistoryId = historyState.activeItem
+      ? getFuelHistorySelectedKey(historyState.activeItem.sourceKind, historyState.activeItem.sourceId)
+      : "";
+  }
+
+  populateFuelHistoryUserOptions(historyState.users);
+}
+
+function populateFuelHistoryUserOptions(users = []) {
+  if (!refs.fuelHistoryUser) {
+    return;
+  }
+
+  const currentValue = refs.fuelHistoryUser.value || "";
+  const options = Array.from(new Set(users.filter(Boolean))).sort((left, right) => left.localeCompare(right));
+  refs.fuelHistoryUser.innerHTML = `<option value="">Todos</option>${options
+    .map((userName) => `<option value="${escapeHtml(userName)}">${escapeHtml(userName)}</option>`)
+    .join("")}`;
+  refs.fuelHistoryUser.value = options.includes(currentValue) ? currentValue : "";
+}
+
+async function refreshFuelHistory({ page, resetPage = false } = {}) {
+  if (!refs.fuelHistoryTableBody) {
+    return;
+  }
+
+  const historyState = getFuelHistoryState();
+  historyState.isLoading = true;
+  renderFuelHistoryTable();
+
+  const suffix = buildFuelHistoryQueryString({ page, resetPage });
+  const response = await api(`/api/fuel/history${suffix ? `?${suffix}` : ""}`);
+  applyFuelHistoryResponse(response);
+  historyState.isLoading = false;
+  renderFuelHistoryTable();
+}
+
+function clearFuelHistoryFilters() {
+  if (refs.fuelFilterStorage) refs.fuelFilterStorage.value = "";
+  if (refs.fuelFilterFrom) refs.fuelFilterFrom.value = "";
+  if (refs.fuelFilterTo) refs.fuelFilterTo.value = "";
+  if (refs.fuelFilterPlate) refs.fuelFilterPlate.value = "";
+  if (refs.fuelHistoryMovementKind) refs.fuelHistoryMovementKind.value = "";
+  if (refs.fuelHistoryUser) refs.fuelHistoryUser.value = "";
+  if (refs.fuelHistoryDocument) refs.fuelHistoryDocument.value = "";
+  if (refs.fuelHistoryStatus) refs.fuelHistoryStatus.value = "";
+  if (refs.fuelHistorySearch) refs.fuelHistorySearch.value = "";
+
+  const historyState = getFuelHistoryState();
+  historyState.selectedHistoryId = "";
+  historyState.activeItem = null;
+  historyState.audits = [];
+  historyState.panelMode = "details";
+
+  refreshFuel().catch((error) => showToast(error.message, "error"));
+}
+
+function buildFuelHistorySummaryText() {
+  const historyState = getFuelHistoryState();
+  const totalRows = Number(historyState.pagination?.total || 0);
+  const liters = historyState.items.reduce((total, item) => total + Number(item.quantity || 0), 0);
+  const cancelledCount = historyState.items.filter((item) => item.status === "CANCELLED").length;
+  const suspiciousCount = historyState.items.filter((item) => item.suspicious).length;
+  return `${formatNumber(totalRows)} registro(s) | ${formatLiters(liters)} L na pagina | ${cancelledCount} cancelado(s) | ${suspiciousCount} suspeito(s)`;
+}
+
+function buildFuelHistoryBadges(item) {
+  const badges = [statusBadge(item.movementKind)];
+  if (item.corrected) {
+    badges.push(statusBadge("CORRECTED"));
+  }
+  if (item.status === "CANCELLED") {
+    badges.push(statusBadge("CANCELLED"));
+  }
+  if (item.suspicious) {
+    badges.push(statusBadge("SUSPECT"));
+  }
+  return `<div class="fuel-history-kind-badges">${badges.join("")}</div>`;
+}
+
+function buildFuelHistoryRowActions(item) {
+  const sourceKind = escapeHtml(item.sourceKind);
+  const sourceId = escapeHtml(String(item.sourceId));
+  const buttons = [
+    `<button type="button" class="ghost-button" data-fuel-history-action="details" data-source-kind="${sourceKind}" data-source-id="${sourceId}">Ver detalhes</button>`,
+  ];
+
+  if (item.status !== "CANCELLED") {
+    buttons.push(
+      `<button type="button" class="ghost-button" data-fuel-history-action="edit" data-source-kind="${sourceKind}" data-source-id="${sourceId}">Editar</button>`,
+      `<button type="button" class="ghost-button" data-fuel-history-action="correct" data-source-kind="${sourceKind}" data-source-id="${sourceId}">Corrigir</button>`,
+      `<button type="button" class="ghost-button" data-fuel-history-action="cancel" data-source-kind="${sourceKind}" data-source-id="${sourceId}">Cancelar</button>`
+    );
+  }
+
+  return `<div class="fuel-history-row-actions">${buttons.join("")}</div>`;
+}
+
+function renderFuelHistoryTable() {
+  if (!refs.fuelHistoryTableBody) {
+    return;
+  }
+
+  const historyState = getFuelHistoryState();
+  if (refs.fuelHistorySummary) {
+    refs.fuelHistorySummary.textContent = historyState.isLoading
+      ? "Atualizando historico operacional..."
+      : buildFuelHistorySummaryText();
+  }
+
+  if (historyState.isLoading && !historyState.items.length) {
+    refs.fuelHistoryTableBody.innerHTML = emptyRow("Carregando historico operacional...", 13);
+    renderFuelHistoryPagination();
+    renderFuelHistoryDetailPanel();
+    return;
+  }
+
+  refs.fuelHistoryTableBody.innerHTML = historyState.items.length
+    ? historyState.items
+        .map((item) => {
+          const rowClasses = [
+            "fuel-history-row",
+            historyState.selectedHistoryId === getFuelHistorySelectedKey(item.sourceKind, item.sourceId) ? "fuel-history-row--selected" : "",
+            item.status === "CANCELLED" ? "fuel-history-row--cancelled" : "",
+            item.suspicious ? "fuel-history-row--suspicious" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const vehicleSummary = [item.plate || "-", item.vehicleLabel || ""].filter(Boolean).join(" | ");
+          const documentSummary = [item.document || "-", item.originLabel || ""].filter(Boolean).join(" | ");
+
+          return `
+            <tr class="${rowClasses}">
+              <td>${escapeHtml(formatDateTime(item.occurredAt))}</td>
+              <td>
+                <div class="fuel-history-row-main">
+                  <strong>${escapeHtml(formatFuelKindLabel(item.fuelKind || ""))}</strong>
+                  <span class="fuel-history-row-subtitle">${escapeHtml(item.storageName || "-")}</span>
+                </div>
+              </td>
+              <td>${buildFuelHistoryBadges(item)}</td>
+              <td>
+                <div class="fuel-history-row-main">
+                  <strong>${escapeHtml(item.plate || "-")}</strong>
+                  <span class="fuel-history-row-subtitle">${escapeHtml(item.vehicleLabel || "Sem veiculo informado")}</span>
+                </div>
+              </td>
+              <td>${escapeHtml(item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}</td>
+              <td>${escapeHtml(`${formatNumber(item.quantity || 0, 2, 2)} L`)}</td>
+              <td>${escapeHtml(formatCurrency(item.unitCost || 0))}</td>
+              <td>${escapeHtml(formatCurrency(item.totalCost || 0))}</td>
+              <td>${escapeHtml(`${formatNumber(item.balanceBefore || 0, 2, 2)} L`)}</td>
+              <td>${escapeHtml(`${formatNumber(item.balanceAfter || 0, 2, 2)} L`)}</td>
+              <td>
+                <div class="fuel-history-row-main">
+                  <strong>${escapeHtml(item.document || "-")}</strong>
+                  <span class="fuel-history-row-subtitle">${escapeHtml(item.originLabel || "-")}</span>
+                </div>
+              </td>
+              <td>${escapeHtml(item.userName || "-")}</td>
+              <td>${buildFuelHistoryRowActions(item)}</td>
+            </tr>
+          `;
+        })
+        .join("")
+    : emptyRow("Nenhuma movimentacao encontrada para os filtros informados.", 13);
+
+  renderFuelHistoryPagination();
+  renderFuelHistoryDetailPanel();
+  syncResponsiveTableLabels();
+}
+
+function renderFuelHistoryPagination() {
+  if (!refs.fuelHistoryPagination) {
+    return;
+  }
+
+  const historyState = getFuelHistoryState();
+  const page = Number(historyState.pagination?.page || 1);
+  const totalPages = Math.max(1, Number(historyState.pagination?.totalPages || 1));
+  const total = Number(historyState.pagination?.total || 0);
+
+  refs.fuelHistoryPagination.innerHTML = `
+    <span class="muted">Pagina ${escapeHtml(String(page))} de ${escapeHtml(String(totalPages))} | ${escapeHtml(
+      formatNumber(total)
+    )} registro(s)</span>
+    <div class="fuel-history-pagination-actions">
+      <button type="button" class="ghost-button" data-fuel-history-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Anterior</button>
+      <button type="button" class="ghost-button" data-fuel-history-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>Proxima</button>
+    </div>
+  `;
+}
+
+function renderFuelHistoryDetailPanel() {
+  if (!refs.fuelHistoryDetailPanel || !refs.fuelHistoryDetailContent || !refs.fuelHistoryDetailTitle) {
+    return;
+  }
+
+  const historyState = getFuelHistoryState();
+  const item = historyState.activeItem;
+  if (!item) {
+    refs.fuelHistoryDetailPanel.classList.add("hidden");
+    refs.fuelHistoryDetailContent.innerHTML = "";
+    return;
+  }
+
+  const mode = historyState.panelMode || "details";
+  refs.fuelHistoryDetailPanel.classList.remove("hidden");
+  refs.fuelHistoryDetailTitle.textContent =
+    mode === "cancel"
+      ? "Cancelar lancamento"
+      : mode === "edit" || mode === "correct"
+        ? "Correcao segura do lancamento"
+        : "Detalhes do lancamento";
+
+  if (historyState.isLoading) {
+    refs.fuelHistoryDetailContent.innerHTML = `<div class="fuel-history-empty"><strong>Carregando dados do lancamento...</strong></div>`;
+    return;
+  }
+
+  const panelActions = `
+    <div class="fuel-history-panel-actions">
+      <div class="fuel-history-inline-badges">${buildFuelHistoryBadges(item)}</div>
+      <div class="fuel-history-row-actions">
+        <button type="button" class="ghost-button" data-fuel-history-action="details" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(String(item.sourceId))}">Ver detalhes</button>
+        ${
+          item.status !== "CANCELLED"
+            ? `
+              <button type="button" class="ghost-button" data-fuel-history-action="edit" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(String(item.sourceId))}">Editar</button>
+              <button type="button" class="ghost-button" data-fuel-history-action="correct" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(String(item.sourceId))}">Corrigir</button>
+              <button type="button" class="ghost-button" data-fuel-history-action="cancel" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(String(item.sourceId))}">Cancelar</button>
+            `
+            : ""
+        }
+        <button type="button" class="ghost-button" data-fuel-history-action="close">Fechar</button>
+      </div>
+    </div>
+  `;
+
+  const detailsSection = `
+    <div class="fuel-history-detail-sections">
+      ${panelActions}
+      <div class="fuel-history-detail-grid">
+        ${buildFuelHistoryDetailCard("Data/hora", formatDateTime(item.occurredAt))}
+        ${buildFuelHistoryDetailCard("Combustivel", `${formatFuelKindLabel(item.fuelKind || "")} | ${item.storageName || "-"}`)}
+        ${buildFuelHistoryDetailCard("Placa / veiculo", [item.plate || "-", item.vehicleLabel || ""].filter(Boolean).join(" | "))}
+        ${buildFuelHistoryDetailCard("KM", item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}
+        ${buildFuelHistoryDetailCard("Documento", item.document || "-")}
+        ${buildFuelHistoryDetailCard("Origem", item.originLabel || "-")}
+        ${buildFuelHistoryDetailCard("Usuario", item.userName || "-")}
+        ${buildFuelHistoryDetailCard("Observacao", item.notes || "-")}
+      </div>
+      <div class="fuel-history-impact-grid">
+        ${buildFuelHistoryImpactCard("Litros", `${formatNumber(item.quantity || 0, 2, 2)} L`, item.suspicious ? "danger" : "")}
+        ${buildFuelHistoryImpactCard("Valor unitario", formatCurrency(item.unitCost || 0))}
+        ${buildFuelHistoryImpactCard("Valor total", formatCurrency(item.totalCost || 0))}
+        ${buildFuelHistoryImpactCard("Saldo antes", `${formatNumber(item.balanceBefore || 0, 2, 2)} L`)}
+        ${buildFuelHistoryImpactCard("Saldo depois", `${formatNumber(item.balanceAfter || 0, 2, 2)} L`)}
+        ${buildFuelHistoryImpactCard("Status", item.status === "CANCELLED" ? "Cancelado" : item.corrected ? "Corrigido" : "Ativo")}
+      </div>
+      ${
+        item.cancelReason
+          ? `<div class="fuel-history-detail-card"><strong>Motivo do cancelamento</strong><span>${escapeHtml(item.cancelReason)}</span></div>`
+          : ""
+      }
+      ${
+        item.suspicious && Array.isArray(item.suspiciousReasons) && item.suspiciousReasons.length
+          ? `<div class="fuel-history-detail-card"><strong>Motivos de suspeita</strong><span>${escapeHtml(item.suspiciousReasons.join(" | "))}</span></div>`
+          : ""
+      }
+      ${buildFuelHistoryAuditSection(historyState.audits)}
+      ${buildFuelHistoryPayloadSection(item)}
+    </div>
+  `;
+
+  refs.fuelHistoryDetailContent.innerHTML =
+    mode === "cancel"
+      ? `${panelActions}${buildFuelHistoryCancelForm(item)}`
+      : mode === "edit" || mode === "correct"
+        ? `${panelActions}${buildFuelHistoryEditForm(item, mode)}`
+        : detailsSection;
+}
+
+function buildFuelHistoryDetailCard(label, value) {
+  return `
+    <article class="fuel-history-detail-card">
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(value || "-")}</span>
+    </article>
+  `;
+}
+
+function buildFuelHistoryImpactCard(label, value, tone = "") {
+  return `
+    <article class="fuel-history-impact-card ${tone ? `fuel-history-impact-card--${tone}` : ""}">
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(value || "-")}</span>
+    </article>
+  `;
+}
+
+function buildFuelHistoryAuditSection(audits = []) {
+  if (!audits.length) {
+    return `<div class="fuel-history-empty"><strong>Sem eventos de auditoria ainda.</strong><p class="muted">As proximas correcoes e cancelamentos ficam registrados aqui.</p></div>`;
+  }
+
+  return `
+    <section class="fuel-history-detail-sections">
+      <div class="card-title">
+        <span class="eyebrow">Auditoria</span>
+        <h3>Historico de alteracoes</h3>
+      </div>
+      <div class="fuel-history-audit-list">
+        ${audits
+          .map(
+            (audit) => `
+              <article class="fuel-history-audit-item">
+                <header>
+                  <strong>${escapeHtml(audit.actionType || "EDIT")}</strong>
+                  <span class="muted">${escapeHtml(`${audit.userName || "Usuario nao identificado"} | ${formatDateTime(audit.createdAt)}`)}</span>
+                </header>
+                <p><strong>Motivo:</strong> ${escapeHtml(audit.reason || "-")}</p>
+                ${
+                  audit.oldPayload || audit.newPayload
+                    ? `
+                      <div class="fuel-history-detail-grid">
+                        ${
+                          audit.oldPayload
+                            ? `<article class="fuel-history-json-card"><strong>Valor antigo</strong><pre>${escapeHtml(
+                                JSON.stringify(audit.oldPayload, null, 2)
+                              )}</pre></article>`
+                            : ""
+                        }
+                        ${
+                          audit.newPayload
+                            ? `<article class="fuel-history-json-card"><strong>Valor novo</strong><pre>${escapeHtml(
+                                JSON.stringify(audit.newPayload, null, 2)
+                              )}</pre></article>`
+                            : ""
+                        }
+                      </div>
+                    `
+                    : ""
+                }
+              </article>
+            `
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
+function buildFuelHistoryPayloadSection(item) {
+  const blocks = [];
+  if (item.rawPayload) {
+    blocks.push(buildFuelHistoryJsonCard("Dados originais informados", item.rawPayload));
+  }
+  if (item.normalizedPayload) {
+    blocks.push(buildFuelHistoryJsonCard("Dados normalizados salvos", item.normalizedPayload));
+  }
+
+  return blocks.length ? `<section class="fuel-history-detail-sections">${blocks.join("")}</section>` : "";
+}
+
+function buildFuelHistoryJsonCard(title, payload) {
+  return `
+    <article class="fuel-history-json-card">
+      <strong>${escapeHtml(title)}</strong>
+      <pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+    </article>
+  `;
+}
+
+function buildFuelHistoryEditForm(item, mode = "edit") {
+  const isInventoryEntry = item.sourceKind === "INVENTORY_MOVEMENT";
+  const isAdjustment = item.movementKind === "ADJUSTMENT";
+  return `
+    <form class="fuel-history-form" data-fuel-history-submit="edit" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(
+      String(item.sourceId)
+    )}">
+      <p class="fuel-history-detail-hint">Toda correcao exige motivo e gera auditoria com valor antigo e novo.</p>
+      <div class="form-grid">
+        ${
+          isInventoryEntry
+            ? `
+              <label>
+                <span>Quantidade (L)</span>
+                <input type="text" name="quantity" inputmode="decimal" value="${escapeHtml(formatDecimalInputValue(item.quantity || 0, 2))}" required />
+              </label>
+              <label>
+                <span>Valor unitario</span>
+                <input type="text" name="unitCost" inputmode="decimal" value="${escapeHtml(formatDecimalInputValue(item.unitCost || 0, 2))}" />
+              </label>
+              <label>
+                <span>Documento</span>
+                <input type="text" name="document" value="${escapeHtml(item.document || "")}" />
+              </label>
+              <label>
+                <span>Fornecedor</span>
+                <input type="text" name="supplierName" value="${escapeHtml(item.supplierName || "")}" />
+              </label>
+            `
+            : isAdjustment
+              ? `
+                <label class="full-width">
+                  <span>Observacao / justificativa</span>
+                  <textarea name="notes" rows="4">${escapeHtml(item.notes || "")}</textarea>
+                </label>
+              `
+              : `
+                <label>
+                  <span>KM</span>
+                  <input type="text" name="odometerKm" inputmode="decimal" value="${escapeHtml(
+                    item.odometerKm === null || item.odometerKm === undefined ? "" : formatDecimalInputValue(item.odometerKm, 0)
+                  )}" />
+                </label>
+                <label>
+                  <span>Litros</span>
+                  <input type="text" name="quantity" inputmode="decimal" value="${escapeHtml(formatDecimalInputValue(item.quantity || 0, 2))}" required />
+                </label>
+                <label>
+                  <span>Documento</span>
+                  <input type="text" name="document" value="${escapeHtml(item.document || "")}" />
+                </label>
+                <label class="full-width">
+                  <span>Observacao</span>
+                  <textarea name="notes" rows="4">${escapeHtml(item.notes || "")}</textarea>
+                </label>
+              `
+        }
+        ${
+          isInventoryEntry
+            ? `<label class="full-width"><span>Observacao</span><textarea name="notes" rows="4">${escapeHtml(item.notes || "")}</textarea></label>`
+            : ""
+        }
+        <label class="full-width">
+          <span>Motivo obrigatorio da correcao</span>
+          <textarea name="reason" rows="3" placeholder="${
+            mode === "correct" ? "Explique a divergencia encontrada." : "Explique por que este lancamento esta sendo alterado."
+          }" required></textarea>
+        </label>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="primary-button">Salvar correcao</button>
+        <button type="button" class="ghost-button" data-fuel-history-action="details" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(
+          String(item.sourceId)
+        )}">Voltar</button>
+      </div>
+    </form>
+  `;
+}
+
+function buildFuelHistoryCancelForm(item) {
+  return `
+    <form class="fuel-history-form" data-fuel-history-submit="cancel" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(
+      String(item.sourceId)
+    )}">
+      <div class="fuel-history-impact-grid">
+        ${buildFuelHistoryImpactCard("Saldo antes", `${formatNumber(item.balanceBefore || 0, 2, 2)} L`)}
+        ${buildFuelHistoryImpactCard("Saldo depois atual", `${formatNumber(item.balanceAfter || 0, 2, 2)} L`, "danger")}
+        ${buildFuelHistoryImpactCard("Litros do lancamento", `${formatNumber(item.quantity || 0, 2, 2)} L`)}
+      </div>
+      <label class="full-width">
+        <span>Motivo obrigatorio do cancelamento</span>
+        <textarea name="reason" rows="4" placeholder="Descreva por que este lancamento deve ser cancelado." required></textarea>
+      </label>
+      <div class="form-actions">
+        <button type="submit" class="primary-button">Confirmar cancelamento</button>
+        <button type="button" class="ghost-button" data-fuel-history-action="details" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(
+          String(item.sourceId)
+        )}">Voltar</button>
+      </div>
+    </form>
+  `;
+}
+
+function getPreviousFuelRecordForPlate(item) {
+  if (!item?.plate) {
+    return null;
+  }
+
+  return state.fuelRecords
+    .filter(
+      (record) =>
+        normalizeClientPlateKey(record.plate || "") === normalizeClientPlateKey(item.plate || "") &&
+        Number(record.id) !== Number(item.sourceId) &&
+        record.odometerKm !== null &&
+        record.odometerKm !== undefined &&
+        String(record.occurredAt || "") < String(item.occurredAt || "")
+    )
+    .sort(
+      (left, right) =>
+        String(right.occurredAt || "").localeCompare(String(left.occurredAt || "")) || Number(right.id) - Number(left.id)
+    )[0] || null;
+}
+
+function buildFuelHistoryWarnings(item, payload) {
+  const warnings = [];
+  if (payload.quantity !== undefined && Number.isFinite(payload.quantity) && payload.quantity > 500) {
+    warnings.push("Litros muito altos. Confirme se o lancamento esta correto.");
+  }
+  if (payload.unitCost !== undefined && Number.isFinite(payload.unitCost) && payload.unitCost > 20) {
+    warnings.push("Valor unitario acima do padrao. Confirme antes de salvar.");
+  }
+  if (payload.odometerKm !== undefined && payload.odometerKm !== null && Number.isFinite(payload.odometerKm)) {
+    const previousRecord = getPreviousFuelRecordForPlate(item);
+    if (previousRecord && payload.odometerKm < Number(previousRecord.odometerKm || 0)) {
+      warnings.push(`KM menor que o abastecimento anterior da placa ${item.plate}.`);
+    }
+  }
+  return warnings;
+}
+
+async function openFuelHistoryItem(sourceKind, sourceId, mode = "details") {
+  const historyState = getFuelHistoryState();
+  historyState.selectedHistoryId = getFuelHistorySelectedKey(sourceKind, sourceId);
+  historyState.panelMode = mode;
+  historyState.isLoading = true;
+  renderFuelHistoryTable();
+
+  const response = await api(`/api/fuel/history/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}`);
+  historyState.activeItem = response.item || null;
+  historyState.audits = Array.isArray(response.audits) ? response.audits : [];
+  historyState.selectedHistoryId = historyState.activeItem
+    ? getFuelHistorySelectedKey(historyState.activeItem.sourceKind, historyState.activeItem.sourceId)
+    : historyState.selectedHistoryId;
+  historyState.isLoading = false;
+  renderFuelHistoryTable();
+  scrollToElement(refs.fuelHistoryDetailPanel);
+}
+
+function closeFuelHistoryPanel() {
+  const historyState = getFuelHistoryState();
+  historyState.activeItem = null;
+  historyState.audits = [];
+  historyState.panelMode = "details";
+  historyState.selectedHistoryId = "";
+  historyState.isLoading = false;
+  renderFuelHistoryTable();
+}
+
+function handleFuelHistoryActionClick(event) {
+  const actionButton = event.target.closest("[data-fuel-history-action]");
+  if (!actionButton) {
+    return;
+  }
+
+  const action = actionButton.dataset.fuelHistoryAction;
+  if (action === "close") {
+    closeFuelHistoryPanel();
+    return;
+  }
+
+  const sourceKind = actionButton.dataset.sourceKind;
+  const sourceId = actionButton.dataset.sourceId;
+  if (!sourceKind || !sourceId) {
+    return;
+  }
+
+  const nextMode =
+    action === "edit" ? "edit" : action === "correct" ? "correct" : action === "cancel" ? "cancel" : "details";
+  openFuelHistoryItem(sourceKind, sourceId, nextMode).catch((error) => showToast(error.message, "error"));
+}
+
+function handleFuelHistoryPaginationClick(event) {
+  const button = event.target.closest("[data-fuel-history-page]");
+  if (!button || button.disabled) {
+    return;
+  }
+
+  const nextPage = Number(button.dataset.fuelHistoryPage || 1);
+  refreshFuelHistory({ page: nextPage }).catch((error) => showToast(error.message, "error"));
+}
+
+async function handleFuelHistoryDetailSubmit(event) {
+  const form = event.target.closest("[data-fuel-history-submit]");
+  if (!form) {
+    return;
+  }
+
+  event.preventDefault();
+  const historyState = getFuelHistoryState();
+  const item = historyState.activeItem;
+  if (!item) {
+    showToast("Nenhum lancamento selecionado.", "error");
+    return;
+  }
+
+  const action = form.dataset.fuelHistorySubmit;
+  const sourceKind = form.dataset.sourceKind;
+  const sourceId = form.dataset.sourceId;
+  const reason = normalizeText(form.elements.reason?.value);
+  if (!reason) {
+    showToast("Informe o motivo obrigatorio da alteracao.", "error");
+    return;
+  }
+
+  if (action === "cancel") {
+    try {
+      const response = await api(`/api/fuel/history/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}/cancel`, {
+        method: "POST",
+        body: { reason },
+      });
+      historyState.activeItem = response.item || null;
+      historyState.audits = Array.isArray(response.audits) ? response.audits : [];
+      historyState.panelMode = "details";
+      await finalizeFuelHistoryMutation(historyState.activeItem);
+      renderFuelHistoryTable();
+      showToast("Lancamento cancelado com rastreabilidade preservada.");
+    } catch (error) {
+      showToast(error.message, "error");
+    }
+    return;
+  }
+
+  const payload = { reason };
+
+  try {
+    if (item.sourceKind === "INVENTORY_MOVEMENT") {
+      payload.quantity = readBrazilianNumberField(form.elements.quantity, {
+        label: "quantidade",
+        required: true,
+        min: 0.000001,
+      });
+      payload.unitCost = readBrazilianNumberField(form.elements.unitCost, {
+        label: "valor unitario",
+        min: 0,
+      }) ?? 0;
+      payload.document = normalizeText(form.elements.document?.value);
+      payload.supplierName = normalizeText(form.elements.supplierName?.value);
+      payload.notes = normalizeText(form.elements.notes?.value);
+    } else if (item.movementKind === "ADJUSTMENT") {
+      payload.notes = normalizeText(form.elements.notes?.value);
+    } else {
+      payload.quantity = readBrazilianNumberField(form.elements.quantity, {
+        label: "litros",
+        required: true,
+        min: 0.000001,
+      });
+      const nextOdometerKm = readBrazilianNumberField(form.elements.odometerKm, {
+        label: "KM",
+        min: 0,
+      });
+      payload.odometerKm = nextOdometerKm === null || nextOdometerKm === undefined ? "" : nextOdometerKm;
+      payload.document = normalizeText(form.elements.document?.value);
+      payload.notes = normalizeText(form.elements.notes?.value);
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+    return;
+  }
+
+  const warnings = buildFuelHistoryWarnings(item, payload);
+  if (warnings.length && !window.confirm(`${warnings.join("\n")}\n\nDeseja continuar com a correcao?`)) {
+    return;
+  }
+
+  try {
+    const response = await api(`/api/fuel/history/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}`, {
+      method: "PUT",
+      body: payload,
+    });
+    historyState.activeItem = response.item || null;
+    historyState.audits = Array.isArray(response.audits) ? response.audits : [];
+    historyState.panelMode = "details";
+    await finalizeFuelHistoryMutation(historyState.activeItem);
+    renderFuelHistoryTable();
+    showToast("Lancamento corrigido com auditoria registrada.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function finalizeFuelHistoryMutation(item) {
+  await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+
+  if (
+    item?.plate &&
+    state.dossier?.selectedPlate &&
+    normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(item.plate)
+  ) {
+    await loadVehicleDossierByPlate(item.plate, { silent: true });
+  }
+}
+
+async function refreshFuel() {
+  const query = new URLSearchParams();
+  if (refs.fuelFilterStorage?.value) query.set("storageId", refs.fuelFilterStorage.value);
+  if (refs.fuelFilterFrom?.value) query.set("from", toIsoDateTime(refs.fuelFilterFrom.value));
+  if (refs.fuelFilterTo?.value) query.set("to", toIsoDateTime(refs.fuelFilterTo.value));
+
+  const fuelSuffix = query.toString() ? `?${query.toString()}` : "";
+  const historySuffix = buildFuelHistoryQueryString();
+
+  const [response, historyResponse] = await Promise.all([
+    api(`/api/fuel${fuelSuffix}`),
+    api(`/api/fuel/history${historySuffix ? `?${historySuffix}` : ""}`),
+  ]);
+
+  state.fuelRecords = response.items || [];
+  state.fuelStorages = response.storages || [];
+  applyFuelHistoryResponse(historyResponse);
+  renderFuel();
+  renderFuelStorageOptions();
+  renderFuelVehicleOptions();
+  updateFuelStockProductSelect();
+  updateKardexProductSelect();
+  syncFuelFormState();
+  renderVehicles();
+}
+
+function renderFuel() {
+  const analytics = buildFuelPageAnalytics(state.fuelRecords);
+  const currentPlate = refs.fuelFilterPlate?.value || "";
+  if (refs.fuelFilterPlate) {
+    refs.fuelFilterPlate.innerHTML = `<option value="">Todos os veiculos</option>${analytics.plates
+      .map((plate) => `<option value="${escapeHtml(plate)}">${escapeHtml(plate)}</option>`)
+      .join("")}`;
+    refs.fuelFilterPlate.value = analytics.plates.includes(currentPlate) ? currentPlate : "";
+  }
+
+  refs.fuelKpiGrid.innerHTML = [
+    {
+      label: "Abastecimentos",
+      value: formatNumber(analytics.monthExitRecords.length),
+      note: "Saidas no mes atual",
+      icon: "fuel",
+      tone: "brand",
+    },
+    {
+      label: "Total de litros",
+      value: `${formatLiters(analytics.monthLiters)} L`,
+      note: "Consumo do mes atual",
+      icon: "analytics",
+      tone: "neutral",
+    },
+    {
+      label: "Media por lancamento",
+      value: `${formatLiters(analytics.avgLiters)} L`,
+      note: "Considerando apenas saidas",
+      icon: "dashboard",
+      tone: "warning",
+    },
+    {
+      label: "Media km/L",
+      value: formatKmPerLiter(analytics.avgKmPerLiter),
+      note: "Com base nos hodometros informados",
+      icon: "efficiency",
+      tone: "success",
+    },
+  ]
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card",
+        label: item.label,
+        value: item.value,
+        note: item.note,
+        icon: item.icon,
+        tone: item.tone,
+      })
+    )
+    .join("");
+
+  refs.fuelStocksGrid.innerHTML = state.fuelStorages.length
+    ? state.fuelStorages
+        .map((storage) => {
+          const isEmpty = Number(storage.currentBalance || 0) <= 0;
+          const isLow =
+            !isEmpty &&
+            Number(storage.minBalance || 0) > 0 &&
+            Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0);
+          const statusLabel = isEmpty ? "Sem saldo" : isLow ? "Abaixo do minimo" : "Operacional";
+          const toneClass = isEmpty ? "is-empty" : isLow ? "is-low" : "is-ok";
+
+          return `
+            <article class="fuel-stock-card ${toneClass}">
+              <div class="fuel-stock-card__top">
+                <span class="fuel-stock-card__kind">${escapeHtml(formatFuelKindLabel(storage.fuelKind))}</span>
+                <span class="fuel-stock-card__status">${escapeHtml(statusLabel)}</span>
+              </div>
+              <div class="fuel-stock-card__value-row">
+                <strong class="fuel-stock-card__value">${escapeHtml(formatLiters(storage.currentBalance))}</strong>
+                <span class="fuel-stock-card__unit">L</span>
+              </div>
+              <div class="fuel-stock-card__footer">
+                <strong>${escapeHtml(storage.name)}</strong>
+                <span>Saldo disponivel agora</span>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="stack-item"><strong>Nenhum estoque configurado</strong><p class="muted">Cadastre ou revise os estoques principais de combustivel.</p></div>`;
+
+  renderFuelHistoryTable();
+
+  refs.fuelConsumptionChart.innerHTML = renderConsumptionChart({
+    consumptionSeries: analytics.consumptionSeries,
+    totalConsumptionLiters: analytics.consumptionSeries.reduce((total, item) => total + item.total, 0),
+    peakConsumption: analytics.peakConsumption,
+    fuelMix: analytics.fuelMix,
+  });
+
+  refs.fuelTopVehicles.innerHTML = renderMeterList(
+    analytics.topVehicles.map((item) => ({
+      label: item.plate,
+      value: item.liters,
+      count: item.count,
+    })),
+    {
+      emptyTitle: "Sem consumo no periodo",
+      emptyDescription: "Assim que houver saidas registradas, os veiculos de maior consumo aparecem aqui.",
+      valueFormatter: (value) => `${formatLiters(value)} L`,
+      secondaryFormatter: (item) => `${item.count} lancamento(s)`,
+    }
+  );
+
+  refs.fuelSideInsights.innerHTML = buildFuelSideInsights(analytics);
+  syncResponsiveTableLabels();
+}
+
+function ensureFuelUiState() {
+  if (!state.fuelUi) {
+    state.fuelUi = {
+      composerMode: "single",
+      batchRows: [],
+      batchCounter: 0,
+      lastBatchResult: null,
+    };
+  }
+
+  if (!Array.isArray(state.fuelUi.batchRows)) {
+    state.fuelUi.batchRows = [];
+  }
+
+  if (!Number.isInteger(state.fuelUi.batchCounter)) {
+    state.fuelUi.batchCounter = 0;
+  }
+
+  return state.fuelUi;
+}
+
+function nextFuelBatchRowId() {
+  const ui = ensureFuelUiState();
+  ui.batchCounter += 1;
+  return `fuel-batch-${ui.batchCounter}`;
+}
+
+function normalizeFuelDateTimeInput(value, fallback = currentLocalDateTime()) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return fallback;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(normalized)) {
+    return normalized.slice(0, 16);
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(normalized)) {
+    return normalized.replace(" ", "T").slice(0, 16);
+  }
+
+  const brazilianMatch = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+  if (brazilianMatch) {
+    const [, day, month, year, hour = "00", minute = "00"] = brazilianMatch;
+    return `${year}-${month}-${day}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  const parsed = new Date(normalized);
+  if (Number.isFinite(parsed.getTime())) {
+    return toLocalDateTimeInput(parsed.toISOString()).slice(0, 16);
+  }
+
+  return fallback;
+}
+
+function createFuelBatchRow(partial = {}) {
+  return {
+    id: partial.id || nextFuelBatchRowId(),
+    plate: String(partial.plate || "").trim().toUpperCase(),
+    storageId: partial.storageId ? String(partial.storageId) : "",
+    odometerKm: String(partial.odometerKm || "").trim(),
+    quantity: String(partial.quantity || "").trim(),
+    occurredAt: normalizeFuelDateTimeInput(partial.occurredAt, currentLocalDateTime()),
+    notes: String(partial.notes || "").trim(),
+  };
+}
+
+function getFuelStorageById(storageId) {
+  return state.fuelStorages.find((item) => String(item.id) === String(storageId || "")) || null;
+}
+
+function getFuelStorageByKind(fuelKind) {
+  const normalizedFuelKind = normalizeClientFuelKind(fuelKind, "");
+  if (!normalizedFuelKind) {
+    return null;
+  }
+  return state.fuelStorages.find((item) => normalizeClientFuelKind(item.fuelKind, "") === normalizedFuelKind) || null;
+}
+
+function resolveFuelVehicleByPlate(value) {
+  const normalizedKey = normalizeClientPlateKey(value);
+  if (!normalizedKey) {
+    return null;
+  }
+  return (
+    state.vehicles.find(
+      (item) => item.active && normalizeClientPlateKey(item.plate) === normalizedKey
+    ) || null
+  );
+}
+
+function getPreferredFuelStorageForVehicle(vehicle) {
+  if (!vehicle) {
+    return state.fuelStorages[0] || null;
+  }
+  if (vehicle.supportsS10 && !vehicle.supportsS500) {
+    return getFuelStorageByKind("S10") || state.fuelStorages[0] || null;
+  }
+  if (vehicle.supportsS500 && !vehicle.supportsS10) {
+    return getFuelStorageByKind("S500") || state.fuelStorages[0] || null;
+  }
+  return getFuelStorageByKind(vehicle.fuelProfile) || getFuelStorageByKind("S500") || state.fuelStorages[0] || null;
+}
+
+function doesVehicleSupportStorage(vehicle, storage) {
+  if (!vehicle || !storage) {
+    return true;
+  }
+  const normalizedFuelKind = normalizeClientFuelKind(storage.fuelKind, "");
+  if (normalizedFuelKind === "S10") {
+    return Boolean(vehicle.supportsS10);
+  }
+  if (normalizedFuelKind === "S500") {
+    return Boolean(vehicle.supportsS500);
+  }
+  return true;
+}
+
+function ensureFuelBatchRows(minimum = 1) {
+  const ui = ensureFuelUiState();
+  while (ui.batchRows.length < minimum) {
+    ui.batchRows.push(createFuelBatchRow());
+  }
+  return ui.batchRows;
+}
+
+function fuelBatchRowHasContent(row) {
+  return Boolean(
+    String(row?.plate || "").trim() ||
+      String(row?.storageId || "").trim() ||
+      String(row?.odometerKm || "").trim() ||
+      String(row?.quantity || "").trim() ||
+      String(row?.notes || "").trim()
+  );
+}
+
+function ensureTrailingFuelBatchRow() {
+  const rows = ensureFuelBatchRows(1);
+  const lastRow = rows[rows.length - 1];
+  if (!lastRow || fuelBatchRowHasContent(lastRow)) {
+    rows.push(createFuelBatchRow());
+  }
+  return rows;
+}
+
+function autofillFuelBatchRow(row) {
+  const nextRow = createFuelBatchRow({
+    ...row,
+    id: row.id || nextFuelBatchRowId(),
+    occurredAt: row.occurredAt || currentLocalDateTime(),
+  });
+  const vehicle = resolveFuelVehicleByPlate(nextRow.plate);
+  const selectedStorage = getFuelStorageById(nextRow.storageId);
+
+  if (vehicle && (!selectedStorage || !doesVehicleSupportStorage(vehicle, selectedStorage))) {
+    const preferredStorage = getPreferredFuelStorageForVehicle(vehicle);
+    nextRow.storageId = preferredStorage ? String(preferredStorage.id) : "";
+  }
+
+  return nextRow;
+}
+
+function setFuelComposerMode(mode) {
+  const ui = ensureFuelUiState();
+  ui.composerMode = mode === "batch" ? "batch" : "single";
+  renderFuelComposerMode();
+  if (ui.composerMode === "batch") {
+    ensureTrailingFuelBatchRow();
+    renderFuelBatchComposer();
+    refs.fuelBatchPanel?.scrollIntoView?.({ block: "start" });
+  }
+}
+
+function renderFuelComposerMode() {
+  const ui = ensureFuelUiState();
+  refs.fuelComposerModeButtons?.querySelectorAll("[data-fuel-composer-mode]").forEach((button) => {
+    const isActive = button.dataset.fuelComposerMode === ui.composerMode;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  });
+
+  if (refs.fuelBatchPanel) {
+    refs.fuelBatchPanel.classList.toggle("hidden", ui.composerMode !== "batch");
+  }
+}
+
+function formatFuelOriginLabel(origin) {
+  return origin === "BATCH" ? "Lote" : "Manual";
+}
+
+function formatFuelRecordFlowLabel(record = {}) {
+  if (record.operationKind === "ADJUSTMENT") {
+    return record.adjustmentKind === "INCREASE" ? "Ajuste +" : "Ajuste -";
+  }
+  if (record.type === "EXIT") {
+    return "Operacional";
+  }
+  return "Entrada";
+}
+
+function calculateClientFuelBalance(balance, type, quantity) {
+  const numericBalance = toClientNumber(balance);
+  const numericQuantity = toClientNumber(quantity);
+  const normalizedType = String(type || "").trim().toUpperCase();
+  return normalizedType === "EXIT" || normalizedType === "OUT" ? numericBalance - numericQuantity : numericBalance + numericQuantity;
+}
+
+function handleFuelComposerModeClick(event) {
+  const button = event.target.closest("[data-fuel-composer-mode]");
+  if (!button) {
+    return;
+  }
+  setFuelComposerMode(button.dataset.fuelComposerMode);
+}
+
+function handleFuelVehicleInputChange(options = {}) {
+  if (!refs.fuelVehicleInput || !refs.fuelForm) {
+    return;
+  }
+
+  const vehicle = resolveFuelVehicleByPlate(refs.fuelVehicleInput.value);
+  if (refs.fuelVehicleSelect) {
+    refs.fuelVehicleSelect.value = vehicle ? String(vehicle.id) : "";
+  }
+
+  if (vehicle) {
+    refs.fuelVehicleInput.value = vehicle.plate;
+    const currentStorage = getFuelStorageById(refs.fuelStorageSelect?.value || "");
+    if (!currentStorage || !doesVehicleSupportStorage(vehicle, currentStorage)) {
+      const preferredStorage = getPreferredFuelStorageForVehicle(vehicle);
+      if (preferredStorage && refs.fuelStorageSelect) {
+        refs.fuelStorageSelect.value = String(preferredStorage.id);
+      }
+    }
+  }
+
+  if (!options.silent) {
+    syncFuelFormState();
+  }
+}
+
+function renderFuelVehicleOptions() {
+  const activeVehicles = state.vehicles
+    .filter((item) => item.active)
+    .slice()
+    .sort((left, right) => String(left.plate || "").localeCompare(String(right.plate || "")));
+  const optionsHtml = activeVehicles
+    .map(
+      (vehicle) =>
+        `<option value="${escapeHtml(vehicle.plate)}">${escapeHtml(vehicle.displayName || [vehicle.plate, vehicle.brand, vehicle.model].filter(Boolean).join(" - "))}</option>`
+    )
+    .join("");
+
+  if (refs.fuelVehicleList) {
+    refs.fuelVehicleList.innerHTML = optionsHtml;
+  }
+  if (refs.fuelBatchPlateList) {
+    refs.fuelBatchPlateList.innerHTML = optionsHtml;
+  }
+
+  handleFuelVehicleInputChange({ silent: true });
+  renderFuelBatchComposer();
+}
+
+function syncFuelFormState() {
+  if (!refs.fuelForm) {
+    return;
+  }
+
+  const movementType = refs.fuelForm.elements.type.value || "OPERATIONAL_EXIT";
+  const isStockEntry = movementType === "STOCK_ENTRY";
+  const isOperationalExit = movementType === "OPERATIONAL_EXIT";
+  const isAdjustment = movementType === "BALANCE_ADJUSTMENT";
+  const fieldVisibility = {
+    stockProduct: isStockEntry,
+    storage: !isStockEntry,
+    plate: isOperationalExit,
+    odometer: isOperationalExit,
+    quantity: true,
+    unitCost: isStockEntry,
+    document: isStockEntry,
+    supplier: isStockEntry,
+    adjustmentType: isAdjustment,
+    occurredAt: true,
+    notes: true,
+  };
+
+  refs.fuelForm.querySelectorAll("[data-fuel-field]").forEach((field) => {
+    const fieldKey = field.dataset.fuelField;
+    const isVisible = Boolean(fieldVisibility[fieldKey]);
+    field.classList.toggle("hidden", !isVisible);
+    field.querySelectorAll("input, select, textarea").forEach((input) => {
+      if (input.name === "quantity" || input.name === "occurredAt" || input.name === "notes") {
+        input.disabled = false;
+        return;
+      }
+      input.disabled = !isVisible;
+    });
+  });
+
+  if (refs.fuelVehicleInput) {
+    refs.fuelVehicleInput.required = isOperationalExit;
+    if (!isOperationalExit) {
+      refs.fuelVehicleInput.value = "";
+    }
+  }
+  if (refs.fuelVehicleSelect) {
+    refs.fuelVehicleSelect.value = isOperationalExit ? refs.fuelVehicleSelect.value : "";
+  }
+
+  refs.fuelForm.elements.quantity.required = true;
+  refs.fuelForm.elements.occurredAt.required = true;
+  refs.fuelForm.elements.productId.required = isStockEntry;
+  refs.fuelForm.elements.storageId.required = !isStockEntry;
+  refs.fuelForm.elements.adjustmentType.required = isAdjustment;
+  refs.fuelForm.elements.notes.required = isAdjustment;
+
+  if (!isOperationalExit) {
+    refs.fuelForm.elements.odometerKm.value = "";
+  }
+
+  if (isStockEntry) {
+    refs.fuelNotesLabel.textContent = "Observacao";
+    refs.fuelForm.elements.notes.placeholder = "Observacoes da entrada no estoque";
+    refs.fuelContextHint.textContent = "Entrada no estoque atualiza o Kardex de combustivel, custo unitario e saldo do tanque vinculado.";
+  } else if (isAdjustment) {
+    refs.fuelNotesLabel.textContent = "Justificativa";
+    refs.fuelForm.elements.notes.placeholder = "Explique o motivo do ajuste de saldo";
+    refs.fuelContextHint.textContent = "Use ajuste apenas para acertos manuais. O sistema registra o tipo de ajuste e a trilha bruta/normalizada.";
+  } else {
+    refs.fuelNotesLabel.textContent = "Observacao";
+    refs.fuelForm.elements.notes.placeholder = "Observacoes do abastecimento";
+    refs.fuelContextHint.textContent = "Placa com autocomplete, combustivel sugerido automaticamente e alerta preventivo para litros fora do padrao.";
+    handleFuelVehicleInputChange({ silent: true });
+  }
+
+  renderFuelComposerMode();
+}
+
+function resetFuelForm() {
+  if (!refs.fuelForm) {
+    return;
+  }
+
+  refs.fuelForm.reset();
+  refs.fuelForm.elements.type.value = "OPERATIONAL_EXIT";
+  refs.fuelForm.elements.occurredAt.value = currentLocalDateTime();
+  if (refs.fuelVehicleSelect) {
+    refs.fuelVehicleSelect.value = "";
+  }
+  if (refs.fuelVehicleInput) {
+    refs.fuelVehicleInput.value = "";
+  }
+  syncFuelFormState();
+}
+
+function normalizeFuelBatchHeader(cells = []) {
+  const headerMap = {};
+  cells.forEach((cell, index) => {
+    const key = normalizeKey(cell);
+    if (key.includes("placa")) {
+      headerMap.plate = index;
+    } else if (key === "km" || key.includes("hodomet") || key.includes("odomet")) {
+      headerMap.odometerKm = index;
+    } else if (key.includes("litro") || key.includes("quantidade") || key === "qtd") {
+      headerMap.quantity = index;
+    } else if (key.includes("combust")) {
+      headerMap.fuelKind = index;
+    } else if (key.includes("data") || key.includes("hora")) {
+      headerMap.occurredAt = index;
+    } else if (key.includes("obs")) {
+      headerMap.notes = index;
+    }
+  });
+
+  return headerMap.plate !== undefined && headerMap.quantity !== undefined ? headerMap : null;
+}
+
+function looksLikeFuelCell(value) {
+  return Boolean(normalizeClientFuelKind(value, "")) || /diesel|gasolina|etanol|s-?10|s-?500/i.test(String(value || ""));
+}
+
+function inferFuelBatchColumnMap(cells = []) {
+  if (cells.length <= 4) {
+    return { plate: 0, odometerKm: 1, quantity: 2, notes: 3 };
+  }
+
+  if (cells.length === 5) {
+    if (looksLikeFuelCell(cells[1])) {
+      return { plate: 0, fuelKind: 1, odometerKm: 2, quantity: 3, notes: 4 };
+    }
+    return { plate: 0, odometerKm: 1, quantity: 2, occurredAt: 3, notes: 4 };
+  }
+
+  return { plate: 0, fuelKind: 1, odometerKm: 2, quantity: 3, occurredAt: 4, notes: 5 };
+}
+
+function parseFuelBatchClipboard(text) {
+  const rawLines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim());
+
+  if (!rawLines.length) {
+    return [];
+  }
+
+  const matrix = rawLines.map((line) => line.split("\t").map((cell) => cell.trim()));
+  const headerMap = normalizeFuelBatchHeader(matrix[0]);
+  const columnMap = headerMap || inferFuelBatchColumnMap(matrix[0]);
+  const dataRows = headerMap ? matrix.slice(1) : matrix;
+
+  return dataRows
+    .map((cells) => {
+      const partial = {
+        plate: cells[columnMap.plate] || "",
+        odometerKm: cells[columnMap.odometerKm] || "",
+        quantity: cells[columnMap.quantity] || "",
+        occurredAt: normalizeFuelDateTimeInput(cells[columnMap.occurredAt] || "", currentLocalDateTime()),
+        notes: cells[columnMap.notes] || "",
+      };
+      const storage = getFuelStorageByKind(cells[columnMap.fuelKind] || "");
+      if (storage) {
+        partial.storageId = String(storage.id);
+      } else {
+        const vehicle = resolveFuelVehicleByPlate(partial.plate);
+        const preferredStorage = getPreferredFuelStorageForVehicle(vehicle);
+        partial.storageId = preferredStorage ? String(preferredStorage.id) : "";
+      }
+      return partial;
+    })
+    .filter((row) => fuelBatchRowHasContent(row));
+}
+
+function mergeFuelBatchRows(startIndex, incomingRows = []) {
+  const ui = ensureFuelUiState();
+  ensureFuelBatchRows(Math.max(1, startIndex + incomingRows.length));
+
+  incomingRows.forEach((incomingRow, offset) => {
+    const index = startIndex + offset;
+    const currentRow = ui.batchRows[index] || createFuelBatchRow();
+    ui.batchRows[index] = autofillFuelBatchRow({
+      ...currentRow,
+      ...incomingRow,
+      id: currentRow.id,
+    });
+  });
+
+  ensureTrailingFuelBatchRow();
+  renderFuelBatchComposer();
+}
+
+function addFuelBatchRow(partial = {}, focusField = "plate") {
+  const ui = ensureFuelUiState();
+  const lastRow = ensureFuelBatchRows(1)[ensureFuelBatchRows(1).length - 1];
+  if (!fuelBatchRowHasContent(partial) && lastRow && !fuelBatchRowHasContent(lastRow)) {
+    requestAnimationFrame(() => {
+      const target = refs.fuelBatchRowsBody?.querySelector(
+        `[data-fuel-batch-row-id="${lastRow.id}"] [data-fuel-batch-field="${focusField}"]`
+      );
+      target?.focus?.();
+    });
+    return;
+  }
+
+  const newRow = autofillFuelBatchRow(createFuelBatchRow(partial));
+  ui.batchRows.push(newRow);
+  ensureTrailingFuelBatchRow();
+  renderFuelBatchComposer();
+  requestAnimationFrame(() => {
+    const target = refs.fuelBatchRowsBody?.querySelector(
+      `[data-fuel-batch-row-id="${newRow.id}"] [data-fuel-batch-field="${focusField}"]`
+    );
+    target?.focus?.();
+  });
+}
+
+function resetFuelBatchComposer(clearResult = false) {
+  const ui = ensureFuelUiState();
+  ui.batchRows = [createFuelBatchRow()];
+  if (clearResult) {
+    ui.lastBatchResult = null;
+  }
+  renderFuelBatchComposer();
+}
+
+function getFuelBatchValidation() {
+  const rows = ensureTrailingFuelBatchRow();
+  const reservedBalances = new Map(
+    state.fuelStorages.map((storage) => [String(storage.id), toClientNumber(storage.currentBalance || 0)])
+  );
+
+  let totalLiters = 0;
+  let validRows = 0;
+  let warningRows = 0;
+  let errorRows = 0;
+
+  const evaluatedRows = rows.map((sourceRow, index) => {
+    const row = autofillFuelBatchRow(sourceRow);
+    const vehicle = resolveFuelVehicleByPlate(row.plate);
+    const storage = getFuelStorageById(row.storageId);
+    const quantityText = String(row.quantity || "").trim();
+    const odometerText = String(row.odometerKm || "").trim();
+    const hasContent = fuelBatchRowHasContent(row);
+    const quantity = quantityText ? parseBrazilianNumber(quantityText) : null;
+    const odometerKm = odometerText ? parseBrazilianNumber(odometerText) : null;
+    const occurredAt = row.occurredAt ? toIsoDateTime(row.occurredAt) : "";
+    const errors = [];
+    const warnings = [];
+
+    if (hasContent) {
+      if (!String(row.plate || "").trim()) {
+        errors.push("Informe a placa.");
+      }
+      if (!vehicle) {
+        errors.push("Placa nao cadastrada.");
+      }
+      if (!storage) {
+        errors.push("Selecione o combustivel.");
+      }
+      if (storage && vehicle && !doesVehicleSupportStorage(vehicle, storage)) {
+        errors.push("Combustivel incompativel com o veiculo.");
+      }
+      if (!quantityText || !Number.isFinite(quantity) || quantity <= 0) {
+        errors.push("Litros invalidos.");
+      }
+      if (odometerText && (!Number.isFinite(odometerKm) || odometerKm < 0)) {
+        errors.push("KM invalido.");
+      }
+      if (!row.occurredAt || !occurredAt) {
+        errors.push("Data/hora invalida.");
+      }
+      if (Number.isFinite(quantity) && quantity > 500) {
+        warnings.push("Litros acima de 500 L.");
+      }
+    }
+
+    let projectedBalance = storage ? toClientNumber(storage.currentBalance || 0) : 0;
+    if (hasContent && !errors.length && storage && Number.isFinite(quantity)) {
+      const currentReservedBalance = toClientNumber(reservedBalances.get(String(storage.id)) || 0);
+      projectedBalance = calculateClientFuelBalance(currentReservedBalance, "EXIT", quantity);
+      if (projectedBalance < -0.0001) {
+        errors.push(`Saldo insuficiente em ${storage.name}.`);
+        projectedBalance = currentReservedBalance;
+      } else {
+        reservedBalances.set(String(storage.id), Number(projectedBalance.toFixed(3)));
+        totalLiters += quantity;
+      }
+    }
+
+    const status = !hasContent ? "draft" : errors.length ? "error" : warnings.length ? "warning" : "valid";
+    if (status === "error") {
+      errorRows += 1;
+    } else if (status === "warning") {
+      warningRows += 1;
+      validRows += 1;
+    } else if (status === "valid") {
+      validRows += 1;
+    }
+
+    return {
+      index,
+      sourceRow: row,
+      vehicle,
+      storage,
+      quantity,
+      odometerKm,
+      occurredAt,
+      errors,
+      warnings,
+      status,
+      isSubmittable: status === "valid" || status === "warning",
+      projectedBalance,
+    };
+  });
+
+  const projectedBalances = state.fuelStorages.map((storage) => {
+    const currentBalance = toClientNumber(storage.currentBalance || 0);
+    const nextBalance = toClientNumber(reservedBalances.get(String(storage.id)) ?? currentBalance);
+    return {
+      storageId: String(storage.id),
+      storageName: storage.name,
+      fuelKind: storage.fuelKind,
+      currentBalance,
+      nextBalance,
+      deltaLiters: Number((currentBalance - nextBalance).toFixed(3)),
+    };
+  });
+
+  return {
+    rows: evaluatedRows,
+    totalRows: evaluatedRows.filter((item) => fuelBatchRowHasContent(item.sourceRow)).length,
+    validRows,
+    warningRows,
+    errorRows,
+    totalLiters,
+    projectedBalances,
+  };
+}
+
+function renderFuelBatchPreview(validation = getFuelBatchValidation()) {
+  if (!refs.fuelBatchPreview) {
+    return;
+  }
+
+  refs.fuelBatchPreview.innerHTML = `
+    <div class="fuel-batch-preview-grid">
+      ${validation.projectedBalances
+        .map(
+          (item) => `
+            <article class="fuel-batch-preview-card">
+              <span class="eyebrow">${escapeHtml(formatFuelKindLabel(item.fuelKind))}</span>
+              <strong>${escapeHtml(formatLiters(item.nextBalance))} L</strong>
+              <span class="muted">Saldo atual: ${escapeHtml(formatLiters(item.currentBalance))} L</span>
+              <span class="muted">Saldo final previsto: ${escapeHtml(formatLiters(item.nextBalance))} L</span>
+            </article>
+          `
+        )
+        .join("")}
+      <article class="fuel-batch-preview-card fuel-batch-preview-card--total">
+        <span class="eyebrow">Total do lote</span>
+        <strong>${escapeHtml(formatLiters(validation.totalLiters))} L</strong>
+        <span class="muted">${escapeHtml(`${formatNumber(validation.validRows)} linha(s) pronta(s) para envio`)}</span>
+      </article>
+    </div>
+  `;
+}
+
+function renderFuelBatchSummary(validation = getFuelBatchValidation()) {
+  if (!refs.fuelBatchSummary) {
+    return;
+  }
+
+  const ui = ensureFuelUiState();
+  const lastResult = ui.lastBatchResult;
+  const runtimeSummary = [
+    `${formatNumber(validation.validRows)} linha(s) validas`,
+    `${formatNumber(validation.errorRows)} com erro`,
+    `${formatNumber(validation.warningRows)} com alerta`,
+    `${formatLiters(validation.totalLiters)} L previstos`,
+  ].join(" | ");
+
+  const lastSaveSummary = lastResult
+    ? `Ultimo envio: ${formatNumber(lastResult.savedRows || 0)} salvo(s), ${formatNumber(lastResult.errorRows || 0)} com erro.`
+    : "Cole do Excel ou digite linha por linha para validar antes de salvar.";
+
+  refs.fuelBatchSummary.innerHTML = `<strong>${escapeHtml(runtimeSummary)}</strong><br />${escapeHtml(lastSaveSummary)}`;
+}
+
+function buildFuelBatchStorageOptions(selectedValue = "") {
+  const currentValue = String(selectedValue || "");
+  return `<option value="">Selecione</option>${state.fuelStorages
+    .map(
+      (storage) => `
+        <option value="${storage.id}" ${String(storage.id) === currentValue ? "selected" : ""}>
+          ${escapeHtml(`${formatFuelKindLabel(storage.fuelKind)} | ${storage.name}`)}
+        </option>
+      `
+    )
+    .join("")}`;
+}
+
+function renderFuelBatchComposer() {
+  if (!refs.fuelBatchRowsBody) {
+    return;
+  }
+
+  const activeElement = document.activeElement;
+  const activeField = activeElement?.dataset?.fuelBatchField || "";
+  const activeRowId = activeElement?.closest?.("[data-fuel-batch-row-id]")?.dataset?.fuelBatchRowId || "";
+  const validation = getFuelBatchValidation();
+  refs.fuelBatchRowsBody.innerHTML = validation.rows.length
+    ? validation.rows
+        .map((row) => {
+          const statusTone =
+            row.status === "error" ? "status-red" : row.status === "warning" ? "status-yellow" : row.status === "valid" ? "status-green" : "status-gray";
+          const statusLabel =
+            row.status === "error"
+              ? row.errors.join(" | ")
+              : row.status === "warning"
+                ? row.warnings.join(" | ")
+                : row.status === "valid"
+                  ? "Linha pronta para salvar."
+                  : "Aguardando dados.";
+
+          return `
+            <tr class="fuel-batch-row fuel-batch-row--${row.status}" data-fuel-batch-row-id="${row.sourceRow.id}">
+              <td>
+                <input type="text" list="fuel-batch-plate-list" data-fuel-batch-field="plate" value="${escapeHtml(row.sourceRow.plate)}" placeholder="ABC1D23" />
+              </td>
+              <td>
+                <select data-fuel-batch-field="storageId">
+                  ${buildFuelBatchStorageOptions(row.sourceRow.storageId)}
+                </select>
+              </td>
+              <td>
+                <input type="text" inputmode="decimal" data-fuel-batch-field="odometerKm" value="${escapeHtml(row.sourceRow.odometerKm)}" placeholder="0" />
+              </td>
+              <td>
+                <input type="text" inputmode="decimal" data-fuel-batch-field="quantity" value="${escapeHtml(row.sourceRow.quantity)}" placeholder="0,00" />
+              </td>
+              <td>
+                <input type="datetime-local" data-fuel-batch-field="occurredAt" value="${escapeHtml(row.sourceRow.occurredAt)}" />
+              </td>
+              <td>
+                <input type="text" data-fuel-batch-field="notes" value="${escapeHtml(row.sourceRow.notes)}" placeholder="Opcional" />
+              </td>
+              <td>
+                <span class="status-badge ${statusTone}">${escapeHtml(row.status === "draft" ? "Rascunho" : row.status === "valid" ? "Valida" : row.status === "warning" ? "Alerta" : "Erro")}</span>
+                <div class="muted fuel-batch-status-text">${escapeHtml(statusLabel)}</div>
+              </td>
+              <td>
+                <button type="button" class="row-button" data-action="remove-fuel-batch-row" data-row-id="${row.sourceRow.id}" aria-label="Remover linha">
+                  Remover
+                </button>
+              </td>
+            </tr>
+          `;
+        })
+        .join("")
+    : "";
+
+  renderFuelBatchPreview(validation);
+  renderFuelBatchSummary(validation);
+  syncResponsiveTableLabels(refs.fuelBatchTableWrapper || document);
+
+  if (activeField && activeRowId) {
+    requestAnimationFrame(() => {
+      const target = refs.fuelBatchRowsBody?.querySelector(
+        `[data-fuel-batch-row-id="${activeRowId}"] [data-fuel-batch-field="${activeField}"]`
+      );
+      target?.focus?.();
+    });
+  }
+}
+
+function updateFuelBatchRow(rowId, patch = {}) {
+  const ui = ensureFuelUiState();
+  ui.batchRows = ensureFuelBatchRows(1).map((row) =>
+    row.id === rowId
+      ? autofillFuelBatchRow({
+          ...row,
+          ...patch,
+          occurredAt:
+            patch.occurredAt === undefined
+              ? row.occurredAt
+              : normalizeFuelDateTimeInput(patch.occurredAt, row.occurredAt || currentLocalDateTime()),
+        })
+      : row
+  );
+  ensureTrailingFuelBatchRow();
+  renderFuelBatchComposer();
+}
+
+function handleFuelBatchRowInput(event) {
+  const field = event.target?.dataset?.fuelBatchField;
+  const rowId = event.target?.closest("[data-fuel-batch-row-id]")?.dataset?.fuelBatchRowId;
+  if (!field || !rowId) {
+    return;
+  }
+
+  updateFuelBatchRow(rowId, { [field]: event.target.value });
+}
+
+function handleFuelBatchRowKeydown(event) {
+  const field = event.target?.dataset?.fuelBatchField;
+  const rowId = event.target?.closest("[data-fuel-batch-row-id]")?.dataset?.fuelBatchRowId;
+  if (event.key !== "Enter" || !field || !rowId) {
+    return;
+  }
+
+  event.preventDefault();
+  const rows = ensureFuelBatchRows(1);
+  const currentIndex = rows.findIndex((row) => row.id === rowId);
+  if (currentIndex === -1) {
+    return;
+  }
+
+  if (currentIndex >= rows.length - 1) {
+    addFuelBatchRow({}, "plate");
+    return;
+  }
+
+  const nextRow = rows[currentIndex + 1];
+  requestAnimationFrame(() => {
+    const target = refs.fuelBatchRowsBody?.querySelector(
+      `[data-fuel-batch-row-id="${nextRow.id}"] [data-fuel-batch-field="plate"]`
+    );
+    target?.focus?.();
+  });
+}
+
+function handleFuelBatchRowClick(event) {
+  const button = event.target.closest('[data-action="remove-fuel-batch-row"]');
+  if (!button) {
+    return;
+  }
+
+  const rowId = button.dataset.rowId;
+  const ui = ensureFuelUiState();
+  ui.batchRows = ensureFuelBatchRows(1).filter((row) => row.id !== rowId);
+  if (!ui.batchRows.length) {
+    ui.batchRows = [createFuelBatchRow()];
+  }
+  ensureTrailingFuelBatchRow();
+  renderFuelBatchComposer();
+}
+
+function handleFuelBatchPaste(event) {
+  const clipboardText = event.clipboardData?.getData("text/plain") || "";
+  if (!clipboardText || (!clipboardText.includes("\t") && !clipboardText.includes("\n"))) {
+    return;
+  }
+
+  const parsedRows = parseFuelBatchClipboard(clipboardText);
+  if (!parsedRows.length) {
+    return;
+  }
+
+  event.preventDefault();
+  const targetRowId = event.target.closest("[data-fuel-batch-row-id]")?.dataset?.fuelBatchRowId;
+  const rows = ensureFuelBatchRows(1);
+  const startIndex = targetRowId ? Math.max(rows.findIndex((row) => row.id === targetRowId), 0) : 0;
+  mergeFuelBatchRows(startIndex, parsedRows);
+  showToast(`${formatNumber(parsedRows.length)} linha(s) inserida(s) no lote.`);
+}
+
+function buildFuelBatchPayload(validation = getFuelBatchValidation()) {
+  return validation.rows
+    .filter((row) => row.isSubmittable)
+    .map((row) => ({
+      clientRowIndex: row.index,
+      plate: row.vehicle?.plate || row.sourceRow.plate,
+      vehicleId: row.vehicle?.id || "",
+      storageId: row.storage?.id || row.sourceRow.storageId,
+      fuelKind: row.storage?.fuelKind || "",
+      km: row.sourceRow.odometerKm,
+      liters: row.sourceRow.quantity,
+      occurredAt: row.occurredAt,
+      notes: row.sourceRow.notes,
+    }));
+}
+
+async function handleFuelBatchSubmit() {
+  const validation = getFuelBatchValidation();
+  const validRows = validation.rows.filter((row) => row.isSubmittable);
+  if (!validRows.length) {
+    showToast("Nenhuma linha valida para salvar no lote.", "error");
+    return;
+  }
+
+  const warnings = Array.from(
+    new Set(
+      validRows.flatMap((row) =>
+        row.warnings.map((warning) => `${row.vehicle?.plate || row.sourceRow.plate || "Sem placa"}: ${warning}`)
+      )
+    )
+  );
+  if (!confirmSuspiciousFuelValues(warnings)) {
+    return;
+  }
+
+  const payload = { rows: buildFuelBatchPayload(validation) };
+  const ui = ensureFuelUiState();
+
+  try {
+    const response = await api("/api/fuel/batch", { method: "POST", body: payload });
+    ui.lastBatchResult = response;
+
+    const resultMap = new Map((response.results || []).map((item) => [Number(item.lineIndex), item]));
+    const remainingRows = validation.rows
+      .filter((row) => {
+        const result = resultMap.get(Number(row.index));
+        return !result || result.status !== "saved";
+      })
+      .map((row) => createFuelBatchRow({ ...row.sourceRow, id: row.sourceRow.id }));
+
+    ui.batchRows = remainingRows.length ? remainingRows : [createFuelBatchRow()];
+    ensureTrailingFuelBatchRow();
+
+    await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+
+    const savedPlate = validRows.find(
+      (row) =>
+        row.vehicle &&
+        state.dossier.selectedPlate &&
+        normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(row.vehicle.plate)
+    );
+    if (savedPlate?.vehicle?.plate) {
+      await loadVehicleDossierByPlate(savedPlate.vehicle.plate, { silent: true });
+    }
+
+    renderFuelBatchComposer();
+    showToast(
+      `${formatNumber(response.savedRows || 0)} lancamento(s) salvo(s)` +
+        ((response.errorRows || 0) > 0 ? `, ${formatNumber(response.errorRows || 0)} com erro.` : ".")
+    );
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function renderFuel() {
+  const analytics = buildFuelPageAnalytics(state.fuelRecords);
+  const currentPlate = refs.fuelFilterPlate?.value || "";
+  if (refs.fuelFilterPlate) {
+    refs.fuelFilterPlate.innerHTML = `<option value="">Todos os veiculos</option>${analytics.plates
+      .map((plate) => `<option value="${escapeHtml(plate)}">${escapeHtml(plate)}</option>`)
+      .join("")}`;
+    refs.fuelFilterPlate.value = analytics.plates.includes(currentPlate) ? currentPlate : "";
+  }
+
+  const visibleRecords =
+    refs.fuelFilterPlate?.value
+      ? state.fuelRecords.filter((item) => item.plate === refs.fuelFilterPlate.value)
+      : state.fuelRecords;
+
+  refs.fuelKpiGrid.innerHTML = [
+    {
+      label: "Abastecimentos",
+      value: formatNumber(analytics.monthExitRecords.length),
+      note: "Saidas no mes atual",
+      icon: "fuel",
+      tone: "brand",
+    },
+    {
+      label: "Total de litros",
+      value: `${formatLiters(analytics.monthLiters)} L`,
+      note: "Consumo do mes atual",
+      icon: "analytics",
+      tone: "neutral",
+    },
+    {
+      label: "Media por lancamento",
+      value: `${formatLiters(analytics.avgLiters)} L`,
+      note: "Considerando apenas saidas",
+      icon: "dashboard",
+      tone: "warning",
+    },
+    {
+      label: "Media km/L",
+      value: formatKmPerLiter(analytics.avgKmPerLiter),
+      note: "Com base nos hodometros informados",
+      icon: "efficiency",
+      tone: "success",
+    },
+  ]
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card",
+        label: item.label,
+        value: item.value,
+        note: item.note,
+        icon: item.icon,
+        tone: item.tone,
+      })
+    )
+    .join("");
+
+  refs.fuelStocksGrid.innerHTML = state.fuelStorages.length
+    ? state.fuelStorages
+        .map((storage) => {
+          const isEmpty = Number(storage.currentBalance || 0) <= 0;
+          const isLow =
+            !isEmpty &&
+            Number(storage.minBalance || 0) > 0 &&
+            Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0);
+          const statusLabel = isEmpty ? "Sem saldo" : isLow ? "Abaixo do minimo" : "Operacional";
+          const toneClass = isEmpty ? "is-empty" : isLow ? "is-low" : "is-ok";
+
+          return `
+            <article class="fuel-stock-card ${toneClass}">
+              <div class="fuel-stock-card__top">
+                <span class="fuel-stock-card__kind">${escapeHtml(formatFuelKindLabel(storage.fuelKind))}</span>
+                <span class="fuel-stock-card__status">${escapeHtml(statusLabel)}</span>
+              </div>
+              <div class="fuel-stock-card__value-row">
+                <strong class="fuel-stock-card__value">${escapeHtml(formatLiters(storage.currentBalance))}</strong>
+                <span class="fuel-stock-card__unit">L</span>
+              </div>
+              <div class="fuel-stock-card__footer">
+                <strong>${escapeHtml(storage.name)}</strong>
+                <span>Saldo disponivel agora</span>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="stack-item"><strong>Nenhum estoque configurado</strong><p class="muted">Cadastre ou revise os estoques principais de combustivel.</p></div>`;
+
+  renderFuelInventoryMovements();
+  renderFuelComposerMode();
+  syncFuelFormState();
+  renderFuelBatchComposer();
+
+  refs.fuelTableBody.innerHTML = visibleRecords.length
+    ? visibleRecords
+        .map(
+          (item) => `
+            <tr>
+              <td>${escapeHtml(item.storageName || "-")}</td>
+              <td>${escapeHtml(formatFuelKindLabel(item.fuelKind))}</td>
+              <td>
+                ${statusBadge(item.type)}
+                <div class="fuel-record-badges">
+                  <span class="dashboard-chip">${escapeHtml(formatFuelRecordFlowLabel(item))}</span>
+                  <span class="dashboard-chip">${escapeHtml(formatFuelOriginLabel(item.entryOrigin))}</span>
+                  ${item.suspicious ? `<span class="status-badge status-yellow">Suspeito</span>` : ""}
+                </div>
+              </td>
+              <td>${escapeHtml(item.vehicleId ? [item.vehicleBrand, item.vehicleModel].filter(Boolean).join(" / ") || "Veiculo cadastrado" : item.operationKind === "ADJUSTMENT" ? "Ajuste manual" : "-")}</td>
+              <td>${escapeHtml(item.plate || "-")}</td>
+              <td>${escapeHtml(formatNumber(item.quantity || 0, 2, 2))} L</td>
+              <td>${escapeHtml(item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}</td>
+              <td>${escapeHtml(formatNumber(item.balanceBefore || 0, 2, 2))} L</td>
+              <td>${escapeHtml(formatNumber(item.balanceAfter || 0, 2, 2))} L</td>
+              <td>${escapeHtml(item.userName || "-")}</td>
+              <td>
+                <div>${escapeHtml(formatDateTime(item.occurredAt))}</div>
+                ${item.suspicious ? `<div class="muted">${escapeHtml(item.suspiciousReasons.join(" | "))}</div>` : ""}
+              </td>
+            </tr>
+          `
+        )
+        .join("")
+    : emptyRow("Nenhum abastecimento registrado.", 11);
+
+  refs.fuelConsumptionChart.innerHTML = renderConsumptionChart({
+    consumptionSeries: analytics.consumptionSeries,
+    totalConsumptionLiters: analytics.consumptionSeries.reduce((total, item) => total + item.total, 0),
+    peakConsumption: analytics.peakConsumption,
+    fuelMix: analytics.fuelMix,
+  });
+
+  refs.fuelTopVehicles.innerHTML = renderMeterList(
+    analytics.topVehicles.map((item) => ({
+      label: item.plate,
+      value: item.liters,
+      count: item.count,
+    })),
+    {
+      emptyTitle: "Sem consumo no periodo",
+      emptyDescription: "Assim que houver saidas registradas, os veiculos de maior consumo aparecem aqui.",
+      valueFormatter: (value) => `${formatLiters(value)} L`,
+      secondaryFormatter: (item) => `${item.count} lancamento(s)`,
+    }
+  );
+
+  refs.fuelSideInsights.innerHTML = buildFuelSideInsights(analytics);
+  syncResponsiveTableLabels();
+}
+
+async function handleFuelSubmit(event) {
+  event.preventDefault();
+  if (!refs.fuelForm) {
+    return;
+  }
+
+  const movementType = refs.fuelForm.elements.type.value || "OPERATIONAL_EXIT";
+  const occurredAt = toIsoDateTime(refs.fuelForm.elements.occurredAt.value);
+
+  if (!occurredAt) {
+    showToast("Informe uma data e hora valida.", "error");
+    return;
+  }
+
+  let quantity = 0;
+  let unitCost = null;
+  let odometerKm = null;
+
+  try {
+    quantity = readBrazilianNumberField(refs.fuelForm.elements.quantity, {
+      label: "quantidade",
+      required: true,
+      min: 0.000001,
+    });
+
+    if (movementType === "STOCK_ENTRY") {
+      unitCost = readBrazilianNumberField(refs.fuelForm.elements.unitCost, {
+        label: "valor unitario",
+        min: 0,
+      });
+    }
+
+    if (movementType === "OPERATIONAL_EXIT" && String(refs.fuelForm.elements.odometerKm.value || "").trim()) {
+      odometerKm = readBrazilianNumberField(refs.fuelForm.elements.odometerKm, {
+        label: "KM",
+        min: 0,
+      });
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+    return;
+  }
+
+  const warnings = [];
+  if (quantity > 500) {
+    warnings.push("Valor de litros muito alto. Confirme se o lancamento esta correto.");
+  }
+  if (unitCost !== null && unitCost > 20) {
+    warnings.push("Valor unitario acima de R$ 20,00. Confirme se o lancamento esta correto.");
+  }
+  if (!confirmSuspiciousFuelValues(warnings)) {
+    return;
+  }
+
+  if (movementType === "STOCK_ENTRY") {
+    if (!refs.fuelForm.elements.productId.value) {
+      showToast("Selecione o combustivel da entrada no estoque.", "error");
+      return;
+    }
+
+    const payload = {
+      productId: refs.fuelForm.elements.productId.value,
+      stockType: "FUEL",
+      type: "IN",
+      quantity,
+      unitCost,
+      document: refs.fuelForm.elements.document.value,
+      supplierName: refs.fuelForm.elements.supplierName.value,
+      occurredAt,
+      notes: refs.fuelForm.elements.notes.value,
+    };
+
+    try {
+      await api("/api/inventory/movements", { method: "POST", body: payload });
+      resetFuelForm();
+      await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshFuel(), refreshDashboard()]);
+      showToast("Entrada de combustivel registrada.");
+    } catch (error) {
+      showToast(error.message, "error");
+    }
+    return;
+  }
+
+  const selectedVehicle = resolveFuelVehicleByPlate(refs.fuelVehicleInput?.value || "");
+  if (movementType === "OPERATIONAL_EXIT" && !selectedVehicle) {
+    showToast("Selecione uma placa cadastrada para o abastecimento.", "error");
+    return;
+  }
+
+  const isAdjustment = movementType === "BALANCE_ADJUSTMENT";
+  const storageId = refs.fuelForm.elements.storageId.value;
+  if (!storageId) {
+    showToast("Selecione o combustivel da movimentacao.", "error");
+    return;
+  }
+  const adjustmentKind = refs.fuelForm.elements.adjustmentType.value || "DECREASE";
+  const payload = isAdjustment
+    ? {
+        storageId,
+        type: adjustmentKind === "INCREASE" ? "ENTRY" : "EXIT",
+        operationKind: "ADJUSTMENT",
+        adjustmentKind,
+        quantity,
+        occurredAt,
+        notes: refs.fuelForm.elements.notes.value,
+        entryOrigin: "MANUAL",
+      }
+    : {
+        storageId,
+        type: "EXIT",
+        operationKind: "OPERATIONAL",
+        vehicleId: selectedVehicle ? selectedVehicle.id : "",
+        plate: selectedVehicle ? selectedVehicle.plate : refs.fuelVehicleInput.value,
+        quantity,
+        odometerKm,
+        occurredAt,
+        notes: refs.fuelForm.elements.notes.value,
+        entryOrigin: "MANUAL",
+      };
+
+  payload.rawPayload = {
+    plate: refs.fuelVehicleInput?.value || "",
+    storageId,
+    quantity: refs.fuelForm.elements.quantity.value,
+    odometerKm: refs.fuelForm.elements.odometerKm.value,
+    unitCost: refs.fuelForm.elements.unitCost.value,
+    type: movementType,
+    occurredAt,
+    notes: refs.fuelForm.elements.notes.value,
+  };
+
+  payload.normalizedPayload = {
+    storageId,
+    vehicleId: selectedVehicle ? selectedVehicle.id : null,
+    plate: selectedVehicle ? selectedVehicle.plate : "",
+    quantity,
+    odometerKm,
+    type: payload.type,
+    operationKind: payload.operationKind,
+    adjustmentKind: payload.adjustmentKind || "",
+    occurredAt,
+  };
+
+  try {
+    await api("/api/fuel", { method: "POST", body: payload });
+    resetFuelForm();
+    await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+
+    if (
+      selectedVehicle &&
+      state.dossier.selectedPlate &&
+      normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(selectedVehicle.plate)
+    ) {
+      await loadVehicleDossierByPlate(selectedVehicle.plate, { silent: true });
+    }
+
+    showToast(isAdjustment ? "Ajuste de saldo registrado." : "Abastecimento registrado.");
   } catch (error) {
     showToast(error.message, "error");
   }
@@ -6103,8 +8909,20 @@ async function lookupProductByBarcode() {
 }
 
 function handleInteractivePanels(event) {
-  const dashboardActionButton = event.target.closest("[data-dashboard-save-odometer], [data-dashboard-clear-odometer]");
+  const dashboardActionButton = event.target.closest(
+    "[data-dashboard-save-odometer], [data-dashboard-clear-odometer], [data-dashboard-toggle-odometer], [data-dashboard-cancel-odometer]"
+  );
   if (dashboardActionButton) {
+    if (dashboardActionButton.dataset.dashboardToggleOdometer) {
+      toggleDashboardOdometerEditor(dashboardActionButton.dataset.dashboardToggleOdometer);
+      return;
+    }
+
+    if (dashboardActionButton.dataset.dashboardCancelOdometer) {
+      cancelDashboardOdometerEditor(dashboardActionButton.dataset.dashboardCancelOdometer);
+      return;
+    }
+
     const recordId =
       dashboardActionButton.dataset.dashboardSaveOdometer ||
       dashboardActionButton.dataset.dashboardClearOdometer ||
@@ -6216,11 +9034,7 @@ function handleInteractivePanels(event) {
     }
 
     if (action === "clear") {
-      refs.fuelFilterStorage.value = "";
-      refs.fuelFilterFrom.value = "";
-      refs.fuelFilterTo.value = "";
-      if (refs.fuelFilterPlate) refs.fuelFilterPlate.value = "";
-      refreshFuel();
+      clearFuelHistoryFilters();
     }
     return;
   }
@@ -8376,6 +11190,284 @@ async function handleFuelSubmit(event) {
   }
 }
 
+const fuelHistoryRenderOverride = function () {
+  const analytics = buildFuelPageAnalytics(state.fuelRecords);
+  const currentPlate = refs.fuelFilterPlate?.value || "";
+  if (refs.fuelFilterPlate) {
+    refs.fuelFilterPlate.innerHTML = `<option value="">Todos os veiculos</option>${analytics.plates
+      .map((plate) => `<option value="${escapeHtml(plate)}">${escapeHtml(plate)}</option>`)
+      .join("")}`;
+    refs.fuelFilterPlate.value = analytics.plates.includes(currentPlate) ? currentPlate : "";
+  }
+
+  refs.fuelKpiGrid.innerHTML = [
+    {
+      label: "Abastecimentos",
+      value: formatNumber(analytics.monthExitRecords.length),
+      note: "Saidas no mes atual",
+      icon: "fuel",
+      tone: "brand",
+    },
+    {
+      label: "Total de litros",
+      value: `${formatLiters(analytics.monthLiters)} L`,
+      note: "Consumo do mes atual",
+      icon: "analytics",
+      tone: "neutral",
+    },
+    {
+      label: "Media por lancamento",
+      value: `${formatLiters(analytics.avgLiters)} L`,
+      note: "Considerando apenas saidas",
+      icon: "dashboard",
+      tone: "warning",
+    },
+    {
+      label: "Media km/L",
+      value: formatKmPerLiter(analytics.avgKmPerLiter),
+      note: "Com base nos hodometros informados",
+      icon: "efficiency",
+      tone: "success",
+    },
+  ]
+    .map((item) =>
+      buildStatCard({
+        className: "operations-kpi-card",
+        label: item.label,
+        value: item.value,
+        note: item.note,
+        icon: item.icon,
+        tone: item.tone,
+      })
+    )
+    .join("");
+
+  refs.fuelStocksGrid.innerHTML = state.fuelStorages.length
+    ? state.fuelStorages
+        .map((storage) => {
+          const isEmpty = Number(storage.currentBalance || 0) <= 0;
+          const isLow =
+            !isEmpty &&
+            Number(storage.minBalance || 0) > 0 &&
+            Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0);
+          const statusLabel = isEmpty ? "Sem saldo" : isLow ? "Abaixo do minimo" : "Operacional";
+          const toneClass = isEmpty ? "is-empty" : isLow ? "is-low" : "is-ok";
+
+          return `
+            <article class="fuel-stock-card ${toneClass}">
+              <div class="fuel-stock-card__top">
+                <span class="fuel-stock-card__kind">${escapeHtml(formatFuelKindLabel(storage.fuelKind))}</span>
+                <span class="fuel-stock-card__status">${escapeHtml(statusLabel)}</span>
+              </div>
+              <div class="fuel-stock-card__value-row">
+                <strong class="fuel-stock-card__value">${escapeHtml(formatLiters(storage.currentBalance))}</strong>
+                <span class="fuel-stock-card__unit">L</span>
+              </div>
+              <div class="fuel-stock-card__footer">
+                <strong>${escapeHtml(storage.name)}</strong>
+                <span>Saldo disponivel agora</span>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="stack-item"><strong>Nenhum estoque configurado</strong><p class="muted">Cadastre ou revise os estoques principais de combustivel.</p></div>`;
+
+  renderFuelHistoryTable();
+  renderFuelComposerMode();
+  syncFuelFormState();
+  renderFuelBatchComposer();
+
+  refs.fuelConsumptionChart.innerHTML = renderConsumptionChart({
+    consumptionSeries: analytics.consumptionSeries,
+    totalConsumptionLiters: analytics.consumptionSeries.reduce((total, item) => total + item.total, 0),
+    peakConsumption: analytics.peakConsumption,
+    fuelMix: analytics.fuelMix,
+  });
+
+  refs.fuelTopVehicles.innerHTML = renderMeterList(
+    analytics.topVehicles.map((item) => ({
+      label: item.plate,
+      value: item.liters,
+      count: item.count,
+    })),
+    {
+      emptyTitle: "Sem consumo no periodo",
+      emptyDescription: "Assim que houver saidas registradas, os veiculos de maior consumo aparecem aqui.",
+      valueFormatter: (value) => `${formatLiters(value)} L`,
+      secondaryFormatter: (item) => `${item.count} lancamento(s)`,
+    }
+  );
+
+  refs.fuelSideInsights.innerHTML = buildFuelSideInsights(analytics);
+  syncResponsiveTableLabels();
+};
+
+const fuelHistorySubmitOverride = async function (event) {
+  event.preventDefault();
+  if (!refs.fuelForm) {
+    return;
+  }
+
+  const movementType = refs.fuelForm.elements.type.value || "OPERATIONAL_EXIT";
+  const occurredAt = toIsoDateTime(refs.fuelForm.elements.occurredAt.value);
+
+  if (!occurredAt) {
+    showToast("Informe uma data e hora valida.", "error");
+    return;
+  }
+
+  let quantity = 0;
+  let unitCost = null;
+  let odometerKm = null;
+
+  try {
+    quantity = readBrazilianNumberField(refs.fuelForm.elements.quantity, {
+      label: "quantidade",
+      required: true,
+      min: 0.000001,
+    });
+
+    if (movementType === "STOCK_ENTRY") {
+      unitCost = readBrazilianNumberField(refs.fuelForm.elements.unitCost, {
+        label: "valor unitario",
+        min: 0,
+      });
+    }
+
+    if (movementType === "OPERATIONAL_EXIT" && String(refs.fuelForm.elements.odometerKm.value || "").trim()) {
+      odometerKm = readBrazilianNumberField(refs.fuelForm.elements.odometerKm, {
+        label: "KM",
+        min: 0,
+      });
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+    return;
+  }
+
+  const warnings = [];
+  if (quantity > 500) {
+    warnings.push("Valor de litros muito alto. Confirme se o lancamento esta correto.");
+  }
+  if (unitCost !== null && unitCost > 20) {
+    warnings.push("Valor unitario acima de R$ 20,00. Confirme se o lancamento esta correto.");
+  }
+  if (!confirmSuspiciousFuelValues(warnings)) {
+    return;
+  }
+
+  if (movementType === "STOCK_ENTRY") {
+    if (!refs.fuelForm.elements.productId.value) {
+      showToast("Selecione o combustivel da entrada no estoque.", "error");
+      return;
+    }
+
+    const payload = {
+      productId: refs.fuelForm.elements.productId.value,
+      stockType: "FUEL",
+      type: "IN",
+      quantity,
+      unitCost,
+      document: refs.fuelForm.elements.document.value,
+      supplierName: refs.fuelForm.elements.supplierName.value,
+      occurredAt,
+      notes: refs.fuelForm.elements.notes.value,
+    };
+
+    try {
+      await api("/api/inventory/movements", { method: "POST", body: payload });
+      resetFuelForm();
+      await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshFuel(), refreshDashboard()]);
+      showToast("Entrada de combustivel registrada.");
+    } catch (error) {
+      showToast(error.message, "error");
+    }
+    return;
+  }
+
+  const selectedVehicle = resolveFuelVehicleByPlate(refs.fuelVehicleInput?.value || "");
+  if (movementType === "OPERATIONAL_EXIT" && !selectedVehicle) {
+    showToast("Selecione uma placa cadastrada para o abastecimento.", "error");
+    return;
+  }
+
+  const isAdjustment = movementType === "BALANCE_ADJUSTMENT";
+  const storageId = refs.fuelForm.elements.storageId.value;
+  if (!storageId) {
+    showToast("Selecione o combustivel da movimentacao.", "error");
+    return;
+  }
+  const adjustmentKind = refs.fuelForm.elements.adjustmentType.value || "DECREASE";
+  const payload = isAdjustment
+    ? {
+        storageId,
+        type: adjustmentKind === "INCREASE" ? "ENTRY" : "EXIT",
+        operationKind: "ADJUSTMENT",
+        adjustmentKind,
+        quantity,
+        occurredAt,
+        notes: refs.fuelForm.elements.notes.value,
+        entryOrigin: "MANUAL",
+      }
+    : {
+        storageId,
+        type: "EXIT",
+        operationKind: "OPERATIONAL",
+        vehicleId: selectedVehicle ? selectedVehicle.id : "",
+        plate: selectedVehicle ? selectedVehicle.plate : refs.fuelVehicleInput.value,
+        quantity,
+        odometerKm,
+        occurredAt,
+        notes: refs.fuelForm.elements.notes.value,
+        entryOrigin: "MANUAL",
+      };
+
+  payload.rawPayload = {
+    plate: refs.fuelVehicleInput?.value || "",
+    storageId,
+    quantity: refs.fuelForm.elements.quantity.value,
+    odometerKm: refs.fuelForm.elements.odometerKm.value,
+    unitCost: refs.fuelForm.elements.unitCost.value,
+    type: movementType,
+    occurredAt,
+    notes: refs.fuelForm.elements.notes.value,
+  };
+
+  payload.normalizedPayload = {
+    storageId,
+    vehicleId: selectedVehicle ? selectedVehicle.id : null,
+    plate: selectedVehicle ? selectedVehicle.plate : "",
+    quantity,
+    odometerKm,
+    type: payload.type,
+    operationKind: payload.operationKind,
+    adjustmentKind: payload.adjustmentKind || "",
+    occurredAt,
+  };
+
+  try {
+    await api("/api/fuel", { method: "POST", body: payload });
+    resetFuelForm();
+    await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
+
+    if (
+      selectedVehicle &&
+      state.dossier.selectedPlate &&
+      normalizeClientPlateKey(state.dossier.selectedPlate) === normalizeClientPlateKey(selectedVehicle.plate)
+    ) {
+      await loadVehicleDossierByPlate(selectedVehicle.plate, { silent: true });
+    }
+
+    showToast(isAdjustment ? "Ajuste de saldo registrado." : "Abastecimento registrado.");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+};
+
+renderFuel = fuelHistoryRenderOverride;
+handleFuelSubmit = fuelHistorySubmitOverride;
+
 function isBarcodeNotFoundError(error) {
   return /produto nao encontrado|codigo de barras/i.test(String(error?.message || ""));
 }
@@ -9523,6 +12615,9 @@ function buildFuelSideInsights(analytics) {
       Number(storage.minBalance || 0) > 0 &&
       Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0)
   );
+  const suspiciousAlerts = (state.dashboard.analytics?.operationalAlerts || [])
+    .filter((item) => item.type === "SUSPICIOUS_FUEL_RECORD")
+    .slice(0, 3);
   const cards = [];
 
   if (lowStorages.length) {
@@ -9551,6 +12646,19 @@ function buildFuelSideInsights(analytics) {
         )}</p>
       </article>
     `);
+  }
+
+  if (suspiciousAlerts.length) {
+    cards.push(
+      ...suspiciousAlerts.map(
+        (alert) => `
+          <article class="stack-item">
+            <strong>${escapeHtml(alert.title || "Lancamento suspeito")}</strong>
+            <p class="muted">${escapeHtml(alert.description || "Revise o historico deste abastecimento.")}</p>
+          </article>
+        `
+      )
+    );
   }
 
   if (!cards.length) {
@@ -9597,8 +12705,20 @@ function buildPrintableCompanyHeader(company, title, subtitle = "") {
 }
 
 function handleInteractivePanels(event) {
-  const dashboardActionButton = event.target.closest("[data-dashboard-save-odometer], [data-dashboard-clear-odometer]");
+  const dashboardActionButton = event.target.closest(
+    "[data-dashboard-save-odometer], [data-dashboard-clear-odometer], [data-dashboard-toggle-odometer], [data-dashboard-cancel-odometer]"
+  );
   if (dashboardActionButton) {
+    if (dashboardActionButton.dataset.dashboardToggleOdometer) {
+      toggleDashboardOdometerEditor(dashboardActionButton.dataset.dashboardToggleOdometer);
+      return;
+    }
+
+    if (dashboardActionButton.dataset.dashboardCancelOdometer) {
+      cancelDashboardOdometerEditor(dashboardActionButton.dataset.dashboardCancelOdometer);
+      return;
+    }
+
     const recordId =
       dashboardActionButton.dataset.dashboardSaveOdometer ||
       dashboardActionButton.dataset.dashboardClearOdometer ||
@@ -9710,11 +12830,7 @@ function handleInteractivePanels(event) {
     }
 
     if (action === "clear") {
-      refs.fuelFilterStorage.value = "";
-      refs.fuelFilterFrom.value = "";
-      refs.fuelFilterTo.value = "";
-      if (refs.fuelFilterPlate) refs.fuelFilterPlate.value = "";
-      refreshFuel();
+      clearFuelHistoryFilters();
     }
     return;
   }
@@ -9962,11 +13078,20 @@ function renderFuel() {
               <td>${escapeHtml(formatFuelKindLabel(item.fuelKind))}</td>
               <td>${statusBadge(item.type)}</td>
               <td>${escapeHtml(item.vehicleId ? [item.vehicleBrand, item.vehicleModel].filter(Boolean).join(" / ") || "Veiculo cadastrado" : "-")}</td>
-              <td>${escapeHtml(item.plate || "-")}</td>
-              <td>${escapeHtml(item.quantity.toFixed(2))} L</td>
+              <td>
+                <div>${escapeHtml(item.plate || "-")}</div>
+                ${
+                  item.suspicious
+                    ? `<div><span class="status-badge status-yellow">Suspeito</span></div><div class="muted">${escapeHtml(
+                        item.suspiciousReasons.join(" | ")
+                      )}</div>`
+                    : ""
+                }
+              </td>
+              <td>${escapeHtml(formatNumber(item.quantity || 0, 2, 2))} L</td>
               <td>${escapeHtml(item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}</td>
-              <td>${escapeHtml(item.balanceBefore.toFixed(2))} L</td>
-              <td>${escapeHtml(item.balanceAfter.toFixed(2))} L</td>
+              <td>${escapeHtml(formatNumber(item.balanceBefore || 0, 2, 2))} L</td>
+              <td>${escapeHtml(formatNumber(item.balanceAfter || 0, 2, 2))} L</td>
               <td>${escapeHtml(item.userName || "-")}</td>
               <td>${escapeHtml(formatDateTime(item.occurredAt))}</td>
             </tr>
@@ -10631,7 +13756,16 @@ function renderFuelInventoryMovements() {
               <td>${escapeHtml(movement.productName)}</td>
               <td>${statusBadge(movement.type)}</td>
               <td>${escapeHtml(formatNumber(movement.quantity || 0, 2, 2))} ${escapeHtml(movement.productUnit || "L")}</td>
-              <td>${escapeHtml(movement.document || "-")}</td>
+              <td>
+                <div>${escapeHtml(movement.document || "-")}</div>
+                ${
+                  movement.suspicious
+                    ? `<div><span class="status-badge status-yellow">Suspeito</span></div><div class="muted">${escapeHtml(
+                        movement.suspiciousReasons.join(" | ")
+                      )}</div>`
+                    : ""
+                }
+              </td>
               <td>${escapeHtml(formatCurrency(movement.unitCost || 0))}</td>
               <td>${escapeHtml(formatCurrency(movement.totalCost || 0))}</td>
               <td>${escapeHtml(`${formatNumber(movement.balanceAfter || 0, 2, 2)} ${movement.productUnit || "L"}`)}</td>
@@ -10653,9 +13787,9 @@ function editProduct(id) {
   refs.productForm.elements.unit.value = product.unit;
   refs.productForm.elements.stockType.value = normalizeClientStockType(product.stockType, "COMMON");
   refs.productForm.elements.barcode.value = product.barcode || "";
-  refs.productForm.elements.minStock.value = product.minStock;
-  refs.productForm.elements.defaultCost.value = product.defaultCost || 0;
-  refs.productForm.elements.initialStock.value = 0;
+  refs.productForm.elements.minStock.value = formatDecimalInputValue(product.minStock || 0, 2);
+  refs.productForm.elements.defaultCost.value = formatDecimalInputValue(product.defaultCost || 0, 2);
+  refs.productForm.elements.initialStock.value = formatDecimalInputValue(0, 2);
   refs.productForm.elements.initialStock.disabled = true;
   syncProductFormState();
   setSection("inventory");
@@ -10665,14 +13799,36 @@ async function handleProductSubmit(event) {
   event.preventDefault();
   const id = refs.productForm.elements.id.value;
 
+  let minStock = 0;
+  let defaultCost = 0;
+  let initialStock = 0;
+
+  try {
+    minStock = readBrazilianNumberField(refs.productForm.elements.minStock, {
+      label: "estoque minimo",
+      min: 0,
+    }) ?? 0;
+    defaultCost = readBrazilianNumberField(refs.productForm.elements.defaultCost, {
+      label: "custo padrao",
+      min: 0,
+    }) ?? 0;
+    initialStock = readBrazilianNumberField(refs.productForm.elements.initialStock, {
+      label: "saldo inicial",
+      min: 0,
+    }) ?? 0;
+  } catch (error) {
+    showToast(error.message, "error");
+    return;
+  }
+
   const payload = {
     name: refs.productForm.elements.name.value,
     unit: refs.productForm.elements.unit.value,
     stockType: refs.productForm.elements.stockType.value,
     barcode: refs.productForm.elements.barcode.value,
-    minStock: refs.productForm.elements.minStock.value,
-    defaultCost: refs.productForm.elements.defaultCost.value,
-    initialStock: refs.productForm.elements.initialStock.value,
+    minStock,
+    defaultCost,
+    initialStock,
   };
 
   try {
@@ -10691,15 +13847,33 @@ async function handleProductSubmit(event) {
 async function handleMovementSubmit(event) {
   event.preventDefault();
 
+  let quantity = 0;
+  let unitCost = null;
+
+  try {
+    quantity = readBrazilianNumberField(refs.movementForm.elements.quantity, {
+      label: "quantidade",
+      required: true,
+      min: 0.000001,
+    });
+    unitCost = readBrazilianNumberField(refs.movementForm.elements.unitCost, {
+      label: "valor unitario",
+      min: 0,
+    });
+  } catch (error) {
+    showToast(error.message, "error");
+    return;
+  }
+
   const payload = {
     productId: refs.movementForm.elements.productId.value,
     stockType: "COMMON",
     type: refs.movementForm.elements.type.value,
-    quantity: refs.movementForm.elements.quantity.value,
+    quantity,
     document: refs.movementForm.elements.document.value,
     branchName: refs.movementForm.elements.branchName.value,
     supplierName: refs.movementForm.elements.supplierName.value,
-    unitCost: refs.movementForm.elements.unitCost.value,
+    unitCost,
     occurredAt: toIsoDateTime(refs.movementForm.elements.occurredAt.value),
     notes: refs.movementForm.elements.notes.value,
   };
@@ -10723,15 +13897,44 @@ async function handleFuelStockMovementSubmit(event) {
     return;
   }
 
+  let quantity = 0;
+  let unitCost = null;
+
+  try {
+    quantity = readBrazilianNumberField(refs.fuelStockForm.elements.quantity, {
+      label: "quantidade",
+      required: true,
+      min: 0.000001,
+    });
+    unitCost = readBrazilianNumberField(refs.fuelStockForm.elements.unitCost, {
+      label: "valor unitario",
+      min: 0,
+    });
+  } catch (error) {
+    showToast(error.message, "error");
+    return;
+  }
+
+  const warnings = [];
+  if (quantity > 500) {
+    warnings.push("Valor de litros muito alto. Confirme se o lançamento está correto.");
+  }
+  if (unitCost !== null && unitCost > 20) {
+    warnings.push("Valor unitario acima de R$ 20,00. Confirme se o lançamento está correto.");
+  }
+  if (!confirmSuspiciousFuelValues(warnings)) {
+    return;
+  }
+
   const payload = {
     productId: refs.fuelStockForm.elements.productId.value,
     stockType: "FUEL",
     type: refs.fuelStockForm.elements.type.value,
-    quantity: refs.fuelStockForm.elements.quantity.value,
+    quantity,
     document: refs.fuelStockForm.elements.document.value,
     branchName: refs.fuelStockForm.elements.branchName.value,
     supplierName: refs.fuelStockForm.elements.supplierName.value,
-    unitCost: refs.fuelStockForm.elements.unitCost.value,
+    unitCost,
     occurredAt: toIsoDateTime(refs.fuelStockForm.elements.occurredAt.value),
     notes: refs.fuelStockForm.elements.notes.value,
   };
@@ -10769,9 +13972,9 @@ function resetProductForm() {
   refs.productForm.elements.id.value = "";
   refs.productForm.elements.stockType.value = "COMMON";
   refs.productForm.elements.unit.value = "UN";
-  refs.productForm.elements.minStock.value = 0;
-  refs.productForm.elements.defaultCost.value = 0;
-  refs.productForm.elements.initialStock.value = 0;
+  refs.productForm.elements.minStock.value = formatDecimalInputValue(0, 2);
+  refs.productForm.elements.defaultCost.value = formatDecimalInputValue(0, 2);
+  refs.productForm.elements.initialStock.value = formatDecimalInputValue(0, 2);
   refs.productForm.elements.initialStock.disabled = false;
   syncProductFormState();
 }
@@ -11198,4 +14401,3 @@ async function handleFuelSubmit(event) {
     showToast(error.message, "error");
   }
 }
-

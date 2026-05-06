@@ -15,6 +15,10 @@
     { name: "Estoque S-500", fuelKind: "S500" },
   ];
   const LEGACY_PUBLIC_INVITE_CODES = new Set(["ADM-LOG-2026", "GER-LOG-2026", "OPE-LOG-2026"]);
+  const SUSPICIOUS_OPERATIONAL_LITERS = 500;
+  const SUSPICIOUS_FUEL_UNIT_COST = 20;
+  const SUSPICIOUS_TOTAL_TOLERANCE = 0.05;
+  const SUSPICIOUS_BALANCE_TOLERANCE = 0.01;
 
   const ROLE_ALIASES = {
     admin: "ADMIN",
@@ -245,18 +249,78 @@
       .replace(/^_+|_+$/g, "");
   }
 
-  function toNumber(value) {
-    if (typeof value === "number") {
-      return Number.isFinite(value) ? value : 0;
-    }
-
+  function sanitizeBrazilianNumberString(value) {
     const normalized = String(value ?? "")
       .trim()
-      .replace(/\./g, "")
-      .replace(",", ".");
+      .replace(/\s+/g, "")
+      .replace(/R\$/gi, "")
+      .replace(/[^\d,.\-+]/g, "");
+
+    if (!normalized) {
+      return "";
+    }
+
+    if (normalized.includes(",")) {
+      return normalized.replace(/\./g, "").replace(",", ".");
+    }
+
+    if (/^[+-]?\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+      return normalized.replace(/\./g, "");
+    }
+
+    return normalized;
+  }
+
+  function parseBrazilianNumber(value) {
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? value : Number.NaN;
+    }
+
+    const normalized = sanitizeBrazilianNumberString(value);
+    if (!normalized) {
+      return Number.NaN;
+    }
+
+    if (!/^[+-]?\d+(?:\.\d+)?$/.test(normalized)) {
+      return Number.NaN;
+    }
 
     const parsed = Number.parseFloat(normalized);
-    return Number.isFinite(parsed) ? parsed : 0;
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }
+
+  function toNumber(value, fallback = 0) {
+    const parsed = parseBrazilianNumber(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function roundNumber(value, digits = 6) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return 0;
+    }
+    return Number(parsed.toFixed(digits));
+  }
+
+  function calculateBalanceAfter(balance, type, quantity) {
+    const currentBalance = toNumber(balance, 0);
+    const movementQuantity = toNumber(quantity, 0);
+    const normalizedType = normalizeText(type).toUpperCase();
+    const isEntry = normalizedType === "IN" || normalizedType === "ENTRY";
+    return roundNumber(isEntry ? currentBalance + movementQuantity : currentBalance - movementQuantity);
+  }
+
+  function calculateTotalCost(quantity, unitCost) {
+    return roundNumber(toNumber(quantity, 0) * toNumber(unitCost, 0));
+  }
+
+  function numbersEqual(left, right, tolerance = 0.000001) {
+    const leftValue = toNumber(left, Number.NaN);
+    const rightValue = toNumber(right, Number.NaN);
+    if (!Number.isFinite(leftValue) || !Number.isFinite(rightValue)) {
+      return false;
+    }
+    return Math.abs(leftValue - rightValue) <= tolerance;
   }
 
   function splitLines(value) {
@@ -456,6 +520,68 @@
     const normalizedProfile = normalizeVehicleFuelProfile(profile, "S500");
     const normalizedFuelKind = normalizeFuelKind(fuelKind, "");
     return !normalizedFuelKind || normalizedProfile === "BOTH" || normalizedProfile === normalizedFuelKind;
+  }
+
+  function formatBrazilianNumberValue(value, minimumFractionDigits = 2, maximumFractionDigits = minimumFractionDigits) {
+    return new Intl.NumberFormat("pt-BR", {
+      minimumFractionDigits,
+      maximumFractionDigits,
+    }).format(toNumber(value, 0));
+  }
+
+  function evaluateFuelRecordSuspicion(record = {}) {
+    const type = normalizeFuelType(record.type, "ENTRY");
+    const quantity = toNumber(record.quantity, 0);
+    const balanceBefore = toNumber(record.balanceBefore, 0);
+    const balanceAfter = toNumber(record.balanceAfter, 0);
+    const reasons = [];
+
+    if (type === "EXIT" && quantity > SUSPICIOUS_OPERATIONAL_LITERS) {
+      reasons.push(`saida operacional acima de ${SUSPICIOUS_OPERATIONAL_LITERS} L`);
+    }
+
+    if (
+      record.balanceBefore !== null &&
+      record.balanceBefore !== undefined &&
+      record.balanceAfter !== null &&
+      record.balanceAfter !== undefined
+    ) {
+      const expectedBalanceAfter = calculateBalanceAfter(balanceBefore, type, quantity);
+      if (!numbersEqual(balanceAfter, expectedBalanceAfter, SUSPICIOUS_BALANCE_TOLERANCE)) {
+        reasons.push("saldo apos o lancamento nao confere com litros e tipo");
+      }
+    }
+
+    return {
+      suspicious: reasons.length > 0,
+      reasons,
+    };
+  }
+
+  function evaluateInventoryMovementSuspicion(movement = {}) {
+    const type = normalizeInventoryMovement(movement.type, "IN");
+    const stockType = normalizeStockType(movement.productStockType || movement.stockType, "COMMON");
+    const quantity = toNumber(movement.quantity, 0);
+    const unitCost = toNumber(movement.unitCost, 0);
+    const totalCost = toNumber(movement.totalCost, 0);
+    const reasons = [];
+
+    if (stockType === "FUEL" && quantity > SUSPICIOUS_OPERATIONAL_LITERS) {
+      reasons.push(`quantidade acima de ${SUSPICIOUS_OPERATIONAL_LITERS} L`);
+    }
+
+    if (stockType === "FUEL" && unitCost > SUSPICIOUS_FUEL_UNIT_COST) {
+      reasons.push(`valor unitario acima de R$ ${formatBrazilianNumberValue(SUSPICIOUS_FUEL_UNIT_COST, 2, 2)}`);
+    }
+
+    if (Math.abs(totalCost - calculateTotalCost(quantity, unitCost)) > SUSPICIOUS_TOTAL_TOLERANCE) {
+      reasons.push("valor total nao bate com quantidade x valor unitario");
+    }
+
+    return {
+      suspicious: reasons.length > 0,
+      reasons,
+    };
   }
 
   function fuelProductNameForKind(fuelKind) {
@@ -692,6 +818,7 @@
         checklistTemplateItems: 1,
         emails: 1,
         actionLogs: 1,
+        fuelHistoryAudits: 1,
       },
       users: [],
       activationCodes: [],
@@ -709,6 +836,7 @@
       checklistTemplateItems: [],
       emails: [],
       actionLogs: [],
+      fuelHistoryAudits: [],
     };
   }
 
@@ -741,6 +869,7 @@
       "checklistTemplateItems",
       "emails",
       "actionLogs",
+      "fuelHistoryAudits",
     ];
 
     for (const key of arrayKeys) {
@@ -764,6 +893,7 @@
       checklistTemplateItems: "checklistTemplateItems",
       emails: "emails",
       actionLogs: "actionLogs",
+      fuelHistoryAudits: "fuelHistoryAudits",
     })) {
       const currentMax = db[arrayKey].reduce(
         (highest, item) => Math.max(highest, Number(item?.id || 0)),
@@ -1058,6 +1188,30 @@
         record.plate = "";
         changed = true;
       }
+      if (record.entryOrigin === undefined) {
+        record.entryOrigin = "MANUAL";
+        changed = true;
+      }
+      if (record.operationKind === undefined) {
+        record.operationKind = "OPERATIONAL";
+        changed = true;
+      }
+      if (record.adjustmentKind === undefined) {
+        record.adjustmentKind = "";
+        changed = true;
+      }
+      if (record.batchReference === undefined) {
+        record.batchReference = "";
+        changed = true;
+      }
+      if (record.rawPayload === undefined) {
+        record.rawPayload = "";
+        changed = true;
+      }
+      if (record.normalizedPayload === undefined) {
+        record.normalizedPayload = "";
+        changed = true;
+      }
     }
 
     return changed;
@@ -1090,34 +1244,632 @@
   }
 
   function createInventoryMovementRecord(db, payload = {}) {
+    const quantity = toNumber(payload.quantity, 0);
+    const type = normalizeInventoryMovement(payload.type, "IN");
+    const balanceAfter = toNumber(payload.balanceAfter, 0);
+    const balanceBefore =
+      payload.balanceBefore === null || payload.balanceBefore === undefined || payload.balanceBefore === ""
+        ? roundNumber(type === "IN" ? balanceAfter - quantity : balanceAfter + quantity)
+        : toNumber(payload.balanceBefore, 0);
+    const createdAt = normalizeText(payload.createdAt) || nowIso();
     const movement = {
       id: nextId(db, "inventoryMovements"),
       productId: Number(payload.productId),
-      type: normalizeInventoryMovement(payload.type, "IN"),
-      quantity: Number(payload.quantity || 0),
-      balanceAfter: Number(payload.balanceAfter || 0),
+      type,
+      quantity,
+      balanceBefore,
+      balanceAfter,
       document: normalizeText(payload.document),
       branchName: normalizeText(payload.branchName),
       supplierName: normalizeText(payload.supplierName),
       fuelKind: normalizeFuelKind(payload.fuelKind, ""),
-      unitCost: Number(payload.unitCost || 0),
-      totalCost: Number(payload.totalCost || 0),
+      unitCost: toNumber(payload.unitCost, 0),
+      totalCost: toNumber(payload.totalCost, 0),
       notes: normalizeText(payload.notes),
       sourceType: normalizeText(payload.sourceType),
       sourceId:
         payload.sourceId === null || payload.sourceId === undefined || payload.sourceId === ""
           ? null
           : Number(payload.sourceId),
+      status: normalizeFuelHistoryStatus(payload.status, "ACTIVE"),
+      cancelReason: normalizeText(payload.cancelReason),
+      canceledAt: normalizeText(payload.canceledAt),
+      canceledBy:
+        payload.canceledBy === null || payload.canceledBy === undefined || payload.canceledBy === ""
+          ? null
+          : Number(payload.canceledBy),
+      correctedAt: normalizeText(payload.correctedAt),
+      correctedBy:
+        payload.correctedBy === null || payload.correctedBy === undefined || payload.correctedBy === ""
+          ? null
+          : Number(payload.correctedBy),
+      updatedAt: normalizeText(payload.updatedAt) || createdAt,
       occurredAt: normalizeText(payload.occurredAt) || nowIso(),
       createdBy:
         payload.createdBy === null || payload.createdBy === undefined || payload.createdBy === ""
           ? null
           : Number(payload.createdBy),
-      createdAt: normalizeText(payload.createdAt) || nowIso(),
+      createdAt,
     };
 
     db.inventoryMovements.push(movement);
     return movement;
+  }
+
+  function normalizeFuelHistoryStatus(value, fallback = "ACTIVE") {
+    const normalized = normalizeText(value).toUpperCase();
+    if (normalized === "CANCELLED" || normalized === "CANCELED" || normalized === "CANCELADO") {
+      return "CANCELLED";
+    }
+    if (normalized === "ACTIVE" || normalized === "ATIVO") {
+      return "ACTIVE";
+    }
+    return fallback;
+  }
+
+  function normalizeFuelHistorySourceKind(value, fallback = "FUEL_RECORD") {
+    const normalized = normalizeText(value).toUpperCase();
+    if (normalized === "FUEL_RECORD" || normalized === "FUEL") {
+      return "FUEL_RECORD";
+    }
+    if (normalized === "INVENTORY_MOVEMENT" || normalized === "INVENTORY") {
+      return "INVENTORY_MOVEMENT";
+    }
+    return fallback;
+  }
+
+  function safeParseStructuredPayload(value) {
+    const normalized = normalizeText(value);
+    if (!normalized) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(normalized);
+    } catch (error) {
+      return normalized;
+    }
+  }
+
+  function createFuelHistoryAudit(db, { sourceKind, sourceId, actionType, reason, oldPayload, newPayload, user, createdAt } = {}) {
+    const audit = {
+      id: nextId(db, "fuelHistoryAudits"),
+      sourceKind: normalizeFuelHistorySourceKind(sourceKind, "FUEL_RECORD"),
+      sourceId: Number(sourceId),
+      actionType: normalizeText(actionType).toUpperCase() || "EDIT",
+      reason: normalizeText(reason),
+      oldPayload: serializeStructuredPayload(oldPayload),
+      newPayload: serializeStructuredPayload(newPayload),
+      createdBy: user?.id ? Number(user.id) : null,
+      createdAt: normalizeText(createdAt) || nowIso(),
+    };
+    db.fuelHistoryAudits.push(audit);
+    return audit;
+  }
+
+  function queryFuelHistoryAudits(db, sourceKind, sourceId) {
+    return db.fuelHistoryAudits
+      .filter(
+        (item) =>
+          normalizeFuelHistorySourceKind(item.sourceKind, "FUEL_RECORD") ===
+            normalizeFuelHistorySourceKind(sourceKind, "FUEL_RECORD") &&
+          Number(item.sourceId) === Number(sourceId)
+      )
+      .slice()
+      .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")) || Number(right.id) - Number(left.id))
+      .map((item) => ({
+        id: Number(item.id),
+        sourceKind: normalizeFuelHistorySourceKind(item.sourceKind, "FUEL_RECORD"),
+        sourceId: Number(item.sourceId),
+        actionType: item.actionType,
+        reason: item.reason || "",
+        oldPayload: safeParseStructuredPayload(item.oldPayload),
+        newPayload: safeParseStructuredPayload(item.newPayload),
+        userName: getUserById(db, item.createdBy)?.name || "",
+        createdAt: item.createdAt,
+      }));
+  }
+
+  function getFuelMirrorMovement(db, recordId) {
+    return (
+      db.inventoryMovements.find(
+        (movement) =>
+          normalizeText(movement.sourceType) === "FUEL_RECORD" && Number(movement.sourceId) === Number(recordId)
+      ) || null
+    );
+  }
+
+  function updateFuelMirrorMovement(db, record, storage, options = {}) {
+    if (!record || !storage?.productId) {
+      return;
+    }
+
+    const linkedFuelProduct =
+      options.linkedFuelProduct ||
+      db.products.find((item) => Number(item.id) === Number(storage.productId) && item.active !== false) ||
+      null;
+    if (!linkedFuelProduct) {
+      return;
+    }
+
+    const mirror = getFuelMirrorMovement(db, record.id);
+    const unitCost = Number(options.unitCost ?? mirror?.unitCost ?? linkedFuelProduct.defaultCost ?? 0);
+    const totalCost = calculateTotalCost(Number(record.quantity || 0), unitCost);
+    const document =
+      normalizeText(record.document) ||
+      (record.operationKind === "ADJUSTMENT"
+        ? "AJUSTE-SALDO-COMBUSTIVEL"
+        : record.type === "ENTRY"
+          ? "ENTRADA-OPERACIONAL-COMBUSTIVEL"
+          : "ABASTECIMENTO-OPERACIONAL");
+    const notes =
+      record.operationKind === "ADJUSTMENT"
+        ? [
+            normalizeText(record.notes),
+            normalizeText(record.adjustmentKind) === "DECREASE"
+              ? "Ajuste manual de reducao de saldo no tanque."
+              : "Ajuste manual de acrescimo de saldo no tanque.",
+          ]
+            .filter(Boolean)
+            .join(" | ")
+        : record.type === "EXIT"
+          ? [normalizeText(record.notes), record.plate ? `Abastecimento operacional da placa ${record.plate}` : ""].filter(Boolean).join(" | ")
+          : [normalizeText(record.notes), "Entrada registrada no modulo operacional de combustivel."].filter(Boolean).join(" | ");
+
+    if (!mirror) {
+      createInventoryMovementRecord(db, {
+        productId: Number(storage.productId),
+        type: record.type === "ENTRY" ? "IN" : "OUT",
+        quantity: Number(record.quantity || 0),
+        balanceBefore: Number(record.balanceBefore || 0),
+        balanceAfter: Number(record.balanceAfter || 0),
+        document,
+        fuelKind: storage.fuelKind,
+        unitCost,
+        totalCost,
+        notes,
+        sourceType: "FUEL_RECORD",
+        sourceId: Number(record.id),
+        status: normalizeFuelHistoryStatus(record.status, "ACTIVE"),
+        cancelReason: normalizeText(record.cancelReason) || null,
+        canceledAt: normalizeText(record.canceledAt) || null,
+        canceledBy: record.canceledBy ? Number(record.canceledBy) : null,
+        correctedAt: normalizeText(record.correctedAt) || null,
+        correctedBy: record.correctedBy ? Number(record.correctedBy) : null,
+        updatedAt: normalizeText(record.updatedAt) || normalizeText(record.createdAt) || nowIso(),
+        occurredAt: normalizeText(record.occurredAt) || nowIso(),
+        createdBy: record.createdBy ? Number(record.createdBy) : null,
+        createdAt: normalizeText(record.createdAt) || nowIso(),
+      });
+      return;
+    }
+
+    mirror.type = record.type === "ENTRY" ? "IN" : "OUT";
+    mirror.quantity = Number(record.quantity || 0);
+    mirror.balanceBefore = Number(record.balanceBefore || 0);
+    mirror.balanceAfter = Number(record.balanceAfter || 0);
+    mirror.document = document || "";
+    mirror.fuelKind = storage.fuelKind || "";
+    mirror.unitCost = unitCost;
+    mirror.totalCost = totalCost;
+    mirror.notes = notes;
+    mirror.status = normalizeFuelHistoryStatus(record.status, "ACTIVE");
+    mirror.cancelReason = normalizeText(record.cancelReason) || "";
+    mirror.canceledAt = normalizeText(record.canceledAt) || "";
+    mirror.canceledBy = record.canceledBy ? Number(record.canceledBy) : null;
+    mirror.correctedAt = normalizeText(record.correctedAt) || "";
+    mirror.correctedBy = record.correctedBy ? Number(record.correctedBy) : null;
+    mirror.updatedAt = normalizeText(record.updatedAt) || nowIso();
+    mirror.occurredAt = normalizeText(record.occurredAt) || nowIso();
+  }
+
+  function rebuildFuelStorageLedger(db, storageId) {
+    const storage = db.fuelStorages.find((item) => Number(item.id) === Number(storageId)) || null;
+    if (!storage) {
+      return null;
+    }
+
+    const linkedFuelProduct =
+      storage.productId
+        ? db.products.find((item) => Number(item.id) === Number(storage.productId) && item.active !== false) || null
+        : null;
+    const productId = linkedFuelProduct ? Number(linkedFuelProduct.id) : Number(storage.productId || 0);
+
+    const inventoryEvents = productId
+      ? db.inventoryMovements
+          .filter(
+            (movement) =>
+              Number(movement.productId) === Number(productId) &&
+              normalizeFuelHistoryStatus(movement.status, "ACTIVE") === "ACTIVE" &&
+              normalizeText(movement.sourceType) !== "FUEL_RECORD"
+          )
+          .map((movement) => ({
+            id: Number(movement.id),
+            sourceKind: "INVENTORY_MOVEMENT",
+            type: movement.type,
+            quantity: Number(movement.quantity || 0),
+            occurredAt: movement.occurredAt || "",
+            createdAt: movement.createdAt || "",
+          }))
+      : [];
+
+    const recordEvents = db.fuelRecords
+      .filter(
+        (record) =>
+          Number(record.storageId) === Number(storageId) &&
+          normalizeFuelHistoryStatus(record.status, "ACTIVE") === "ACTIVE"
+      )
+      .map((record) => ({
+        id: Number(record.id),
+        sourceKind: "FUEL_RECORD",
+        type: record.type,
+        quantity: Number(record.quantity || 0),
+        occurredAt: record.occurredAt || "",
+        createdAt: record.createdAt || "",
+      }));
+
+    const orderedEvents = [...inventoryEvents, ...recordEvents].sort(
+      (left, right) =>
+        String(left.occurredAt || "").localeCompare(String(right.occurredAt || "")) ||
+        String(left.createdAt || "").localeCompare(String(right.createdAt || "")) ||
+        String(left.sourceKind || "").localeCompare(String(right.sourceKind || "")) ||
+        Number(left.id || 0) - Number(right.id || 0)
+    );
+
+    let runningBalance = 0;
+    const timestamp = nowIso();
+    for (const event of orderedEvents) {
+      const quantity = Number(event.quantity || 0);
+      const nextBalance = calculateBalanceAfter(runningBalance, event.type, quantity);
+      if (nextBalance < 0) {
+        throw new Error(`O recalculo deixaria o estoque ${storage.name} negativo.`);
+      }
+
+      if (event.sourceKind === "INVENTORY_MOVEMENT") {
+        const movement = db.inventoryMovements.find((item) => Number(item.id) === Number(event.id));
+        if (movement) {
+          movement.balanceBefore = runningBalance;
+          movement.balanceAfter = nextBalance;
+          movement.updatedAt = timestamp;
+        }
+      } else {
+        const record = db.fuelRecords.find((item) => Number(item.id) === Number(event.id));
+        if (record) {
+          record.balanceBefore = runningBalance;
+          record.balanceAfter = nextBalance;
+          record.updatedAt = timestamp;
+          updateFuelMirrorMovement(db, record, storage, { linkedFuelProduct });
+        }
+      }
+
+      runningBalance = nextBalance;
+    }
+
+    storage.currentBalance = runningBalance;
+    storage.updatedAt = timestamp;
+
+    if (linkedFuelProduct) {
+      linkedFuelProduct.currentStock = runningBalance;
+      linkedFuelProduct.updatedAt = timestamp;
+    }
+
+    return {
+      storageId: Number(storageId),
+      finalBalance: runningBalance,
+    };
+  }
+
+  function normalizeFuelEntryOrigin(value, fallback = "MANUAL") {
+    const normalized = normalizeText(value).toUpperCase();
+    if (normalized === "BATCH" || normalized === "LOTE" || normalized === "LANCAMENTO_EM_LOTE") {
+      return "BATCH";
+    }
+    if (normalized === "MANUAL" || normalized === "INDIVIDUAL") {
+      return "MANUAL";
+    }
+    return fallback;
+  }
+
+  function normalizeFuelOperationKind(value, fallback = "OPERATIONAL") {
+    const normalized = normalizeText(value).toUpperCase();
+    if (
+      normalized === "ADJUSTMENT" ||
+      normalized === "AJUSTE" ||
+      normalized === "BALANCE_ADJUSTMENT" ||
+      normalized === "AJUSTE_DE_SALDO"
+    ) {
+      return "ADJUSTMENT";
+    }
+    if (normalized === "OPERATIONAL" || normalized === "ABASTECIMENTO" || normalized === "OPERATIONAL_EXIT") {
+      return "OPERATIONAL";
+    }
+    return fallback;
+  }
+
+  function normalizeFuelAdjustmentKind(value, fallback = "") {
+    const normalized = normalizeText(value).toUpperCase();
+    if (
+      normalized === "INCREASE" ||
+      normalized === "IN" ||
+      normalized === "PLUS" ||
+      normalized === "CREDIT" ||
+      normalized === "ENTRADA" ||
+      normalized === "ACRESCIMO"
+    ) {
+      return "INCREASE";
+    }
+    if (
+      normalized === "DECREASE" ||
+      normalized === "OUT" ||
+      normalized === "MINUS" ||
+      normalized === "DEBIT" ||
+      normalized === "SAIDA" ||
+      normalized === "REDUCAO"
+    ) {
+      return "DECREASE";
+    }
+    return fallback;
+  }
+
+  function serializeStructuredPayload(value) {
+    if (value === null || value === undefined || value === "") {
+      return "";
+    }
+    if (typeof value === "string") {
+      return normalizeText(value);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      return normalizeText(String(value));
+    }
+  }
+
+  function isValidDateTimeValue(value) {
+    const normalized = normalizeText(value);
+    if (!normalized) {
+      return false;
+    }
+    const timestamp = Date.parse(normalized);
+    return Number.isFinite(timestamp);
+  }
+
+  function buildFuelBatchReference() {
+    const timeChunk = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+    const randomChunk = Math.random().toString(36).slice(2, 8).toUpperCase();
+    return `FUELBATCH-${timeChunk}-${randomChunk}`;
+  }
+
+  function resolveFuelStorageRecord(db, { storageId, fuelKind } = {}) {
+    if (storageId) {
+      return (
+        db.fuelStorages.find((item) => Number(item.id) === Number(storageId) && item.active !== false) || null
+      );
+    }
+
+    const normalizedFuelKind = normalizeFuelKind(fuelKind, "");
+    if (!normalizedFuelKind) {
+      return null;
+    }
+
+    return (
+      db.fuelStorages.find(
+        (item) => item.active !== false && normalizeFuelKind(item.fuelKind, "") === normalizedFuelKind
+      ) || null
+    );
+  }
+
+  function resolveFuelVehicleRecord(db, { vehicleId, plate } = {}) {
+    const numericVehicleId = Number(vehicleId || 0);
+    const normalizedPlate = normalizePlate(plate);
+
+    let vehicle =
+      db.vehicles.find((item) => Number(item.id) === numericVehicleId && item.active !== false) || null;
+    if (!vehicle && normalizedPlate) {
+      vehicle =
+        db.vehicles.find(
+          (item) => item.active !== false && normalizePlate(item.plate) === normalizedPlate
+        ) || null;
+    }
+    return vehicle;
+  }
+
+  function persistFuelRecord(db, payload = {}) {
+    const storage = payload.storage || null;
+    if (!storage) {
+      throw new Error("Estoque de combustivel nao encontrado.");
+    }
+
+    const type = normalizeFuelType(payload.type, "ENTRY");
+    const quantity = toNumber(payload.quantity, 0);
+    const notes = normalizeText(payload.notes);
+    const occurredAt = normalizeText(payload.occurredAt) || nowIso();
+    const entryOrigin = normalizeFuelEntryOrigin(payload.entryOrigin, "MANUAL");
+    const operationKind = normalizeFuelOperationKind(
+      payload.operationKind,
+      type === "EXIT" ? "OPERATIONAL" : "ADJUSTMENT"
+    );
+    const adjustmentKind =
+      operationKind === "ADJUSTMENT"
+        ? normalizeFuelAdjustmentKind(payload.adjustmentKind, type === "EXIT" ? "DECREASE" : "INCREASE")
+        : "";
+    const vehicle = payload.vehicle || null;
+    const requiresVehicle = type === "EXIT" && operationKind !== "ADJUSTMENT";
+
+    if (requiresVehicle && !vehicle) {
+      throw new Error("Selecione um veiculo ativo para registrar a saida.");
+    }
+
+    if (vehicle && !vehicleSupportsFuel(vehicle.fuelProfile, storage.fuelKind)) {
+      throw new Error("Este veiculo nao aceita o combustivel selecionado.");
+    }
+
+    const currentBalance = Number(storage.currentBalance || 0);
+    const nextBalance = calculateBalanceAfter(currentBalance, type, quantity);
+    if (nextBalance < 0) {
+      throw new Error(`A saida nao pode deixar o estoque ${storage.name} negativo.`);
+    }
+
+    const relatedVehicleId = vehicle ? Number(vehicle.id || 0) || null : null;
+    const plate = vehicle ? normalizePlate(vehicle.plate) : normalizePlate(payload.plate);
+    const linkedFuelProduct =
+      storage.productId
+        ? db.products.find((item) => Number(item.id) === Number(storage.productId) && item.active !== false) ||
+          null
+        : null;
+    const mirroredUnitCost = Number(linkedFuelProduct?.defaultCost || 0);
+    const mirroredTotalCost = calculateTotalCost(quantity, mirroredUnitCost);
+    const timestamp = normalizeText(payload.createdAt) || nowIso();
+    const rawPayload = serializeStructuredPayload(payload.rawPayload);
+    const normalizedPayload = serializeStructuredPayload(payload.normalizedPayload);
+    const batchReference = normalizeText(payload.batchReference);
+    const document = normalizeText(payload.document);
+    const status = normalizeFuelHistoryStatus(payload.status, "ACTIVE");
+    const createdBy = payload.createdBy === null || payload.createdBy === undefined ? null : Number(payload.createdBy);
+
+    const mirrorDocument =
+      document ||
+      (operationKind === "ADJUSTMENT"
+        ? "AJUSTE-SALDO-COMBUSTIVEL"
+        : type === "ENTRY"
+          ? "ENTRADA-OPERACIONAL-COMBUSTIVEL"
+          : "ABASTECIMENTO-OPERACIONAL");
+    const mirrorNotes =
+      operationKind === "ADJUSTMENT"
+        ? [
+            notes,
+            adjustmentKind === "DECREASE"
+              ? "Ajuste manual de reducao de saldo no tanque."
+              : "Ajuste manual de acrescimo de saldo no tanque.",
+          ]
+            .filter(Boolean)
+            .join(" | ")
+        : type === "EXIT"
+          ? [notes, plate ? `Abastecimento operacional da placa ${plate}` : ""].filter(Boolean).join(" | ")
+          : [notes, "Entrada registrada no modulo operacional de combustivel."].filter(Boolean).join(" | ");
+
+    const record = {
+      id: nextId(db, "fuelRecords"),
+      storageId: Number(storage.id),
+      storageName: storage.name,
+      fuelKind: storage.fuelKind,
+      vehicleId: relatedVehicleId,
+      type,
+      plate,
+      quantity,
+      odometerKm: payload.odometerKm === null || payload.odometerKm === undefined ? null : toNumber(payload.odometerKm, 0),
+      balanceBefore: currentBalance,
+      balanceAfter: nextBalance,
+      document,
+      entryOrigin,
+      operationKind,
+      adjustmentKind,
+      batchReference,
+      rawPayload,
+      normalizedPayload,
+      status,
+      cancelReason: normalizeText(payload.cancelReason),
+      canceledAt: normalizeText(payload.canceledAt),
+      canceledBy:
+        payload.canceledBy === null || payload.canceledBy === undefined || payload.canceledBy === ""
+          ? null
+          : Number(payload.canceledBy),
+      correctedAt: normalizeText(payload.correctedAt),
+      correctedBy:
+        payload.correctedBy === null || payload.correctedBy === undefined || payload.correctedBy === ""
+          ? null
+          : Number(payload.correctedBy),
+      updatedAt: normalizeText(payload.updatedAt) || timestamp,
+      notes,
+      occurredAt,
+      createdBy,
+      createdAt: timestamp,
+    };
+
+    db.fuelRecords.push(record);
+    storage.currentBalance = nextBalance;
+    storage.updatedAt = timestamp;
+
+    if (linkedFuelProduct) {
+      createInventoryMovementRecord(db, {
+        productId: linkedFuelProduct.id,
+        type: type === "ENTRY" ? "IN" : "OUT",
+        quantity,
+        balanceBefore: currentBalance,
+        balanceAfter: nextBalance,
+        document: mirrorDocument,
+        fuelKind: storage.fuelKind,
+        unitCost: mirroredUnitCost,
+        totalCost: mirroredTotalCost,
+        notes: mirrorNotes,
+        sourceType: "FUEL_RECORD",
+        sourceId: record.id,
+        status,
+        cancelReason: normalizeText(payload.cancelReason),
+        canceledAt: normalizeText(payload.canceledAt),
+        canceledBy:
+          payload.canceledBy === null || payload.canceledBy === undefined || payload.canceledBy === ""
+            ? null
+            : Number(payload.canceledBy),
+        correctedAt: normalizeText(payload.correctedAt),
+        correctedBy:
+          payload.correctedBy === null || payload.correctedBy === undefined || payload.correctedBy === ""
+            ? null
+            : Number(payload.correctedBy),
+        updatedAt: normalizeText(payload.updatedAt) || timestamp,
+        occurredAt,
+        createdBy,
+        createdAt: timestamp,
+      });
+
+      linkedFuelProduct.currentStock = nextBalance;
+      linkedFuelProduct.updatedAt = timestamp;
+    }
+
+    if (payload.user) {
+      logAction(db, payload.user, "CREATE_FUEL_RECORD", "FUEL", record.id, {
+        storageId: Number(storage.id),
+        storageName: storage.name,
+        productId: linkedFuelProduct ? Number(linkedFuelProduct.id) : null,
+        fuelKind: storage.fuelKind,
+        vehicleId: relatedVehicleId,
+        type,
+        plate,
+        quantity,
+        odometerKm: record.odometerKm,
+        balanceBefore: currentBalance,
+        balanceAfter: nextBalance,
+        entryOrigin,
+        operationKind,
+        adjustmentKind,
+        batchReference,
+        rawPayload,
+        normalizedPayload,
+        document,
+        status,
+      });
+    }
+
+    return {
+      recordId: record.id,
+      storageId: Number(storage.id),
+      storageName: storage.name,
+      fuelKind: storage.fuelKind,
+      linkedProductId: linkedFuelProduct ? Number(linkedFuelProduct.id) : null,
+      vehicleId: relatedVehicleId,
+      type,
+      quantity,
+      odometerKm: record.odometerKm,
+      plate,
+      balanceBefore: currentBalance,
+      balanceAfter: nextBalance,
+      document,
+      entryOrigin,
+      operationKind,
+      adjustmentKind,
+      batchReference,
+      status,
+    };
   }
 
   function getFuelStorageByProductId(db, productId) {
@@ -1521,13 +2273,16 @@
         if (filters.supplierName && !includesSearch(movement.supplierName, filters.supplierName)) {
           return false;
         }
+        if (!filters.includeCancelled && normalizeFuelHistoryStatus(movement.status, "ACTIVE") !== "ACTIVE") {
+          return false;
+        }
         return true;
       })
       .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt) || Number(right.id) - Number(left.id))
       .map((movement) => {
         const product = db.products.find((item) => Number(item.id) === Number(movement.productId));
         const user = getUserById(db, movement.createdBy);
-        return {
+        const item = {
           id: Number(movement.id),
           productId: Number(movement.productId),
           productName: product?.name || "Produto removido",
@@ -1535,6 +2290,7 @@
           productStockType: normalizeStockType(product?.stockType, "COMMON"),
           type: movement.type,
           quantity: Number(movement.quantity || 0),
+          balanceBefore: Number(movement.balanceBefore || 0),
           balanceAfter: Number(movement.balanceAfter || 0),
           document: movement.document || "",
           branchName: movement.branchName || "",
@@ -1548,7 +2304,20 @@
           notes: movement.notes || "",
           occurredAt: movement.occurredAt,
           createdAt: movement.createdAt,
+          updatedAt: movement.updatedAt || movement.createdAt,
           userName: user?.name || "",
+          status: normalizeFuelHistoryStatus(movement.status, "ACTIVE"),
+          cancelReason: movement.cancelReason || "",
+          canceledAt: movement.canceledAt || "",
+          canceledBy: movement.canceledBy ? Number(movement.canceledBy) : null,
+          correctedAt: movement.correctedAt || "",
+          correctedBy: movement.correctedBy ? Number(movement.correctedBy) : null,
+        };
+        const suspicion = evaluateInventoryMovementSuspicion(item);
+        return {
+          ...item,
+          suspicious: suspicion.suspicious,
+          suspiciousReasons: suspicion.reasons,
         };
       });
   }
@@ -1568,12 +2337,15 @@
         if (filters.to && String(record.occurredAt || "") > String(filters.to)) {
           return false;
         }
+        if (!filters.includeCancelled && normalizeFuelHistoryStatus(record.status, "ACTIVE") !== "ACTIVE") {
+          return false;
+        }
         return true;
       })
       .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt) || Number(right.id) - Number(left.id))
       .map((record) => {
         const vehicle = db.vehicles.find((item) => Number(item.id) === Number(record.vehicleId));
-        return {
+        const item = {
           id: Number(record.id),
           storageId: record.storageId ? Number(record.storageId) : null,
           storageName: record.storageName || "",
@@ -1586,13 +2358,33 @@
             record.odometerKm === null || record.odometerKm === undefined ? null : Number(record.odometerKm),
           balanceBefore: Number(record.balanceBefore || 0),
           balanceAfter: Number(record.balanceAfter || 0),
+          document: record.document || "",
+          entryOrigin: normalizeFuelEntryOrigin(record.entryOrigin, "MANUAL"),
+          operationKind: normalizeFuelOperationKind(record.operationKind, "OPERATIONAL"),
+          adjustmentKind: normalizeFuelAdjustmentKind(record.adjustmentKind, ""),
+          batchReference: record.batchReference || "",
+          rawPayload: record.rawPayload || "",
+          normalizedPayload: record.normalizedPayload || "",
           notes: record.notes || "",
           occurredAt: record.occurredAt,
           createdAt: record.createdAt,
+          updatedAt: record.updatedAt || record.createdAt,
           userName: getUserById(db, record.createdBy)?.name || "",
           vehicleBrand: vehicle?.brand || "",
           vehicleModel: vehicle?.model || "",
           vehicleSector: vehicle?.sector || "",
+          status: normalizeFuelHistoryStatus(record.status, "ACTIVE"),
+          cancelReason: record.cancelReason || "",
+          canceledAt: record.canceledAt || "",
+          canceledBy: record.canceledBy ? Number(record.canceledBy) : null,
+          correctedAt: record.correctedAt || "",
+          correctedBy: record.correctedBy ? Number(record.correctedBy) : null,
+        };
+        const suspicion = evaluateFuelRecordSuspicion(item);
+        return {
+          ...item,
+          suspicious: suspicion.suspicious,
+          suspiciousReasons: suspicion.reasons,
         };
       });
   }
@@ -1631,6 +2423,230 @@
     };
   }
 
+  function resolveFuelHistoryMovementKindFromInventory(movement = {}) {
+    const document = normalizeText(movement.document).toUpperCase();
+    const type = normalizeInventoryMovement(movement.type, "IN");
+    if (document.includes("SALDO-INICIAL")) {
+      return "INITIAL_BALANCE";
+    }
+    if (type === "OUT") {
+      return "CORRECTION";
+    }
+    return "ENTRY";
+  }
+
+  function resolveFuelHistoryMovementKindFromRecord(record = {}) {
+    if (normalizeFuelOperationKind(record.operationKind, "OPERATIONAL") === "ADJUSTMENT") {
+      return "ADJUSTMENT";
+    }
+    if (normalizeFuelHistoryStatus(record.status, "ACTIVE") === "CANCELLED") {
+      return "CANCELLED";
+    }
+    if (normalizeFuelType(record.type, "EXIT") === "EXIT") {
+      return "OPERATIONAL_EXIT";
+    }
+    return "CORRECTION";
+  }
+
+  function getFuelHistoryEntry(db, sourceKind, sourceId) {
+    const normalizedSourceKind = normalizeFuelHistorySourceKind(sourceKind, "FUEL_RECORD");
+    if (normalizedSourceKind === "INVENTORY_MOVEMENT") {
+      const movement = queryInventoryMovements(db, { stockType: "FUEL", includeCancelled: true }).find(
+        (item) => Number(item.id) === Number(sourceId) && item.sourceType !== "FUEL_RECORD"
+      );
+      if (!movement) {
+        return null;
+      }
+
+      const storage = getFuelStorageByProductId(db, movement.productId);
+      return {
+        historyId: `IM-${movement.id}`,
+        sourceKind: "INVENTORY_MOVEMENT",
+        sourceId: movement.id,
+        status: movement.status,
+        corrected: Boolean(movement.correctedAt),
+        canceled: movement.status === "CANCELLED",
+        occurredAt: movement.occurredAt,
+        fuelKind: movement.fuelKind,
+        storageId: storage ? Number(storage.id) : null,
+        storageName: storage?.name || movement.productName || "",
+        movementKind: resolveFuelHistoryMovementKindFromInventory(movement),
+        plate: "",
+        vehicleLabel: "",
+        odometerKm: null,
+        quantity: Number(movement.quantity || 0),
+        unitCost: Number(movement.unitCost || 0),
+        totalCost: Number(movement.totalCost || 0),
+        balanceBefore: Number(movement.balanceBefore || 0),
+        balanceAfter: Number(movement.balanceAfter || 0),
+        document: movement.document || "",
+        originLabel: movement.sourceType || movement.document || "MANUAL",
+        supplierName: movement.supplierName || "",
+        branchName: movement.branchName || "",
+        notes: movement.notes || "",
+        userName: movement.userName || "",
+        suspicious: movement.suspicious,
+        suspiciousReasons: movement.suspiciousReasons || [],
+        cancelReason: movement.cancelReason || "",
+        correctedAt: movement.correctedAt || "",
+        updatedAt: movement.updatedAt || movement.createdAt,
+        rawPayload: null,
+        normalizedPayload: null,
+      };
+    }
+
+    const record = queryFuelRecords(db, { includeCancelled: true }).find((item) => Number(item.id) === Number(sourceId));
+    if (!record) {
+      return null;
+    }
+
+    const mirror = getFuelMirrorMovement(db, record.id);
+    return {
+      historyId: `FR-${record.id}`,
+      sourceKind: "FUEL_RECORD",
+      sourceId: record.id,
+      status: record.status,
+      corrected: Boolean(record.correctedAt),
+      canceled: record.status === "CANCELLED",
+      occurredAt: record.occurredAt,
+      fuelKind: record.fuelKind,
+      storageId: record.storageId,
+      storageName: record.storageName || "",
+      movementKind: resolveFuelHistoryMovementKindFromRecord(record),
+      plate: record.plate || "",
+      vehicleLabel: [record.vehicleBrand, record.vehicleModel].filter(Boolean).join(" / "),
+      odometerKm: record.odometerKm,
+      quantity: Number(record.quantity || 0),
+      unitCost: Number(mirror?.unitCost || 0),
+      totalCost: Number(mirror?.totalCost || 0),
+      balanceBefore: Number(record.balanceBefore || 0),
+      balanceAfter: Number(record.balanceAfter || 0),
+      document: record.document || mirror?.document || "",
+      originLabel:
+        record.entryOrigin === "BATCH"
+          ? `LOTE${record.batchReference ? ` | ${record.batchReference}` : ""}`
+          : record.entryOrigin || "MANUAL",
+      supplierName: "",
+      branchName: "",
+      notes: record.notes || "",
+      userName: record.userName || "",
+      suspicious: record.suspicious,
+      suspiciousReasons: record.suspiciousReasons || [],
+      cancelReason: record.cancelReason || "",
+      correctedAt: record.correctedAt || "",
+      updatedAt: record.updatedAt || record.createdAt,
+      rawPayload: safeParseStructuredPayload(record.rawPayload),
+      normalizedPayload: safeParseStructuredPayload(record.normalizedPayload),
+    };
+  }
+
+  function queryFuelHistory(db, filters = {}) {
+    const fuelEntryMovements = queryInventoryMovements(db, {
+      stockType: "FUEL",
+      includeCancelled: true,
+      from: filters.from,
+      to: filters.to,
+      fuelKind: filters.fuelKind,
+      document: filters.document,
+      supplierName: filters.supplierName,
+    }).filter((movement) => movement.sourceType !== "FUEL_RECORD");
+    const fuelOperationalRecords = queryFuelRecords(db, {
+      includeCancelled: true,
+      from: filters.from,
+      to: filters.to,
+      fuelKind: filters.fuelKind,
+    });
+
+    const historyItems = [
+      ...fuelEntryMovements.map((movement) => getFuelHistoryEntry(db, "INVENTORY_MOVEMENT", movement.id)),
+      ...fuelOperationalRecords.map((record) => getFuelHistoryEntry(db, "FUEL_RECORD", record.id)),
+    ]
+      .filter(Boolean)
+      .filter((item) => {
+        if (filters.storageId && String(item.storageId || "") !== String(filters.storageId)) {
+          return false;
+        }
+        if (filters.plate && normalizePlate(item.plate || "") !== normalizePlate(filters.plate)) {
+          return false;
+        }
+        if (filters.user && normalizeKey(item.userName || "") !== normalizeKey(filters.user)) {
+          return false;
+        }
+        if (filters.document && !normalizeKey(item.document || item.originLabel || "").includes(normalizeKey(filters.document))) {
+          return false;
+        }
+        if (filters.status && normalizeFuelHistoryStatus(item.status, "ACTIVE") !== normalizeFuelHistoryStatus(filters.status, "ACTIVE")) {
+          return false;
+        }
+        if (filters.movementKind && String(item.movementKind || "").toUpperCase() !== String(filters.movementKind || "").toUpperCase()) {
+          return false;
+        }
+        if (filters.search) {
+          const haystack = [
+            item.storageName,
+            item.fuelKind,
+            item.plate,
+            item.vehicleLabel,
+            item.document,
+            item.originLabel,
+            item.notes,
+            item.userName,
+            item.supplierName,
+          ]
+            .filter(Boolean)
+            .join(" ");
+          if (!normalizeKey(haystack).includes(normalizeKey(filters.search))) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort(
+        (left, right) =>
+          String(right.occurredAt || "").localeCompare(String(left.occurredAt || "")) ||
+          String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")) ||
+          String(right.historyId || "").localeCompare(String(left.historyId || ""))
+      );
+
+    const pageSize = Math.max(5, Math.min(100, Number.parseInt(String(filters.pageSize || 20), 10) || 20));
+    const page = Math.max(1, Number.parseInt(String(filters.page || 1), 10) || 1);
+    const total = historyItems.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(page, totalPages);
+    const startIndex = (safePage - 1) * pageSize;
+    const items = historyItems.slice(startIndex, startIndex + pageSize);
+    const users = Array.from(new Set(historyItems.map((item) => item.userName).filter(Boolean))).sort();
+
+    return {
+      items,
+      pagination: {
+        page: safePage,
+        pageSize,
+        total,
+        totalPages,
+      },
+      users,
+    };
+  }
+
+  function getEditableFuelInventoryMovementRow(db, movementId) {
+    const movement = db.inventoryMovements.find((item) => Number(item.id) === Number(movementId)) || null;
+    if (!movement) {
+      return null;
+    }
+
+    const product = db.products.find((item) => Number(item.id) === Number(movement.productId)) || null;
+    return {
+      ...movement,
+      productName: product?.name || "",
+      productStockType: normalizeStockType(product?.stockType, "COMMON"),
+    };
+  }
+
+  function getEditableFuelRecordRow(db, recordId) {
+    return db.fuelRecords.find((item) => Number(item.id) === Number(recordId)) || null;
+  }
+
   function normalizeDashboardDays(value) {
     const parsed = Number.parseInt(String(value ?? ""), 10);
     return DASHBOARD_PERIODS.includes(parsed) ? parsed : 30;
@@ -1659,12 +2675,16 @@
     const availablePlates = Array.from(
       new Set(
         db.fuelRecords
+          .filter((record) => normalizeFuelHistoryStatus(record.status, "ACTIVE") === "ACTIVE")
           .map((record) => normalizeText(record.plate).toUpperCase())
           .filter(Boolean)
       )
     ).sort((left, right) => left.localeCompare(right));
 
     const relevantRecords = db.fuelRecords.filter((record) => {
+      if (normalizeFuelHistoryStatus(record.status, "ACTIVE") !== "ACTIVE") {
+        return false;
+      }
       const occurredDay = String(record.occurredAt || "").slice(0, 10);
       if (occurredDay < startDay || occurredDay > endDay) {
         return false;
@@ -1736,6 +2756,7 @@
     const odometerRows = db.fuelRecords
       .filter(
         (record) =>
+          normalizeFuelHistoryStatus(record.status, "ACTIVE") === "ACTIVE" &&
           record.type === "EXIT" &&
           normalizeText(record.plate) &&
           record.odometerKm !== null &&
@@ -1818,6 +2839,17 @@
         segments: item.segments.slice(-8),
       }))
       .sort((left, right) => right.kmPerLiter - left.kmPerLiter || left.plate.localeCompare(right.plate));
+    const efficiencySummary = efficiencyRanking.reduce(
+      (summary, item) => {
+        summary.totalDistanceKm += Number(item.totalDistanceKm || 0);
+        summary.totalLiters += Number(item.totalLiters || 0);
+        return summary;
+      },
+      { totalDistanceKm: 0, totalLiters: 0 }
+    );
+    efficiencySummary.vehicleCount = efficiencyRanking.length;
+    efficiencySummary.averageKmPerLiter =
+      efficiencySummary.totalLiters > 0 ? efficiencySummary.totalDistanceKm / efficiencySummary.totalLiters : 0;
 
     let selectedVehicle =
       (selectedPlate && efficiencyRanking.find((item) => item.plate === selectedPlate)) ||
@@ -1882,6 +2914,42 @@
         Number(storage.minBalance || 0) > 0 &&
         Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0)
     ).length;
+    const missingOdometerRecords = exitRecordsInPeriod
+      .filter((record) => record.odometerKm === null || record.odometerKm === undefined)
+      .slice(0, 6)
+      .map((record) => ({
+        plate: normalizeText(record.plate).toUpperCase() || "-",
+        quantity: Number(record.quantity || 0),
+        fuelKind: record.fuelKind || "",
+        storageName: record.storageName || "",
+        occurredAt: record.occurredAt,
+        type: "MISSING_ODOMETER",
+        severity: "WARNING",
+        title: `KM ausente: ${normalizeText(record.plate).toUpperCase() || "Sem placa"}`,
+        description: `Abastecimento de ${formatBrazilianNumberValue(record.quantity || 0, 2, 2)} L sem hodometro registrado.`,
+      }));
+    const suspiciousFuelAlerts = exitRecordsInPeriod
+      .map((record) => {
+        const suspicion = evaluateFuelRecordSuspicion(record);
+        if (!suspicion.suspicious) {
+          return null;
+        }
+        return {
+          type: "SUSPICIOUS_FUEL_RECORD",
+          severity: "WARNING",
+          plate: normalizeText(record.plate).toUpperCase(),
+          occurredAt: record.occurredAt,
+          quantity: Number(record.quantity || 0),
+          title: `Lancamento suspeito: ${normalizeText(record.plate).toUpperCase() || "Sem placa"}`,
+          description: suspicion.reasons.join(" | "),
+        };
+      })
+      .filter(Boolean);
+    const operationalAlerts = [...missingOdometerRecords, ...suspiciousFuelAlerts].sort(
+      (left, right) =>
+        String(right.occurredAt || "").localeCompare(String(left.occurredAt || "")) ||
+        String(left.plate || "").localeCompare(String(right.plate || ""))
+    );
 
     return {
       periodDays,
@@ -1891,6 +2959,7 @@
       totalConsumptionLiters,
       averageDailyConsumption: periodDays ? totalConsumptionLiters / periodDays : 0,
       peakConsumption,
+      efficiencySummary,
       efficiencyRanking,
       selectedVehicle,
       topConsumers,
@@ -1910,6 +2979,15 @@
         totalRecords: exitRecordsInPeriod.length,
         withOdometer: withOdometer.length,
         percent: exitRecordsInPeriod.length ? (withOdometer.length / exitRecordsInPeriod.length) * 100 : 0,
+      },
+      operationalAlerts,
+      alertSummary: {
+        total: operationalAlerts.length,
+        critical: 0,
+        kmErrors: 0,
+        outliers: 0,
+        missingOdometer: missingOdometerRecords.length,
+        suspiciousRecords: suspiciousFuelAlerts.length,
       },
       stockHealth: {
         totalBalance: Number(fuelOverview.totalBalance || 0),
@@ -2186,6 +3264,21 @@
         runningBalance -= quantity;
       }
 
+      const suspicion = evaluateInventoryMovementSuspicion({
+        type: movement.type,
+        stockType: productStockType,
+        quantity,
+        unitCost,
+        totalCost,
+      });
+      if (Math.abs(Number(movement.balanceAfter || 0) - runningBalance) > SUSPICIOUS_BALANCE_TOLERANCE) {
+        suspicion.suspicious = true;
+        suspicion.reasons = [...suspicion.reasons, "saldo acumulado do Kardex nao confere com o historico"];
+      }
+      const notes = [movement.notes || "", suspicion.suspicious ? `Suspeito: ${suspicion.reasons.join(" | ")}` : ""]
+        .filter(Boolean)
+        .join(" | ");
+
       return {
         id: Number(movement.id),
         document: movement.document || "",
@@ -2197,11 +3290,13 @@
         unitCost,
         totalCost,
         balance: runningBalance,
-        notes: movement.notes || "",
+        notes,
         supplierName: movement.supplierName || "",
         branchName: movement.branchName || "",
         fuelKind: movement.fuelKind || "",
         userName: getUserById(db, movement.createdBy)?.name || "",
+        suspicious: suspicion.suspicious,
+        suspiciousReasons: suspicion.reasons,
       };
     });
 
@@ -2787,6 +3882,7 @@
           .slice(0, 5);
 
         const alerts = [
+          ...(fuelAnalytics.operationalAlerts || []),
           ...lowStock.slice(0, 5).map((item) => ({
             type: "LOW_STOCK",
             title: `Estoque minimo: ${item.name}`,
@@ -2810,10 +3906,13 @@
             lowStockCount: lowStock.length,
             todaySchedulesCount: todaySchedules.length,
             alertCount: alerts.length,
+            criticalAlertCount: Number(fuelAnalytics.alertSummary?.critical || 0),
             periodFuelConsumption: Number(fuelAnalytics.totalConsumptionLiters || 0),
             averageDailyConsumption: Number(fuelAnalytics.averageDailyConsumption || 0),
+            averageKmPerLiter: Number(fuelAnalytics.efficiencySummary?.averageKmPerLiter || 0),
             bestKmPerLiter: Number(fuelAnalytics.efficiencyRanking[0]?.kmPerLiter || 0),
             monitoredVehicles: Number(fuelAnalytics.efficiencyRanking.length || 0),
+            activeVehicles: Number(db.vehicles.filter((item) => item.active !== false).length || 0),
           },
           alerts,
           todaySchedules,
@@ -3142,9 +4241,9 @@
         const unit = normalizeText(body.unit || "UN").toUpperCase();
         const barcode = normalizeText(body.barcode);
         const stockType = normalizeStockType(body.stockType || body.category || body.inventoryType, "");
-        const minStock = toNumber(body.minStock);
-        const initialStock = toNumber(body.initialStock);
-        const defaultCost = toNumber(body.defaultCost);
+        const minStock = parseBrazilianNumber(body.minStock);
+        const initialStock = parseBrazilianNumber(body.initialStock);
+        const defaultCost = parseBrazilianNumber(body.defaultCost);
 
         if (!name) {
           throw new ApiError(400, "Nome do produto e obrigatorio.");
@@ -3153,6 +4252,18 @@
         if (!stockType) {
           throw new ApiError(400, "Informe a classificacao do item: comum ou combustivel.");
         }
+
+        if (
+          (body.minStock !== undefined && body.minStock !== "" && (!Number.isFinite(minStock) || minStock < 0)) ||
+          (body.initialStock !== undefined && body.initialStock !== "" && (!Number.isFinite(initialStock) || initialStock < 0)) ||
+          (body.defaultCost !== undefined && body.defaultCost !== "" && (!Number.isFinite(defaultCost) || defaultCost < 0))
+        ) {
+          throw new ApiError(400, "Revise estoque minimo, saldo inicial e custo padrao.");
+        }
+
+        const safeMinStock = Number.isFinite(minStock) ? minStock : 0;
+        const safeInitialStock = Number.isFinite(initialStock) ? initialStock : 0;
+        const safeDefaultCost = Number.isFinite(defaultCost) ? defaultCost : 0;
 
         const barcodeInUse = barcode
           ? db.products.find((item) => item.active !== false && normalizeText(item.barcode) === barcode)
@@ -3169,26 +4280,26 @@
           unit,
           barcode: barcode || "",
           stockType,
-          minStock,
-          currentStock: initialStock,
-          defaultCost,
+          minStock: safeMinStock,
+          currentStock: safeInitialStock,
+          defaultCost: safeDefaultCost,
           active: true,
           createdBy: currentUser.id,
           createdAt: timestamp,
           updatedAt: timestamp,
         });
 
-        if (initialStock > 0) {
+        if (safeInitialStock > 0) {
           const linkedStorage = stockType === "FUEL" ? getFuelStorageByProductId(db, productId) : null;
           createInventoryMovementRecord(db, {
             productId,
             type: "IN",
-            quantity: initialStock,
-            balanceAfter: initialStock,
+            quantity: safeInitialStock,
+            balanceAfter: safeInitialStock,
             document: stockType === "FUEL" ? "SALDO-INICIAL-COMBUSTIVEL" : "SALDO-INICIAL",
             fuelKind: linkedStorage?.fuelKind || "",
-            unitCost: defaultCost,
-            totalCost: defaultCost * initialStock,
+            unitCost: safeDefaultCost,
+            totalCost: calculateTotalCost(safeInitialStock, safeDefaultCost),
             notes: stockType === "FUEL" ? "Saldo inicial do combustivel" : "Saldo inicial do produto",
             occurredAt: timestamp,
             createdBy: currentUser.id,
@@ -3196,7 +4307,7 @@
           });
 
           if (linkedStorage) {
-            linkedStorage.currentBalance = initialStock;
+            linkedStorage.currentBalance = safeInitialStock;
             linkedStorage.updatedAt = timestamp;
           }
         }
@@ -3205,8 +4316,8 @@
           name,
           barcode,
           stockType,
-          initialStock,
-          defaultCost,
+          initialStock: safeInitialStock,
+          defaultCost: safeDefaultCost,
         });
         maybePersist(db);
         return { item: queryProducts(db, "", { stockType }).find((item) => item.id === productId) || null };
@@ -3227,8 +4338,12 @@
           body.stockType || body.category || body.inventoryType || existing.stockType,
           "COMMON"
         );
-        const minStock = toNumber(body.minStock ?? existing.minStock);
-        const defaultCost = toNumber(body.defaultCost ?? existing.defaultCost);
+        const minStock = parseBrazilianNumber(body.minStock ?? existing.minStock);
+        const defaultCost = parseBrazilianNumber(body.defaultCost ?? existing.defaultCost);
+
+        if (!Number.isFinite(minStock) || minStock < 0 || !Number.isFinite(defaultCost) || defaultCost < 0) {
+          throw new ApiError(400, "Revise estoque minimo e custo padrao.");
+        }
 
         const barcodeInUse = barcode
           ? db.products.find(
@@ -3276,17 +4391,22 @@
         const movementProductId = Number(body.productId);
         const type = normalizeInventoryMovement(body.type, "IN");
         const requestedStockType = normalizeStockType(body.stockType || body.category || body.inventoryType, "");
-        const quantity = toNumber(body.quantity);
+        const rawQuantity = normalizeText(body.quantity);
+        const quantity = parseBrazilianNumber(body.quantity);
         const document = normalizeText(body.document);
         const branchName = normalizeText(body.branchName || body.branch || body.unitName);
         const supplierName = normalizeText(body.supplierName || body.supplier);
         const rawUnitCost = normalizeText(body.unitCost);
-        const unitCost = rawUnitCost ? toNumber(rawUnitCost) : null;
+        const unitCost = rawUnitCost ? parseBrazilianNumber(rawUnitCost) : null;
         const notes = normalizeText(body.notes);
         const occurredAt = normalizeText(body.occurredAt) || nowIso();
 
-        if (!movementProductId || quantity <= 0) {
+        if (!movementProductId || !rawQuantity || !Number.isFinite(quantity) || quantity <= 0) {
           throw new ApiError(400, "Informe produto e quantidade valida.");
+        }
+
+        if (rawUnitCost && (!Number.isFinite(unitCost) || unitCost < 0)) {
+          throw new ApiError(400, "Informe um valor unitario valido.");
         }
 
         const product = db.products.find(
@@ -3309,9 +4429,9 @@
             : "";
 
         const currentStock = Number(product.currentStock || 0);
-        const nextStock = type === "IN" ? currentStock + quantity : currentStock - quantity;
+        const nextStock = calculateBalanceAfter(currentStock, type, quantity);
         const effectiveUnitCost = unitCost === null ? Number(product.defaultCost || 0) : unitCost;
-        const totalCost = effectiveUnitCost * quantity;
+        const totalCost = calculateTotalCost(quantity, effectiveUnitCost);
         if (nextStock < 0) {
           throw new ApiError(400, "A saida nao pode deixar o estoque negativo.");
         }
@@ -3384,126 +4504,605 @@
         const currentUser = requireAuth(user);
         const storageId = Number(body.storageId);
         const type = normalizeFuelType(body.type, "ENTRY");
-        const selectedVehicleId = Number(body.vehicleId || 0);
-        const fallbackPlate = normalizePlate(body.plate);
-        const quantity = toNumber(body.quantity);
+        const operationKind = normalizeFuelOperationKind(
+          body.operationKind,
+          type === "EXIT" ? "OPERATIONAL" : "ADJUSTMENT"
+        );
+        const adjustmentKind = normalizeFuelAdjustmentKind(
+          body.adjustmentKind || body.adjustmentType,
+          type === "EXIT" ? "DECREASE" : "INCREASE"
+        );
+        const rawQuantity = normalizeText(body.quantity);
+        const quantity = parseBrazilianNumber(body.quantity);
         const rawOdometer = normalizeText(body.odometerKm);
-        const odometerKm = rawOdometer ? toNumber(rawOdometer) : null;
+        const odometerKm = rawOdometer ? parseBrazilianNumber(rawOdometer) : null;
+        const document = normalizeText(body.document);
         const notes = normalizeText(body.notes);
         const occurredAt = normalizeText(body.occurredAt) || nowIso();
 
-        if (!storageId || quantity <= 0) {
+        if (!storageId || !rawQuantity || !Number.isFinite(quantity) || quantity <= 0) {
           throw new ApiError(400, "Informe estoque e quantidade valida.");
         }
 
-        if (rawOdometer && (!/\d/.test(rawOdometer) || odometerKm < 0)) {
+        if (rawOdometer && (!Number.isFinite(odometerKm) || odometerKm < 0)) {
           throw new ApiError(400, "Informe um hodometro valido.");
         }
 
-        const storage = db.fuelStorages.find(
-          (item) => Number(item.id) === storageId && item.active !== false
-        );
+        if (!isValidDateTimeValue(occurredAt)) {
+          throw new ApiError(400, "Informe uma data e hora valida.");
+        }
+
+        const storage = resolveFuelStorageRecord(db, { storageId });
         if (!storage) {
           throw new ApiError(404, "Estoque de combustivel nao encontrado.");
         }
 
-        let vehicle =
-          db.vehicles.find((item) => Number(item.id) === selectedVehicleId && item.active !== false) || null;
-        if (!vehicle && fallbackPlate) {
-          vehicle = db.vehicles.find(
-            (item) => item.active !== false && normalizePlate(item.plate) === fallbackPlate
-          ) || null;
-        }
+        const vehicle = resolveFuelVehicleRecord(db, {
+          vehicleId: body.vehicleId,
+          plate: body.plate,
+        });
 
-        if (type === "EXIT" && !vehicle) {
+        if (type === "EXIT" && operationKind !== "ADJUSTMENT" && !vehicle) {
           throw new ApiError(400, "Selecione um veiculo ativo para registrar a saida.");
         }
 
-        if (type === "EXIT" && !vehicleSupportsFuel(vehicle?.fuelProfile, storage.fuelKind)) {
+        if (vehicle && !vehicleSupportsFuel(vehicle?.fuelProfile, storage.fuelKind)) {
           throw new ApiError(400, "Este veiculo nao aceita o combustivel selecionado.");
         }
 
-        const currentBalance = Number(storage.currentBalance || 0);
-        const nextBalance = type === "ENTRY" ? currentBalance + quantity : currentBalance - quantity;
-        const plate = type === "EXIT" ? normalizePlate(vehicle?.plate) : "";
-        const vehicleId = type === "EXIT" ? Number(vehicle?.id || 0) : null;
-        const linkedFuelProduct =
-          storage.productId
-            ? db.products.find((item) => Number(item.id) === Number(storage.productId) && item.active !== false) ||
-              null
-            : null;
-        const mirroredUnitCost = Number(linkedFuelProduct?.defaultCost || 0);
-        const mirroredTotalCost = mirroredUnitCost * quantity;
-        if (nextBalance < 0) {
-          throw new ApiError(400, `A saida nao pode deixar o estoque ${storage.name} negativo.`);
-        }
-
-        const recordId = nextId(db, "fuelRecords");
-        const timestamp = nowIso();
-        db.fuelRecords.push({
-          id: recordId,
-          storageId,
-          storageName: storage.name,
-          fuelKind: storage.fuelKind,
-          vehicleId,
+        const created = persistFuelRecord(db, {
+          storage,
+          vehicle,
+          plate: body.plate,
           type,
-          plate,
           quantity,
           odometerKm,
-          balanceBefore: currentBalance,
-          balanceAfter: nextBalance,
+          document,
           notes,
           occurredAt,
           createdBy: currentUser.id,
-          createdAt: timestamp,
+          createdAt: nowIso(),
+          user: currentUser,
+          entryOrigin: body.entryOrigin,
+          operationKind,
+          adjustmentKind,
+          rawPayload:
+            body.rawPayload || {
+              storageId,
+              type,
+              vehicleId: body.vehicleId || "",
+              plate: normalizeText(body.plate),
+              quantity: rawQuantity,
+              odometerKm: rawOdometer,
+              document,
+              notes,
+              occurredAt,
+            },
+          normalizedPayload:
+            body.normalizedPayload || {
+              storageId: Number(storage.id),
+              storageName: storage.name,
+              fuelKind: storage.fuelKind,
+              vehicleId: vehicle ? Number(vehicle.id || 0) : null,
+              plate: vehicle ? normalizePlate(vehicle.plate) : normalizePlate(body.plate),
+              type,
+              quantity,
+              odometerKm,
+              document,
+              occurredAt,
+              entryOrigin: normalizeFuelEntryOrigin(body.entryOrigin, "MANUAL"),
+              operationKind,
+              adjustmentKind: operationKind === "ADJUSTMENT" ? adjustmentKind : "",
+            },
+        });
+        maybePersist(db);
+        return { item: queryFuelRecords(db).find((item) => item.id === created.recordId) || null };
+      }
+
+      if (path === "/api/fuel/batch" && method === "POST") {
+        const currentUser = requireAuth(user);
+        const rows = Array.isArray(body.rows) ? body.rows : [];
+        if (!rows.length) {
+          throw new ApiError(400, "Informe ao menos uma linha para o lancamento em lote.");
+        }
+
+        const batchReference = buildFuelBatchReference();
+        const balanceMap = new Map(
+          db.fuelStorages
+            .filter((item) => item.active !== false)
+            .map((item) => [Number(item.id), Number(item.currentBalance || 0)])
+        );
+
+        const validationResults = rows.map((row, index) => {
+          const clientRowIndex = Number.isInteger(Number(row?.clientRowIndex)) ? Number(row.clientRowIndex) : index;
+          const rawPlate = normalizeText(row?.plate);
+          const rawFuelKind = normalizeText(row?.fuelKind || row?.fuel || row?.combustivel);
+          const rawQuantity = normalizeText(row?.quantity || row?.liters || row?.litros);
+          const rawOdometer = normalizeText(row?.odometerKm || row?.km || row?.hodometro);
+          const occurredAt = normalizeText(row?.occurredAt || row?.dateTime || row?.dataHora) || nowIso();
+          const quantity = parseBrazilianNumber(rawQuantity);
+          const odometerKm = rawOdometer ? parseBrazilianNumber(rawOdometer) : null;
+          const storage = resolveFuelStorageRecord(db, {
+            storageId: row?.storageId,
+            fuelKind: rawFuelKind,
+          });
+          const vehicle = resolveFuelVehicleRecord(db, {
+            vehicleId: row?.vehicleId,
+            plate: rawPlate,
+          });
+          const errors = [];
+          const warnings = [];
+
+          if (!rawPlate) {
+            errors.push("Placa obrigatoria.");
+          }
+          if (!storage) {
+            errors.push("Combustivel/estoque nao encontrado.");
+          }
+          if (!rawQuantity || !Number.isFinite(quantity) || quantity <= 0) {
+            errors.push("Litros invalidos.");
+          }
+          if (rawOdometer && (!Number.isFinite(odometerKm) || odometerKm < 0)) {
+            errors.push("KM invalido.");
+          }
+          if (!isValidDateTimeValue(occurredAt)) {
+            errors.push("Data/hora invalida.");
+          }
+          if (!vehicle) {
+            errors.push("Placa nao cadastrada.");
+          } else if (storage && !vehicleSupportsFuel(vehicle.fuelProfile, storage.fuelKind)) {
+            errors.push("Combustivel incompativel com o veiculo.");
+          }
+          if (Number.isFinite(quantity) && quantity > SUSPICIOUS_OPERATIONAL_LITERS) {
+            warnings.push(`Litros acima de ${SUSPICIOUS_OPERATIONAL_LITERS} L. Confirmar lancamento.`);
+          }
+
+          if (!errors.length && storage) {
+            const reservedBalance = Number(balanceMap.get(Number(storage.id)) || 0);
+            const projectedBalance = calculateBalanceAfter(reservedBalance, "EXIT", quantity);
+            if (projectedBalance < 0) {
+              errors.push(`Saldo insuficiente no estoque ${storage.name}.`);
+            } else {
+              balanceMap.set(Number(storage.id), projectedBalance);
+            }
+          }
+
+          return {
+            lineIndex: clientRowIndex,
+            raw: row || {},
+            normalized: {
+              storageId: storage ? Number(storage.id) : null,
+              storageName: storage?.name || "",
+              fuelKind: storage?.fuelKind || normalizeFuelKind(rawFuelKind, ""),
+              vehicleId: vehicle ? Number(vehicle.id || 0) : null,
+              plate: vehicle ? normalizePlate(vehicle.plate) : normalizePlate(rawPlate),
+              quantity: Number.isFinite(quantity) ? quantity : null,
+              odometerKm: rawOdometer ? odometerKm : null,
+              occurredAt,
+              notes: normalizeText(row?.notes || row?.observation || row?.observacao),
+              entryOrigin: "BATCH",
+              operationKind: "OPERATIONAL",
+            },
+            storage,
+            vehicle,
+            quantity,
+            odometerKm,
+            occurredAt,
+            notes: normalizeText(row?.notes || row?.observation || row?.observacao),
+            errors,
+            warnings,
+          };
         });
 
-        storage.currentBalance = nextBalance;
-        storage.updatedAt = timestamp;
+        const validRows = validationResults.filter((item) => !item.errors.length);
+        const invalidRows = validationResults.filter((item) => item.errors.length);
+        const savedRows = [];
 
-        if (linkedFuelProduct) {
-          createInventoryMovementRecord(db, {
-            productId: linkedFuelProduct.id,
-            type: type === "ENTRY" ? "IN" : "OUT",
-            quantity,
-            balanceAfter: nextBalance,
-            document:
-              type === "ENTRY"
-                ? "ENTRADA-OPERACIONAL-COMBUSTIVEL"
-                : "ABASTECIMENTO-OPERACIONAL",
-            fuelKind: storage.fuelKind,
-            unitCost: mirroredUnitCost,
-            totalCost: mirroredTotalCost,
-            notes:
-              type === "EXIT"
-                ? [notes, plate ? `Abastecimento operacional da placa ${plate}` : ""].filter(Boolean).join(" | ")
-                : [notes, "Entrada registrada no modulo operacional de combustivel."].filter(Boolean).join(" | "),
-            sourceType: "FUEL_RECORD",
-            sourceId: recordId,
-            occurredAt,
+        for (const entry of validRows) {
+          const created = persistFuelRecord(db, {
+            storage: entry.storage,
+            vehicle: entry.vehicle,
+            plate: entry.normalized.plate,
+            type: "EXIT",
+            quantity: entry.quantity,
+            odometerKm: entry.normalized.odometerKm,
+            notes: entry.notes,
+            occurredAt: entry.occurredAt,
             createdBy: currentUser.id,
+            createdAt: nowIso(),
+            user: currentUser,
+            entryOrigin: "BATCH",
+            operationKind: "OPERATIONAL",
+            batchReference,
+            rawPayload: entry.raw,
+            normalizedPayload: entry.normalized,
+          });
+          savedRows.push({
+            lineIndex: entry.lineIndex,
+            recordId: created.recordId,
+            storageId: created.storageId,
+            storageName: created.storageName,
+            fuelKind: created.fuelKind,
+            plate: created.plate,
+            quantity: created.quantity,
+            balanceAfter: created.balanceAfter,
+            warnings: entry.warnings,
+          });
+        }
+
+        logAction(db, currentUser, "CREATE_FUEL_BATCH", "FUEL_BATCH", batchReference, {
+          batchReference,
+          totalRows: rows.length,
+          savedRows: savedRows.length,
+          errorRows: invalidRows.length,
+          totalLiters: savedRows.reduce((total, item) => total + Number(item.quantity || 0), 0),
+          fuelsAffected: Array.from(new Set(savedRows.map((item) => item.fuelKind).filter(Boolean))),
+          errors: invalidRows.map((item) => ({
+            lineIndex: item.lineIndex,
+            plate: item.normalized.plate || normalizePlate(item.raw?.plate),
+            errors: item.errors,
+          })),
+        });
+        maybePersist(db);
+
+        const affectedStorageIds = Array.from(new Set(savedRows.map((item) => Number(item.storageId)).filter(Boolean)));
+        const projectedBalances = affectedStorageIds.map((storageId) => {
+          const storage = queryFuelStorages(db).find((item) => Number(item.id) === Number(storageId));
+          const savedForStorage = savedRows.filter((item) => Number(item.storageId) === Number(storageId));
+          return {
+            storageId,
+            storageName: storage?.name || savedForStorage[0]?.storageName || "",
+            fuelKind: storage?.fuelKind || savedForStorage[0]?.fuelKind || "",
+            currentBalance: Number(storage?.currentBalance || 0),
+            totalLiters: savedForStorage.reduce((total, item) => total + Number(item.quantity || 0), 0),
+          };
+        });
+
+        return {
+          batchReference,
+          totalRows: rows.length,
+          savedRows: savedRows.length,
+          errorRows: invalidRows.length,
+          totalLiters: savedRows.reduce((total, item) => total + Number(item.quantity || 0), 0),
+          fuelsAffected: Array.from(new Set(savedRows.map((item) => item.fuelKind).filter(Boolean))),
+          projectedBalances,
+          results: validationResults.map((item) => {
+            const saved = savedRows.find((entry) => entry.lineIndex === item.lineIndex);
+            return {
+              lineIndex: item.lineIndex,
+              status: saved ? "saved" : "error",
+              recordId: saved?.recordId || null,
+              plate: item.normalized.plate || normalizePlate(item.raw?.plate),
+              fuelKind: item.normalized.fuelKind || "",
+              quantity: item.normalized.quantity,
+              warnings: item.warnings,
+              errors: item.errors,
+            };
+          }),
+        };
+      }
+
+      if (path === "/api/fuel/history" && method === "GET") {
+        requireAuth(user);
+        return queryFuelHistory(db, {
+          from: normalizeText(query.from),
+          to: normalizeText(query.to),
+          fuelKind: normalizeText(query.fuelKind),
+          storageId: query.storageId,
+          movementKind: normalizeText(query.movementKind),
+          plate: normalizeText(query.plate),
+          user: normalizeText(query.user),
+          document: normalizeText(query.document),
+          status: normalizeText(query.status),
+          search: normalizeText(query.search),
+          page: query.page,
+          pageSize: query.pageSize,
+        });
+      }
+
+      const fuelHistoryCancelMatch = path.match(/^\/api\/fuel\/history\/([^/]+)\/(\d+)\/cancel$/);
+      if (fuelHistoryCancelMatch && method === "POST") {
+        const currentUser = requireAuth(user);
+        const sourceKind = normalizeFuelHistorySourceKind(fuelHistoryCancelMatch[1], "");
+        const sourceId = Number(fuelHistoryCancelMatch[2]);
+        const reason = normalizeText(body.reason);
+        if (!reason) {
+          throw new ApiError(400, "Informe o motivo do cancelamento.");
+        }
+
+        if (sourceKind === "INVENTORY_MOVEMENT") {
+          const movement = getEditableFuelInventoryMovementRow(db, sourceId);
+          if (!movement) {
+            throw new ApiError(404, "Entrada de combustivel nao encontrada.");
+          }
+          if (
+            normalizeStockType(movement.productStockType, "COMMON") !== "FUEL" ||
+            normalizeText(movement.sourceType) === "FUEL_RECORD"
+          ) {
+            throw new ApiError(400, "Este lancamento nao pode ser cancelado por esta tela.");
+          }
+          if (normalizeFuelHistoryStatus(movement.status, "ACTIVE") === "CANCELLED") {
+            throw new ApiError(400, "Este lancamento ja esta cancelado.");
+          }
+
+          const storage = getFuelStorageByProductId(db, Number(movement.productId));
+          const previousSnapshot = getFuelHistoryEntry(db, "INVENTORY_MOVEMENT", sourceId);
+          const timestamp = nowIso();
+
+          movement.status = "CANCELLED";
+          movement.cancelReason = reason;
+          movement.canceledAt = timestamp;
+          movement.canceledBy = currentUser.id;
+          movement.updatedAt = timestamp;
+
+          createFuelHistoryAudit(db, {
+            sourceKind: "INVENTORY_MOVEMENT",
+            sourceId,
+            actionType: "CANCEL",
+            reason,
+            oldPayload: previousSnapshot,
+            newPayload: { status: "CANCELLED" },
+            user: currentUser,
             createdAt: timestamp,
           });
 
-          linkedFuelProduct.currentStock = nextBalance;
-          linkedFuelProduct.updatedAt = timestamp;
+          if (storage) {
+            rebuildFuelStorageLedger(db, storage.id);
+          }
+
+          logAction(db, currentUser, "CANCEL_FUEL_HISTORY", "FUEL_HISTORY", `INVENTORY_MOVEMENT:${sourceId}`, {
+            reason,
+          });
+          maybePersist(db);
+          return {
+            item: getFuelHistoryEntry(db, "INVENTORY_MOVEMENT", sourceId),
+            audits: queryFuelHistoryAudits(db, "INVENTORY_MOVEMENT", sourceId),
+          };
         }
 
-        logAction(db, currentUser, "CREATE_FUEL_RECORD", "FUEL", recordId, {
-          storageId,
-          storageName: storage.name,
-          productId: linkedFuelProduct ? Number(linkedFuelProduct.id) : null,
-          fuelKind: storage.fuelKind,
-          vehicleId,
-          type,
-          plate,
-          quantity,
-          odometerKm,
-          balanceBefore: currentBalance,
-          balanceAfter: nextBalance,
-        });
-        maybePersist(db);
-        return { item: queryFuelRecords(db).find((item) => item.id === recordId) || null };
+        if (sourceKind === "FUEL_RECORD") {
+          const record = getEditableFuelRecordRow(db, sourceId);
+          if (!record) {
+            throw new ApiError(404, "Abastecimento nao encontrado.");
+          }
+          if (normalizeFuelHistoryStatus(record.status, "ACTIVE") === "CANCELLED") {
+            throw new ApiError(400, "Este lancamento ja esta cancelado.");
+          }
+
+          const previousSnapshot = getFuelHistoryEntry(db, "FUEL_RECORD", sourceId);
+          const timestamp = nowIso();
+          record.status = "CANCELLED";
+          record.cancelReason = reason;
+          record.canceledAt = timestamp;
+          record.canceledBy = currentUser.id;
+          record.updatedAt = timestamp;
+
+          const storage =
+            record.storageId
+              ? db.fuelStorages.find((item) => Number(item.id) === Number(record.storageId)) || null
+              : null;
+          if (record && storage) {
+            updateFuelMirrorMovement(db, record, storage);
+          }
+
+          createFuelHistoryAudit(db, {
+            sourceKind: "FUEL_RECORD",
+            sourceId,
+            actionType: "CANCEL",
+            reason,
+            oldPayload: previousSnapshot,
+            newPayload: { status: "CANCELLED" },
+            user: currentUser,
+            createdAt: timestamp,
+          });
+
+          if (record.storageId) {
+            rebuildFuelStorageLedger(db, record.storageId);
+          }
+
+          logAction(db, currentUser, "CANCEL_FUEL_HISTORY", "FUEL_HISTORY", `FUEL_RECORD:${sourceId}`, {
+            reason,
+          });
+          maybePersist(db);
+          return {
+            item: getFuelHistoryEntry(db, "FUEL_RECORD", sourceId),
+            audits: queryFuelHistoryAudits(db, "FUEL_RECORD", sourceId),
+          };
+        }
+
+        throw new ApiError(400, "Tipo de lancamento nao suportado.");
+      }
+
+      const fuelHistoryDetailMatch = path.match(/^\/api\/fuel\/history\/([^/]+)\/(\d+)$/);
+      if (fuelHistoryDetailMatch && method === "GET") {
+        requireAuth(user);
+        const item = getFuelHistoryEntry(db, fuelHistoryDetailMatch[1], fuelHistoryDetailMatch[2]);
+        if (!item) {
+          throw new ApiError(404, "Lancamento de combustivel nao encontrado.");
+        }
+
+        return {
+          item,
+          audits: queryFuelHistoryAudits(db, fuelHistoryDetailMatch[1], fuelHistoryDetailMatch[2]),
+        };
+      }
+
+      if (fuelHistoryDetailMatch && method === "PUT") {
+        const currentUser = requireAuth(user);
+        const sourceKind = normalizeFuelHistorySourceKind(fuelHistoryDetailMatch[1], "");
+        const sourceId = Number(fuelHistoryDetailMatch[2]);
+        const reason = normalizeText(body.reason);
+        if (!reason) {
+          throw new ApiError(400, "Informe o motivo da correcao.");
+        }
+
+        if (sourceKind === "INVENTORY_MOVEMENT") {
+          const movement = getEditableFuelInventoryMovementRow(db, sourceId);
+          if (!movement) {
+            throw new ApiError(404, "Entrada de combustivel nao encontrada.");
+          }
+          if (
+            normalizeStockType(movement.productStockType, "COMMON") !== "FUEL" ||
+            normalizeText(movement.sourceType) === "FUEL_RECORD"
+          ) {
+            throw new ApiError(400, "Este lancamento nao pode ser editado pelo historico unificado.");
+          }
+          if (normalizeFuelHistoryStatus(movement.status, "ACTIVE") === "CANCELLED") {
+            throw new ApiError(400, "Nao e possivel editar um lancamento cancelado.");
+          }
+
+          const storage = getFuelStorageByProductId(db, Number(movement.productId));
+          const previousSnapshot = getFuelHistoryEntry(db, "INVENTORY_MOVEMENT", sourceId);
+          const currentQuantity = Number(movement.quantity || 0);
+          const currentUnitCost = Number(movement.unitCost || 0);
+          const nextQuantity =
+            body.quantity !== undefined && body.quantity !== "" ? parseBrazilianNumber(body.quantity) : currentQuantity;
+          const nextUnitCost =
+            body.unitCost !== undefined && body.unitCost !== "" ? parseBrazilianNumber(body.unitCost) : currentUnitCost;
+          const nextDocument = body.document !== undefined ? normalizeText(body.document) : normalizeText(movement.document);
+          const nextSupplier =
+            body.supplierName !== undefined ? normalizeText(body.supplierName) : normalizeText(movement.supplierName);
+          const nextNotes = body.notes !== undefined ? normalizeText(body.notes) : normalizeText(movement.notes);
+
+          if (!Number.isFinite(nextQuantity) || nextQuantity <= 0) {
+            throw new ApiError(400, "Informe uma quantidade valida.");
+          }
+          if (!Number.isFinite(nextUnitCost) || nextUnitCost < 0) {
+            throw new ApiError(400, "Informe um valor unitario valido.");
+          }
+
+          const timestamp = nowIso();
+          const totalCost = calculateTotalCost(nextQuantity, nextUnitCost);
+          movement.quantity = nextQuantity;
+          movement.document = nextDocument || "";
+          movement.supplierName = nextSupplier || "";
+          movement.notes = nextNotes;
+          movement.unitCost = nextUnitCost;
+          movement.totalCost = totalCost;
+          movement.correctedAt = timestamp;
+          movement.correctedBy = currentUser.id;
+          movement.updatedAt = timestamp;
+
+          createFuelHistoryAudit(db, {
+            sourceKind: "INVENTORY_MOVEMENT",
+            sourceId,
+            actionType: "EDIT",
+            reason,
+            oldPayload: previousSnapshot,
+            newPayload: {
+              quantity: nextQuantity,
+              document: nextDocument,
+              supplierName: nextSupplier,
+              notes: nextNotes,
+              unitCost: nextUnitCost,
+              totalCost,
+            },
+            user: currentUser,
+            createdAt: timestamp,
+          });
+
+          if (storage && Math.abs(nextQuantity - currentQuantity) > 0.000001) {
+            rebuildFuelStorageLedger(db, storage.id);
+          }
+
+          logAction(db, currentUser, "UPDATE_FUEL_HISTORY", "FUEL_HISTORY", `INVENTORY_MOVEMENT:${sourceId}`, {
+            reason,
+            quantityBefore: currentQuantity,
+            quantityAfter: nextQuantity,
+            unitCostBefore: currentUnitCost,
+            unitCostAfter: nextUnitCost,
+          });
+          maybePersist(db);
+          return {
+            item: getFuelHistoryEntry(db, "INVENTORY_MOVEMENT", sourceId),
+            audits: queryFuelHistoryAudits(db, "INVENTORY_MOVEMENT", sourceId),
+          };
+        }
+
+        if (sourceKind === "FUEL_RECORD") {
+          const record = getEditableFuelRecordRow(db, sourceId);
+          if (!record) {
+            throw new ApiError(404, "Abastecimento nao encontrado.");
+          }
+          if (normalizeFuelHistoryStatus(record.status, "ACTIVE") === "CANCELLED") {
+            throw new ApiError(400, "Nao e possivel editar um lancamento cancelado.");
+          }
+
+          const previousSnapshot = getFuelHistoryEntry(db, "FUEL_RECORD", sourceId);
+          const operationKind = normalizeFuelOperationKind(record.operationKind, "OPERATIONAL");
+          const nextNotes = body.notes !== undefined ? normalizeText(body.notes) : normalizeText(record.notes);
+          const nextDocument = body.document !== undefined ? normalizeText(body.document) : normalizeText(record.document);
+          let nextQuantity = Number(record.quantity || 0);
+          let nextOdometer = record.odometerKm === null || record.odometerKm === undefined ? null : Number(record.odometerKm);
+
+          if (operationKind !== "ADJUSTMENT" && body.quantity !== undefined && body.quantity !== "") {
+            nextQuantity = parseBrazilianNumber(body.quantity);
+          }
+          if (operationKind !== "ADJUSTMENT" && body.odometerKm !== undefined && body.odometerKm !== "") {
+            nextOdometer = parseBrazilianNumber(body.odometerKm);
+          } else if (operationKind !== "ADJUSTMENT" && body.odometerKm === "") {
+            nextOdometer = null;
+          }
+
+          if (operationKind !== "ADJUSTMENT" && (!Number.isFinite(nextQuantity) || nextQuantity <= 0)) {
+            throw new ApiError(400, "Informe uma quantidade valida.");
+          }
+          if (nextOdometer !== null && (!Number.isFinite(nextOdometer) || nextOdometer < 0)) {
+            throw new ApiError(400, "Informe um KM valido.");
+          }
+
+          const timestamp = nowIso();
+          record.quantity = operationKind === "ADJUSTMENT" ? Number(record.quantity || 0) : nextQuantity;
+          record.odometerKm = nextOdometer;
+          record.document = nextDocument || "";
+          record.notes = nextNotes;
+          record.correctedAt = timestamp;
+          record.correctedBy = currentUser.id;
+          record.updatedAt = timestamp;
+
+          createFuelHistoryAudit(db, {
+            sourceKind: "FUEL_RECORD",
+            sourceId,
+            actionType: "EDIT",
+            reason,
+            oldPayload: previousSnapshot,
+            newPayload: {
+              quantity: operationKind === "ADJUSTMENT" ? Number(record.quantity || 0) : nextQuantity,
+              odometerKm: nextOdometer,
+              document: nextDocument,
+              notes: nextNotes,
+            },
+            user: currentUser,
+            createdAt: timestamp,
+          });
+
+          if (operationKind !== "ADJUSTMENT" && Math.abs(nextQuantity - Number(previousSnapshot?.quantity || 0)) > 0.000001) {
+            rebuildFuelStorageLedger(db, record.storageId);
+          } else {
+            const storage =
+              record.storageId
+                ? db.fuelStorages.find((item) => Number(item.id) === Number(record.storageId)) || null
+                : null;
+            if (storage) {
+              updateFuelMirrorMovement(db, record, storage);
+            }
+          }
+
+          logAction(db, currentUser, "UPDATE_FUEL_HISTORY", "FUEL_HISTORY", `FUEL_RECORD:${sourceId}`, {
+            reason,
+            quantityBefore: Number(previousSnapshot?.quantity || 0),
+            quantityAfter: operationKind === "ADJUSTMENT" ? Number(record.quantity || 0) : nextQuantity,
+            odometerBefore: previousSnapshot?.odometerKm ?? null,
+            odometerAfter: nextOdometer,
+          });
+          maybePersist(db);
+          return {
+            item: getFuelHistoryEntry(db, "FUEL_RECORD", sourceId),
+            audits: queryFuelHistoryAudits(db, "FUEL_RECORD", sourceId),
+          };
+        }
+
+        throw new ApiError(400, "Tipo de lancamento nao suportado.");
       }
 
       if (path === "/api/schedules" && method === "GET") {

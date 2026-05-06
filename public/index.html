@@ -399,7 +399,7 @@
                 </label>
                 <label>
                   <span>Valor</span>
-                  <input type="number" name="totalValue" min="0" step="0.01" required />
+                  <input type="text" name="totalValue" inputmode="decimal" placeholder="0,00" required />
                 </label>
                 <label>
                   <span>DANFE</span>
@@ -534,15 +534,15 @@
                 </label>
                 <label>
                   <span>Estoque mínimo</span>
-                  <input type="number" name="minStock" min="0" step="0.01" value="0" />
+                  <input type="text" name="minStock" inputmode="decimal" value="0,00" />
                 </label>
                 <label>
                   <span>Custo padrão</span>
-                  <input type="number" name="defaultCost" min="0" step="0.01" value="0" />
+                  <input type="text" name="defaultCost" inputmode="decimal" value="0,00" />
                 </label>
                 <label>
                   <span>Saldo inicial</span>
-                  <input type="number" name="initialStock" min="0" step="0.01" value="0" />
+                  <input type="text" name="initialStock" inputmode="decimal" value="0,00" />
                 </label>
               </div>
               <div class="form-actions">
@@ -583,11 +583,11 @@
                 </label>
                 <label>
                   <span>Quantidade</span>
-                  <input type="number" name="quantity" min="0" step="0.01" required />
+                  <input type="text" name="quantity" inputmode="decimal" placeholder="0,00" required />
                 </label>
                 <label>
                   <span>Valor unitário</span>
-                  <input type="number" name="unitCost" min="0" step="0.01" placeholder="0,00" />
+                  <input type="text" name="unitCost" inputmode="decimal" placeholder="0,00" />
                 </label>
                 <label>
                   <span>Documento</span>
@@ -814,18 +814,122 @@
             </div>
             <div class="header-actions">
               <button id="fuel-print-sheet-button" type="button" class="ghost-button">Imprimir folha diaria</button>
-              <select id="fuel-filter-storage">
-                <option value="">Todos os combustíveis</option>
-              </select>
-              <input id="fuel-filter-from" type="datetime-local" />
-              <input id="fuel-filter-to" type="datetime-local" />
-              <select id="fuel-filter-plate">
-                <option value="">Todos os veiculos</option>
-              </select>
             </div>
           </div>
           <div id="fuel-kpi-grid" class="operations-kpi-grid"></div>
-          <div class="two-column-grid operations-main-grid">
+          <div class="fuel-composer-shell">
+            <section class="panel form-card operations-form-card fuel-composer-panel">
+              <div class="card-title">
+                <span class="eyebrow">Lancamento unico</span>
+                <h3>Lancamento de Combustivel</h3>
+              </div>
+              <p class="muted fuel-composer-description">Escolha o tipo de movimentacao e preencha apenas os campos necessarios para acelerar o lancamento.</p>
+              <div id="fuel-launch-mode-buttons" class="fuel-mode-switch" role="tablist" aria-label="Modo de lancamento">
+                <button type="button" class="ghost-button is-active" data-fuel-composer-mode="single">Lancamento individual</button>
+                <button type="button" class="ghost-button" data-fuel-composer-mode="batch">Lancamento em lote</button>
+              </div>
+              <form id="fuel-launch-form" class="fuel-unified-form">
+                <div class="form-grid">
+                  <label class="full-width">
+                    <span>Tipo de movimentacao</span>
+                    <select id="fuel-launch-type" name="type">
+                      <option value="OPERATIONAL_EXIT">Saida operacional / abastecimento de veiculo</option>
+                      <option value="STOCK_ENTRY">Entrada no estoque</option>
+                      <option value="BALANCE_ADJUSTMENT">Ajuste de saldo</option>
+                    </select>
+                  </label>
+                  <label data-fuel-field="stockProduct">
+                    <span>Combustivel</span>
+                    <select id="fuel-launch-stock-product-select" name="productId"></select>
+                  </label>
+                  <label data-fuel-field="storage">
+                    <span>Combustivel</span>
+                    <select id="fuel-launch-storage-select" name="storageId"></select>
+                  </label>
+                  <label data-fuel-field="plate">
+                    <span>Veiculo / placa</span>
+                    <input id="fuel-launch-plate-input" name="plate" type="text" list="fuel-launch-vehicle-list" autocomplete="off" placeholder="Digite ou selecione a placa" />
+                    <input id="fuel-launch-vehicle-id" name="vehicleId" type="hidden" />
+                  </label>
+                  <label data-fuel-field="odometer">
+                    <span>Hodometro / KM</span>
+                    <input type="text" name="odometerKm" inputmode="decimal" placeholder="0" />
+                  </label>
+                  <label data-fuel-field="quantity">
+                    <span>Quantidade (L)</span>
+                    <input type="text" name="quantity" inputmode="decimal" placeholder="0,00" required />
+                  </label>
+                  <label data-fuel-field="unitCost">
+                    <span>Valor unitario</span>
+                    <input type="text" name="unitCost" inputmode="decimal" placeholder="0,00" />
+                  </label>
+                  <label data-fuel-field="document">
+                    <span>Documento</span>
+                    <input type="text" name="document" placeholder="NF, romaneio ou recibo" />
+                  </label>
+                  <label data-fuel-field="supplier">
+                    <span>Fornecedor</span>
+                    <input type="text" name="supplierName" placeholder="Opcional" />
+                  </label>
+                  <label data-fuel-field="adjustmentType">
+                    <span>Tipo de ajuste</span>
+                    <select name="adjustmentType">
+                      <option value="DECREASE">Reducao de saldo</option>
+                      <option value="INCREASE">Acrescimo de saldo</option>
+                    </select>
+                  </label>
+                  <label data-fuel-field="occurredAt">
+                    <span>Data/hora</span>
+                    <input type="datetime-local" name="occurredAt" />
+                  </label>
+                  <label class="full-width" data-fuel-field="notes">
+                    <span id="fuel-launch-notes-label">Observacao</span>
+                    <textarea name="notes" rows="3" placeholder="Observacoes do lancamento"></textarea>
+                  </label>
+                </div>
+                <div id="fuel-launch-context-hint" class="fuel-form-context-hint muted"></div>
+                <div class="form-actions">
+                  <button type="submit" class="primary-button">Salvar lancamento</button>
+                </div>
+              </form>
+              <datalist id="fuel-launch-vehicle-list"></datalist>
+            </section>
+
+            <section id="fuel-batch-panel" class="panel fuel-batch-panel">
+              <div class="card-title">
+                <span class="eyebrow">Operacao rapida</span>
+                <h3>Lancamento rapido por planilha</h3>
+              </div>
+              <p class="muted fuel-batch-description">Cole dados do Excel direto na tabela. O sistema valida placa, combustivel, KM, litros, data e saldo antes de salvar.</p>
+              <div class="fuel-batch-toolbar">
+                <button id="fuel-batch-add-row-button" type="button" class="secondary-button">Adicionar linha</button>
+                <button id="fuel-batch-clear-button" type="button" class="ghost-button">Limpar linhas</button>
+                <button id="fuel-batch-save-button" type="button" class="primary-button">Salvar todos os lancamentos</button>
+              </div>
+              <p class="fuel-batch-inline-hint muted">Cole do Excel em qualquer campo da tabela. Enter cria uma nova linha.</p>
+              <datalist id="fuel-batch-plate-list"></datalist>
+              <div id="fuel-batch-table-wrapper" class="table-wrapper fuel-batch-table-wrapper">
+                <table class="fuel-batch-table">
+                  <thead>
+                    <tr>
+                      <th>Placa</th>
+                      <th>Combustivel</th>
+                      <th>KM</th>
+                      <th>Litros</th>
+                      <th>Data/hora</th>
+                      <th>Observacao</th>
+                      <th>Status</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="fuel-batch-rows-body"></tbody>
+                </table>
+              </div>
+              <div id="fuel-batch-preview" class="fuel-batch-preview"></div>
+              <div id="fuel-batch-summary" class="fuel-batch-summary muted">Monte o lote para visualizar o impacto de saldo e corrigir erros antes de gravar.</div>
+            </section>
+          </div>
+          <div class="two-column-grid operations-main-grid hidden" aria-hidden="true">
             <form id="fuel-stock-form" class="panel form-card operations-form-card">
               <div class="card-title">
                 <span class="eyebrow">Kardex de combustível</span>
@@ -845,11 +949,11 @@
                 </label>
                 <label>
                   <span>Quantidade (L)</span>
-                  <input type="number" name="quantity" min="0" step="0.01" required />
+                  <input type="text" name="quantity" inputmode="decimal" placeholder="0,00" required />
                 </label>
                 <label>
                   <span>Valor unitário</span>
-                  <input type="number" name="unitCost" min="0" step="0.01" placeholder="0,00" />
+                  <input type="text" name="unitCost" inputmode="decimal" placeholder="0,00" />
                 </label>
                 <label>
                   <span>Documento</span>
@@ -900,11 +1004,11 @@
                 </label>
                 <label>
                   <span>Quantidade</span>
-                  <input type="number" name="quantity" min="0" step="0.01" required />
+                  <input type="text" name="quantity" inputmode="decimal" placeholder="0,00" required />
                 </label>
                 <label>
                   <span>Hodometro (km)</span>
-                  <input type="number" name="odometerKm" min="0" step="1" placeholder="Opcional, recomendado para saida" />
+                  <input type="text" name="odometerKm" inputmode="decimal" placeholder="Opcional, recomendado para saida" />
                 </label>
                 <label>
                   <span>Data e hora</span>
@@ -929,57 +1033,106 @@
             <div id="fuel-stocks-grid" class="metric-grid"></div>
           </div>
 
-          <div class="panel table-panel operations-table-panel">
+          <section class="panel table-panel operations-table-panel fuel-history-panel">
             <div class="card-title">
-              <span class="eyebrow">Histórico do combustível</span>
-              <h3>Movimentações do Kardex de combustível</h3>
+              <span class="eyebrow">Histórico operacional</span>
+              <h3>Histórico de movimentações de combustível</h3>
             </div>
-            <div class="table-wrapper">
-              <table>
+            <p class="muted fuel-history-description">Uma única tabela para entradas, abastecimentos, ajustes, saldo inicial, correções e cancelamentos com rastreabilidade completa.</p>
+            <div class="form-grid fuel-history-filter-grid">
+              <label>
+                <span>Período inicial</span>
+                <input id="fuel-filter-from" type="datetime-local" />
+              </label>
+              <label>
+                <span>Período final</span>
+                <input id="fuel-filter-to" type="datetime-local" />
+              </label>
+              <label>
+                <span>Combustível</span>
+                <select id="fuel-filter-storage">
+                  <option value="">Todos os combustíveis</option>
+                </select>
+              </label>
+              <label>
+                <span>Veículo / placa</span>
+                <select id="fuel-filter-plate">
+                  <option value="">Todos os veículos</option>
+                </select>
+              </label>
+              <label>
+                <span>Tipo de movimentação</span>
+                <select id="fuel-history-movement-kind">
+                  <option value="">Todos</option>
+                  <option value="ENTRY">Entrada</option>
+                  <option value="OPERATIONAL_EXIT">Saída operacional</option>
+                  <option value="ADJUSTMENT">Ajuste</option>
+                  <option value="INITIAL_BALANCE">Saldo inicial</option>
+                  <option value="CORRECTION">Correção</option>
+                </select>
+              </label>
+              <label>
+                <span>Usuário</span>
+                <select id="fuel-history-user">
+                  <option value="">Todos</option>
+                </select>
+              </label>
+              <label>
+                <span>Documento / origem</span>
+                <input id="fuel-history-document" type="text" placeholder="NF, lote, origem ou documento" />
+              </label>
+              <label>
+                <span>Status</span>
+                <select id="fuel-history-status">
+                  <option value="">Todos</option>
+                  <option value="ACTIVE">Ativo</option>
+                  <option value="CANCELLED">Cancelado</option>
+                </select>
+              </label>
+              <label class="full-width">
+                <span>Busca rápida</span>
+                <input id="fuel-history-search" type="search" placeholder="Buscar por placa, observação, usuário, documento ou origem" />
+              </label>
+            </div>
+            <div class="fuel-history-toolbar">
+              <p id="fuel-history-summary" class="muted fuel-history-summary">Carregando histórico de combustível...</p>
+              <div class="form-actions fuel-history-toolbar-actions">
+                <button id="fuel-history-apply-button" type="button" class="secondary-button">Atualizar</button>
+                <button id="fuel-history-clear-button" type="button" class="ghost-button">Limpar filtros</button>
+              </div>
+            </div>
+            <div class="table-wrapper fuel-history-table-wrapper">
+              <table class="fuel-history-table">
                 <thead>
                   <tr>
-                    <th>Produto</th>
+                    <th>Data/hora</th>
+                    <th>Combustível</th>
                     <th>Tipo</th>
-                    <th>Quantidade</th>
-                    <th>Documento</th>
-                    <th>Unitário</th>
-                    <th>Total</th>
-                    <th>Saldo após</th>
-                    <th>Usuário</th>
-                    <th>Data</th>
-                  </tr>
-                </thead>
-                <tbody id="fuel-inventory-movements-body"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="panel table-panel operations-table-panel">
-            <div class="card-title">
-              <span class="eyebrow">Abastecimento operacional</span>
-              <h3>Saídas registradas por abastecimento</h3>
-            </div>
-            <div class="table-wrapper">
-              <table>
-                <thead>
-                    <tr>
-                      <th>Estoque</th>
-                      <th>Combustível</th>
-                      <th>Tipo</th>
-                      <th>Veiculo</th>
-                      <th>Placa</th>
-                      <th>Quantidade</th>
-                      <th>Hodometro</th>
+                    <th>Placa / veículo</th>
+                    <th>KM</th>
+                    <th>Litros</th>
+                    <th>Valor unitário</th>
+                    <th>Valor total</th>
                     <th>Saldo antes</th>
-                    <th>Saldo após</th>
+                    <th>Saldo depois</th>
+                    <th>Documento / origem</th>
                     <th>Usuário</th>
-                    <th>Data</th>
+                    <th>Ações</th>
                   </tr>
                 </thead>
-                <tbody id="fuel-table-body"></tbody>
+                <tbody id="fuel-history-table-body"></tbody>
               </table>
             </div>
-          </div>
+            <div id="fuel-history-pagination" class="fuel-history-pagination"></div>
+          </section>
+
+          <section id="fuel-history-detail-panel" class="panel fuel-history-detail-panel hidden">
+            <div class="card-title">
+              <span class="eyebrow">Auditoria e correção</span>
+              <h3 id="fuel-history-detail-title">Detalhes do lançamento</h3>
+            </div>
+            <div id="fuel-history-detail-content" class="fuel-history-detail-content"></div>
+          </section>
 
           <div class="operations-chart-grid">
             <article class="panel">
@@ -1294,7 +1447,7 @@
                 </label>
                 <label>
                   <span>Valor</span>
-                  <input type="number" name="amount" min="0" step="0.01" />
+                  <input type="text" name="amount" inputmode="decimal" placeholder="0,00" />
                 </label>
                 <label>
                   <span>Documento</span>
@@ -1369,7 +1522,7 @@
                 </label>
                 <label>
                   <span>Km atual</span>
-                  <input type="number" name="odometerKm" min="0" step="1" />
+                  <input type="text" name="odometerKm" inputmode="decimal" placeholder="0" />
                 </label>
                 <label>
                   <span>Assinatura</span>

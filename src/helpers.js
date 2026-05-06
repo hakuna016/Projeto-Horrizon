@@ -25,18 +25,79 @@ function normalizeKey(value) {
     .replace(/^_+|_+$/g, "");
 }
 
-function toNumber(value) {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : 0;
-  }
-
+function sanitizeBrazilianNumberString(value) {
   const normalized = String(value ?? "")
     .trim()
-    .replace(/\./g, "")
-    .replace(",", ".");
+    .replace(/\s+/g, "")
+    .replace(/R\$/gi, "")
+    .replace(/[^\d,.\-+]/g, "");
+
+  if (!normalized) {
+    return "";
+  }
+
+  const hasComma = normalized.includes(",");
+  if (hasComma) {
+    return normalized.replace(/\./g, "").replace(",", ".");
+  }
+
+  if (/^[+-]?\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+    return normalized.replace(/\./g, "");
+  }
+
+  return normalized;
+}
+
+function parseBrazilianNumber(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : Number.NaN;
+  }
+
+  const normalized = sanitizeBrazilianNumberString(value);
+  if (!normalized) {
+    return Number.NaN;
+  }
+
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(normalized)) {
+    return Number.NaN;
+  }
 
   const parsed = Number.parseFloat(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function toNumber(value, fallback = 0) {
+  const parsed = parseBrazilianNumber(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function roundNumber(value, digits = 6) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Number(parsed.toFixed(digits));
+}
+
+function calculateBalanceAfter(balance, type, quantity) {
+  const currentBalance = toNumber(balance, 0);
+  const movementQuantity = toNumber(quantity, 0);
+  const normalizedType = normalizeText(type).toUpperCase();
+  const isEntry = normalizedType === "IN" || normalizedType === "ENTRY";
+  return roundNumber(isEntry ? currentBalance + movementQuantity : currentBalance - movementQuantity);
+}
+
+function calculateTotalCost(quantity, unitCost) {
+  return roundNumber(toNumber(quantity, 0) * toNumber(unitCost, 0));
+}
+
+function numbersEqual(left, right, tolerance = 0.000001) {
+  const leftValue = toNumber(left, Number.NaN);
+  const rightValue = toNumber(right, Number.NaN);
+  if (!Number.isFinite(leftValue) || !Number.isFinite(rightValue)) {
+    return false;
+  }
+  return Math.abs(leftValue - rightValue) <= tolerance;
 }
 
 function splitLines(value) {
@@ -150,7 +211,13 @@ module.exports = {
   todayDate,
   normalizeText,
   normalizeKey,
+  sanitizeBrazilianNumberString,
+  parseBrazilianNumber,
   toNumber,
+  roundNumber,
+  calculateBalanceAfter,
+  calculateTotalCost,
+  numbersEqual,
   splitLines,
   safeJsonParse,
   pickRecordValue,
