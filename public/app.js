@@ -301,7 +301,7 @@ state.fuelHistory = {
   panelMode: "details",
   selectedHistoryId: "",
   actionMenuKey: "",
-  appliedFilters: null,
+  appliedFilters: createFuelHistoryFilterSnapshot(),
   isFilterPanelOpen: false,
   isLoading: false,
 };
@@ -2088,10 +2088,8 @@ function hideAppLoading() {
     return;
   }
 
-  window.requestAnimationFrame(() => {
-    refs.appLoading.classList.add("is-hidden");
-    refs.appLoading.setAttribute("aria-hidden", "true");
-  });
+  refs.appLoading.classList.add("is-hidden");
+  refs.appLoading.setAttribute("aria-hidden", "true");
 }
 
 function setUser(user) {
@@ -4370,22 +4368,115 @@ function updateKardexProductSelect() {
     return;
   }
 
+  const stockType = normalizeClientStockType(refs.kardexStockType?.value || "COMMON", "COMMON");
+  const products = stockType === "FUEL" ? getKardexFuelProducts() : getProductsByStockType(stockType);
   const currentValue = refs.kardexProductSelect.value;
-  refs.kardexProductSelect.innerHTML = state.products.length
-    ? `<option value="">Selecione um produto</option>${state.products
+  const emptyLabel =
+    stockType === "FUEL"
+      ? refs.kardexForm?.elements.fuelKind?.value
+        ? `Nenhum combustivel compativel com ${formatFuelKindLabel(refs.kardexForm.elements.fuelKind.value)}`
+        : "Cadastre ou vincule um combustivel primeiro"
+      : "Cadastre um item de almoxarifado primeiro";
+
+  refs.kardexProductSelect.innerHTML = products.length
+    ? `<option value="">Selecione um produto</option>${products
         .map(
           (product) => `
             <option value="${product.id}">
-              ${escapeHtml(product.name)} (${escapeHtml(product.unit)})
+              ${escapeHtml(product.name)}
+              ${
+                stockType === "FUEL" && inferClientFuelKind(product.linkedFuelKind || product.fuelKind || product.name, "")
+                  ? ` | ${escapeHtml(formatFuelKindLabel(inferClientFuelKind(product.linkedFuelKind || product.fuelKind || product.name, "")))}`
+                  : ""
+              }
+              (${escapeHtml(product.unit)})
             </option>
           `
         )
         .join("")}`
-    : `<option value="">Cadastre um produto primeiro</option>`;
+    : `<option value="">${emptyLabel}</option>`;
 
-  if (currentValue && state.products.some((product) => String(product.id) === String(currentValue))) {
+  if (currentValue && products.some((product) => String(product.id) === String(currentValue))) {
     refs.kardexProductSelect.value = currentValue;
   }
+}
+
+function syncProductFormState() {
+  if (!refs.productForm) {
+    return;
+  }
+
+  const stockType = normalizeClientStockType(refs.productForm.elements.stockType.value, "COMMON");
+  const unitField = refs.productForm.elements.unit;
+  const currentUnit = String(unitField.value || "").trim().toUpperCase();
+
+  if (stockType === "FUEL") {
+    if (!currentUnit || currentUnit === "UN") {
+      unitField.value = "L";
+    }
+  } else if (!currentUnit) {
+    unitField.value = "UN";
+  }
+}
+
+function syncKardexFormState() {
+  if (!refs.kardexForm) {
+    return;
+  }
+
+  const stockType = normalizeClientStockType(refs.kardexForm.elements.stockType.value, "COMMON");
+  const fuelKindField = refs.kardexForm.elements.fuelKind;
+  const isFuel = stockType === "FUEL";
+  if (fuelKindField) {
+    fuelKindField.disabled = !isFuel;
+    fuelKindField.required = false;
+    if (!isFuel) {
+      fuelKindField.value = "";
+    }
+  }
+
+  updateKardexProductSelect();
+}
+
+function resetVehicleForm() {
+  if (!refs.vehicleForm) {
+    return;
+  }
+
+  refs.vehicleForm.reset();
+  refs.vehicleForm.elements.id.value = "";
+  refs.vehicleForm.elements.fuelProfile.value = "S500";
+  refs.vehicleForm.elements.status.value = "ACTIVE";
+}
+
+function resetScheduleForm() {
+  if (!refs.scheduleForm) {
+    return;
+  }
+
+  refs.scheduleForm.reset();
+  refs.scheduleForm.elements.id.value = "";
+  refs.scheduleForm.elements.scheduledDate.value = currentLocalDate();
+}
+
+function resetFineForm() {
+  if (!refs.fineForm) {
+    return;
+  }
+
+  refs.fineForm.reset();
+  refs.fineForm.elements.id.value = "";
+  refs.fineForm.elements.fineDate.value = currentLocalDate();
+}
+
+function resetChecklistForm() {
+  if (!refs.checklistForm) {
+    return;
+  }
+
+  refs.checklistForm.reset();
+  refs.checklistForm.elements.id.value = "";
+  refs.checklistForm.elements.checklistDate.value = currentLocalDateTime();
 }
 
 function getActiveFuelVehicles() {
@@ -5516,6 +5607,7 @@ function renderFuel() {
       })
     )
     .join("");
+  }
 
   refs.fuelStocksGrid.innerHTML = state.fuelStorages.length
     ? state.fuelStorages
@@ -5820,21 +5912,22 @@ function createFuelHistoryFilterSnapshot(overrides = {}) {
 }
 
 function normalizeFuelHistoryFilterSnapshot(snapshot = {}) {
+  const safeSnapshot = snapshot && typeof snapshot === "object" ? snapshot : {};
   return createFuelHistoryFilterSnapshot({
-    storageId: String(snapshot.storageId || "").trim(),
-    storageLabel: String(snapshot.storageLabel || "").trim(),
-    from: String(snapshot.from || "").trim(),
-    to: String(snapshot.to || "").trim(),
-    plate: String(snapshot.plate || "").trim(),
-    plateLabel: String(snapshot.plateLabel || "").trim(),
-    movementKind: String(snapshot.movementKind || "").trim(),
-    movementKindLabel: String(snapshot.movementKindLabel || "").trim(),
-    user: String(snapshot.user || "").trim(),
-    userLabel: String(snapshot.userLabel || "").trim(),
-    document: String(snapshot.document || "").trim(),
-    status: String(snapshot.status || "").trim(),
-    statusLabel: String(snapshot.statusLabel || "").trim(),
-    search: String(snapshot.search || "").trim(),
+    storageId: String(safeSnapshot.storageId || "").trim(),
+    storageLabel: String(safeSnapshot.storageLabel || "").trim(),
+    from: String(safeSnapshot.from || "").trim(),
+    to: String(safeSnapshot.to || "").trim(),
+    plate: String(safeSnapshot.plate || "").trim(),
+    plateLabel: String(safeSnapshot.plateLabel || "").trim(),
+    movementKind: String(safeSnapshot.movementKind || "").trim(),
+    movementKindLabel: String(safeSnapshot.movementKindLabel || "").trim(),
+    user: String(safeSnapshot.user || "").trim(),
+    userLabel: String(safeSnapshot.userLabel || "").trim(),
+    document: String(safeSnapshot.document || "").trim(),
+    status: String(safeSnapshot.status || "").trim(),
+    statusLabel: String(safeSnapshot.statusLabel || "").trim(),
+    search: String(safeSnapshot.search || "").trim(),
   });
 }
 
@@ -15075,7 +15168,6 @@ function renderFuel() {
       })
     )
     .join("");
-  }
 
   if (refs.fuelStocksGrid) {
     refs.fuelStocksGrid.innerHTML = state.fuelStorages.length
