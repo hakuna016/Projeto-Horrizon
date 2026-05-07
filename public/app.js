@@ -16,6 +16,7 @@ const SIDEBAR_TABLET_MAX_WIDTH = 1100;
 const runtimeState = {
   apiMode: null,
   apiProbe: null,
+  inventoryProductPanelOpen: false,
   sidebarViewport: null,
   sidebarMode: "expanded",
   sidebarOpen: false,
@@ -295,6 +296,9 @@ state.fuelHistory = {
   audits: [],
   panelMode: "details",
   selectedHistoryId: "",
+  actionMenuKey: "",
+  appliedFilters: null,
+  isFilterPanelOpen: false,
   isLoading: false,
 };
 
@@ -476,6 +480,8 @@ const refs = {
   xmlImportButton: $("xml-import-button"),
   spreadsheetImportInput: $("spreadsheet-import-input"),
   spreadsheetImportButton: $("spreadsheet-import-button"),
+  inventoryTopGrid: $("inventory-top-grid"),
+  inventoryProductToggleButton: $("inventory-product-toggle-button"),
   productForm: $("product-form"),
   productResetButton: $("product-reset-button"),
   productsTableBody: $("products-table-body"),
@@ -585,6 +591,12 @@ const refs = {
 };
 
 Object.assign(refs, {
+  fuelHistoryFilterPanel: $("fuel-history-filter-panel"),
+  fuelHistoryFilterToggleButton: $("fuel-history-filter-toggle-button"),
+  fuelHistoryFilterCloseButton: $("fuel-history-filter-close-button"),
+  fuelHistoryFilterQuickClearButton: $("fuel-history-filter-quick-clear"),
+  fuelHistoryFilterSummary: $("fuel-history-filter-summary"),
+  fuelHistoryFilterActiveBadge: $("fuel-history-filter-active-badge"),
   fuelHistoryMovementKind: $("fuel-history-movement-kind"),
   fuelHistoryUser: $("fuel-history-user"),
   fuelHistoryDocument: $("fuel-history-document"),
@@ -721,7 +733,8 @@ function bindEvents() {
   refs.notesCategoryFilter.addEventListener("change", refreshNotes);
   refs.productForm.addEventListener("submit", handleProductSubmit);
   refs.productForm.elements.stockType?.addEventListener("change", syncProductFormState);
-  refs.productResetButton.addEventListener("click", resetProductForm);
+  refs.inventoryProductToggleButton?.addEventListener("click", toggleInventoryProductPanel);
+  refs.productResetButton.addEventListener("click", handleInventoryProductCancel);
   refs.vehicleForm.addEventListener("submit", handleVehicleSubmit);
   refs.vehicleResetButton.addEventListener("click", resetVehicleForm);
   refs.movementForm.addEventListener("submit", handleMovementSubmit);
@@ -2002,6 +2015,7 @@ function applyDefaultFormValues() {
   refs.productForm.elements.stockType.value = "COMMON";
   refs.fuelForm.elements.occurredAt.value = currentLocalDateTime();
   refs.fuelForm.elements.type.value = "EXIT";
+  syncInventoryProductPanel();
   if (refs.fuelStockForm) {
     refs.fuelStockForm.elements.type.value = "IN";
     refs.fuelStockForm.elements.occurredAt.value = currentLocalDateTime();
@@ -4569,6 +4583,66 @@ function formatAdminLogDetails(details) {
   return typeof details === "object" ? JSON.stringify(details) : String(details);
 }
 
+function syncInventoryProductPanel() {
+  const isOpen = Boolean(runtimeState.inventoryProductPanelOpen);
+  refs.productForm?.classList.toggle("hidden", !isOpen);
+  refs.productForm?.setAttribute("aria-hidden", isOpen ? "false" : "true");
+  refs.productForm?.toggleAttribute("inert", !isOpen);
+  refs.inventoryProductToggleButton?.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  if (refs.inventoryProductToggleButton) {
+    refs.inventoryProductToggleButton.textContent = isOpen ? "Fechar cadastro" : "+ Produto";
+    refs.inventoryProductToggleButton.setAttribute(
+      "aria-label",
+      isOpen ? "Fechar cadastro de produto" : "Abrir cadastro de produto"
+    );
+    refs.inventoryProductToggleButton.setAttribute(
+      "title",
+      isOpen ? "Fechar cadastro de produto" : "Cadastrar produto"
+    );
+  }
+  refs.inventoryTopGrid?.classList.toggle("inventory-top-grid--product-open", isOpen);
+}
+
+function setInventoryProductPanelOpen(nextOpen, { focusField = false, focusToggle = false, scrollPanel = false } = {}) {
+  runtimeState.inventoryProductPanelOpen = Boolean(nextOpen);
+  syncInventoryProductPanel();
+
+  if (scrollPanel && nextOpen && refs.productForm) {
+    scrollToElement(refs.productForm, "start");
+  }
+  if (focusField && nextOpen) {
+    refs.productForm?.elements?.name?.focus();
+  }
+  if (focusToggle && !nextOpen) {
+    refs.inventoryProductToggleButton?.focus();
+  }
+}
+
+function toggleInventoryProductPanel() {
+  const isOpen = Boolean(runtimeState.inventoryProductPanelOpen);
+  if (isOpen) {
+    resetProductForm();
+    setInventoryProductPanelOpen(false, { focusToggle: true });
+    return;
+  }
+
+  resetProductForm();
+  setInventoryProductPanelOpen(true, { focusField: true, scrollPanel: true });
+}
+
+function handleInventoryProductCancel() {
+  resetProductForm();
+  setInventoryProductPanelOpen(false, { focusToggle: true });
+}
+
+function resolveInventoryMutationErrorMessage(error, fallbackMessage) {
+  const message = String(error?.message || "").trim();
+  if (!message || /erro interno do servidor/i.test(message)) {
+    return fallbackMessage;
+  }
+  return message;
+}
+
 function updateMovementProductSelect() {
   refs.movementProductSelect.innerHTML = state.products.length
     ? state.products
@@ -5398,41 +5472,33 @@ async function handleFuelSubmit(event) {
 }
 
 function bindFuelHistoryEvents() {
-  if (refs.fuelFilterPlate) {
-    refs.fuelFilterPlate.addEventListener("change", () => {
-      refreshFuelHistory({ resetPage: true }).catch((error) => showToast(error.message, "error"));
-    });
-  }
-
+  refs.fuelHistoryFilterToggleButton?.addEventListener("click", () => {
+    const nextOpen = !getFuelHistoryState().isFilterPanelOpen;
+    setFuelHistoryFilterPanelOpen(nextOpen, { focusFirstField: nextOpen });
+  });
+  refs.fuelHistoryFilterCloseButton?.addEventListener("click", () => {
+    setFuelHistoryFilterPanelOpen(false, { focusToggle: true });
+  });
+  refs.fuelHistoryFilterQuickClearButton?.addEventListener("click", () => {
+    clearFuelHistoryFilters().catch((error) => showToast(error.message, "error"));
+  });
   refs.fuelHistoryApplyButton?.addEventListener("click", () => {
-    refreshFuelHistory({ resetPage: true }).catch((error) => showToast(error.message, "error"));
+    applyFuelHistoryFilters().catch((error) => showToast(error.message, "error"));
   });
   refs.fuelHistoryClearButton?.addEventListener("click", () => {
-    clearFuelHistoryFilters();
+    clearFuelHistoryFilters({ keepPanelOpen: true }).catch((error) => showToast(error.message, "error"));
   });
-
-  [
-    refs.fuelHistoryMovementKind,
-    refs.fuelHistoryUser,
-    refs.fuelHistoryStatus,
-  ].forEach((input) => {
-    input?.addEventListener("change", () => {
-      refreshFuelHistory({ resetPage: true }).catch((error) => showToast(error.message, "error"));
-    });
-  });
-
-  const debouncedRefresh = debounce(() => {
-    refreshFuelHistory({ resetPage: true }).catch((error) => showToast(error.message, "error"));
-  }, 250);
-
-  [refs.fuelHistoryDocument, refs.fuelHistorySearch].forEach((input) => {
-    input?.addEventListener("input", debouncedRefresh);
-  });
+  refs.fuelHistoryFilterPanel?.addEventListener("keydown", handleFuelHistoryFilterPanelKeydown);
 
   refs.fuelHistoryTableBody?.addEventListener("click", handleFuelHistoryActionClick);
+  refs.fuelHistoryTableBody?.addEventListener("keydown", handleFuelHistoryRowKeydown);
+  refs.fuelHistoryTableBody?.addEventListener("submit", handleFuelHistoryDetailSubmit);
   refs.fuelHistoryPagination?.addEventListener("click", handleFuelHistoryPaginationClick);
   refs.fuelHistoryDetailContent?.addEventListener("click", handleFuelHistoryActionClick);
   refs.fuelHistoryDetailContent?.addEventListener("submit", handleFuelHistoryDetailSubmit);
+  document.addEventListener("click", handleFuelHistoryDocumentClick);
+  document.addEventListener("keydown", handleFuelHistoryDocumentKeydown);
+  renderFuelHistoryFilterShell();
 }
 
 function getFuelHistoryState() {
@@ -5450,6 +5516,9 @@ function getFuelHistoryState() {
       audits: [],
       panelMode: "details",
       selectedHistoryId: "",
+      actionMenuKey: "",
+      appliedFilters: createFuelHistoryFilterSnapshot(),
+      isFilterPanelOpen: false,
       isLoading: false,
     };
   }
@@ -5461,19 +5530,193 @@ function getFuelHistorySelectedKey(sourceKind, sourceId) {
   return `${String(sourceKind || "").toUpperCase()}:${Number(sourceId || 0)}`;
 }
 
-function buildFuelHistoryQueryString({ page, resetPage = false } = {}) {
+function createFuelHistoryFilterSnapshot(overrides = {}) {
+  return {
+    storageId: "",
+    storageLabel: "",
+    from: "",
+    to: "",
+    plate: "",
+    plateLabel: "",
+    movementKind: "",
+    movementKindLabel: "",
+    user: "",
+    userLabel: "",
+    document: "",
+    status: "",
+    statusLabel: "",
+    search: "",
+    ...overrides,
+  };
+}
+
+function normalizeFuelHistoryFilterSnapshot(snapshot = {}) {
+  return createFuelHistoryFilterSnapshot({
+    storageId: String(snapshot.storageId || "").trim(),
+    storageLabel: String(snapshot.storageLabel || "").trim(),
+    from: String(snapshot.from || "").trim(),
+    to: String(snapshot.to || "").trim(),
+    plate: String(snapshot.plate || "").trim(),
+    plateLabel: String(snapshot.plateLabel || "").trim(),
+    movementKind: String(snapshot.movementKind || "").trim(),
+    movementKindLabel: String(snapshot.movementKindLabel || "").trim(),
+    user: String(snapshot.user || "").trim(),
+    userLabel: String(snapshot.userLabel || "").trim(),
+    document: String(snapshot.document || "").trim(),
+    status: String(snapshot.status || "").trim(),
+    statusLabel: String(snapshot.statusLabel || "").trim(),
+    search: String(snapshot.search || "").trim(),
+  });
+}
+
+function getFuelHistorySelectLabel(select) {
+  const option = select?.options?.[select.selectedIndex];
+  return option ? String(option.textContent || "").trim() : "";
+}
+
+function readFuelHistoryFilterInputs() {
+  return normalizeFuelHistoryFilterSnapshot({
+    storageId: refs.fuelFilterStorage?.value,
+    storageLabel: refs.fuelFilterStorage?.value ? getFuelHistorySelectLabel(refs.fuelFilterStorage) : "",
+    from: refs.fuelFilterFrom?.value,
+    to: refs.fuelFilterTo?.value,
+    plate: refs.fuelFilterPlate?.value,
+    plateLabel: refs.fuelFilterPlate?.value ? getFuelHistorySelectLabel(refs.fuelFilterPlate) : "",
+    movementKind: refs.fuelHistoryMovementKind?.value,
+    movementKindLabel: refs.fuelHistoryMovementKind?.value ? getFuelHistorySelectLabel(refs.fuelHistoryMovementKind) : "",
+    user: refs.fuelHistoryUser?.value,
+    userLabel: refs.fuelHistoryUser?.value ? getFuelHistorySelectLabel(refs.fuelHistoryUser) : "",
+    document: refs.fuelHistoryDocument?.value,
+    status: refs.fuelHistoryStatus?.value,
+    statusLabel: refs.fuelHistoryStatus?.value ? getFuelHistorySelectLabel(refs.fuelHistoryStatus) : "",
+    search: refs.fuelHistorySearch?.value,
+  });
+}
+
+function getFuelHistoryAppliedFilters() {
+  const historyState = getFuelHistoryState();
+  historyState.appliedFilters = normalizeFuelHistoryFilterSnapshot(historyState.appliedFilters);
+  return historyState.appliedFilters;
+}
+
+function hasFuelHistoryActiveFilters(snapshot = getFuelHistoryAppliedFilters()) {
+  const normalized = normalizeFuelHistoryFilterSnapshot(snapshot);
+  return Boolean(
+    normalized.storageId ||
+      normalized.from ||
+      normalized.to ||
+      normalized.plate ||
+      normalized.movementKind ||
+      normalized.user ||
+      normalized.document ||
+      normalized.status ||
+      normalized.search
+  );
+}
+
+function buildFuelHistoryFilterSummaryTokens(snapshot = getFuelHistoryAppliedFilters()) {
+  const normalized = normalizeFuelHistoryFilterSnapshot(snapshot);
+  const tokens = [];
+
+  if (normalized.storageId && normalized.storageLabel) {
+    tokens.push(normalized.storageLabel);
+  }
+  if (normalized.from || normalized.to) {
+    if (normalized.from && normalized.to) {
+      tokens.push(`${formatDateTime(normalized.from)} ate ${formatDateTime(normalized.to)}`);
+    } else if (normalized.from) {
+      tokens.push(`A partir de ${formatDateTime(normalized.from)}`);
+    } else {
+      tokens.push(`Ate ${formatDateTime(normalized.to)}`);
+    }
+  }
+  if (normalized.plate && normalized.plateLabel) {
+    tokens.push(normalized.plateLabel);
+  }
+  if (normalized.movementKind && normalized.movementKindLabel) {
+    tokens.push(normalized.movementKindLabel);
+  }
+  if (normalized.user && normalized.userLabel) {
+    tokens.push(normalized.userLabel);
+  }
+  if (normalized.document) {
+    tokens.push(`Doc: ${normalized.document}`);
+  }
+  if (normalized.status && normalized.statusLabel) {
+    tokens.push(normalized.statusLabel);
+  }
+  if (normalized.search) {
+    tokens.push(`Busca: ${normalized.search}`);
+  }
+
+  return tokens;
+}
+
+function renderFuelHistoryFilterShell() {
+  const historyState = getFuelHistoryState();
+  const isOpen = Boolean(historyState.isFilterPanelOpen);
+  const appliedFilters = getFuelHistoryAppliedFilters();
+  const summaryTokens = buildFuelHistoryFilterSummaryTokens(appliedFilters);
+  const hasActiveFilters = hasFuelHistoryActiveFilters(appliedFilters);
+
+  refs.fuelHistoryFilterPanel?.classList.toggle("is-open", isOpen);
+  refs.fuelHistoryFilterPanel?.setAttribute("aria-hidden", isOpen ? "false" : "true");
+  refs.fuelHistoryFilterPanel?.toggleAttribute("inert", !isOpen);
+  if (refs.fuelHistoryFilterToggleButton) {
+    refs.fuelHistoryFilterToggleButton.textContent = isOpen ? "Fechar filtros" : "Abrir filtros";
+    refs.fuelHistoryFilterToggleButton.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  }
+  if (refs.fuelHistoryFilterQuickClearButton) {
+    refs.fuelHistoryFilterQuickClearButton.hidden = !hasActiveFilters;
+  }
+  if (refs.fuelHistoryFilterActiveBadge) {
+    refs.fuelHistoryFilterActiveBadge.hidden = !hasActiveFilters;
+  }
+  if (refs.fuelHistoryFilterSummary) {
+    refs.fuelHistoryFilterSummary.innerHTML = hasActiveFilters
+      ? summaryTokens.map((token) => `<span class="dashboard-chip">${escapeHtml(token)}</span>`).join("")
+      : '<span class="fuel-history-filter-summary__empty">Nenhum filtro aplicado.</span>';
+  }
+}
+
+function setFuelHistoryFilterPanelOpen(nextOpen, { focusToggle = false, focusFirstField = false } = {}) {
+  const historyState = getFuelHistoryState();
+  historyState.isFilterPanelOpen = Boolean(nextOpen);
+  renderFuelHistoryFilterShell();
+
+  if (focusToggle) {
+    refs.fuelHistoryFilterToggleButton?.focus();
+    return;
+  }
+
+  if (focusFirstField && nextOpen) {
+    (refs.fuelFilterFrom || refs.fuelFilterStorage || refs.fuelHistorySearch)?.focus();
+  }
+}
+
+async function applyFuelHistoryFilters() {
+  const snapshot = readFuelHistoryFilterInputs();
+  await refreshFuelHistory({ resetPage: true, filters: snapshot });
+  const historyState = getFuelHistoryState();
+  historyState.appliedFilters = snapshot;
+  setFuelHistoryFilterPanelOpen(false);
+  renderFuelHistoryFilterShell();
+}
+
+function buildFuelHistoryQueryString({ page, resetPage = false, filters } = {}) {
   const historyState = getFuelHistoryState();
   const query = new URLSearchParams();
+  const activeFilters = normalizeFuelHistoryFilterSnapshot(filters || getFuelHistoryAppliedFilters());
 
-  if (refs.fuelFilterStorage?.value) query.set("storageId", refs.fuelFilterStorage.value);
-  if (refs.fuelFilterFrom?.value) query.set("from", toIsoDateTime(refs.fuelFilterFrom.value));
-  if (refs.fuelFilterTo?.value) query.set("to", toIsoDateTime(refs.fuelFilterTo.value));
-  if (refs.fuelFilterPlate?.value) query.set("plate", refs.fuelFilterPlate.value);
-  if (refs.fuelHistoryMovementKind?.value) query.set("movementKind", refs.fuelHistoryMovementKind.value);
-  if (refs.fuelHistoryUser?.value) query.set("user", refs.fuelHistoryUser.value);
-  if (refs.fuelHistoryDocument?.value?.trim()) query.set("document", refs.fuelHistoryDocument.value.trim());
-  if (refs.fuelHistoryStatus?.value) query.set("status", refs.fuelHistoryStatus.value);
-  if (refs.fuelHistorySearch?.value?.trim()) query.set("search", refs.fuelHistorySearch.value.trim());
+  if (activeFilters.storageId) query.set("storageId", activeFilters.storageId);
+  if (activeFilters.from) query.set("from", toIsoDateTime(activeFilters.from));
+  if (activeFilters.to) query.set("to", toIsoDateTime(activeFilters.to));
+  if (activeFilters.plate) query.set("plate", activeFilters.plate);
+  if (activeFilters.movementKind) query.set("movementKind", activeFilters.movementKind);
+  if (activeFilters.user) query.set("user", activeFilters.user);
+  if (activeFilters.document) query.set("document", activeFilters.document);
+  if (activeFilters.status) query.set("status", activeFilters.status);
+  if (activeFilters.search) query.set("search", activeFilters.search);
 
   const nextPage =
     page !== undefined && page !== null
@@ -5507,6 +5750,13 @@ function applyFuelHistoryResponse(response = {}) {
       : "";
   }
 
+  if (
+    historyState.actionMenuKey &&
+    !historyState.items.some((item) => getFuelHistorySelectedKey(item.sourceKind, item.sourceId) === historyState.actionMenuKey)
+  ) {
+    historyState.actionMenuKey = "";
+  }
+
   populateFuelHistoryUserOptions(historyState.users);
 }
 
@@ -5523,7 +5773,7 @@ function populateFuelHistoryUserOptions(users = []) {
   refs.fuelHistoryUser.value = options.includes(currentValue) ? currentValue : "";
 }
 
-async function refreshFuelHistory({ page, resetPage = false } = {}) {
+async function refreshFuelHistory({ page, resetPage = false, filters } = {}) {
   if (!refs.fuelHistoryTableBody) {
     return;
   }
@@ -5532,14 +5782,14 @@ async function refreshFuelHistory({ page, resetPage = false } = {}) {
   historyState.isLoading = true;
   renderFuelHistoryTable();
 
-  const suffix = buildFuelHistoryQueryString({ page, resetPage });
+  const suffix = buildFuelHistoryQueryString({ page, resetPage, filters });
   const response = await api(`/api/fuel/history${suffix ? `?${suffix}` : ""}`);
   applyFuelHistoryResponse(response);
   historyState.isLoading = false;
   renderFuelHistoryTable();
 }
 
-function clearFuelHistoryFilters() {
+async function clearFuelHistoryFilters({ keepPanelOpen = false } = {}) {
   if (refs.fuelFilterStorage) refs.fuelFilterStorage.value = "";
   if (refs.fuelFilterFrom) refs.fuelFilterFrom.value = "";
   if (refs.fuelFilterTo) refs.fuelFilterTo.value = "";
@@ -5555,8 +5805,21 @@ function clearFuelHistoryFilters() {
   historyState.activeItem = null;
   historyState.audits = [];
   historyState.panelMode = "details";
+  historyState.actionMenuKey = "";
+  const emptyFilters = createFuelHistoryFilterSnapshot();
+  await refreshFuelHistory({ resetPage: true, filters: emptyFilters });
+  historyState.appliedFilters = emptyFilters;
+  historyState.isFilterPanelOpen = Boolean(keepPanelOpen);
+  renderFuelHistoryFilterShell();
+}
 
-  refreshFuel().catch((error) => showToast(error.message, "error"));
+function handleFuelHistoryFilterPanelKeydown(event) {
+  if (event.key !== "Enter" || event.target.closest("button")) {
+    return;
+  }
+
+  event.preventDefault();
+  applyFuelHistoryFilters().catch((error) => showToast(error.message, "error"));
 }
 
 function buildFuelHistorySummaryText() {
@@ -5582,22 +5845,183 @@ function buildFuelHistoryBadges(item) {
   return `<div class="fuel-history-kind-badges">${badges.join("")}</div>`;
 }
 
-function buildFuelHistoryRowActions(item) {
+function buildFuelHistoryRowActionsLegacy(item) {
+  const historyState = getFuelHistoryState();
+  const rowKey = getFuelHistorySelectedKey(item.sourceKind, item.sourceId);
   const sourceKind = escapeHtml(item.sourceKind);
   const sourceId = escapeHtml(String(item.sourceId));
+  const menuId = `fuel-history-menu-${String(item.sourceKind || "").toLowerCase()}-${Number(item.sourceId || 0)}`;
   const buttons = [
-    `<button type="button" class="ghost-button" data-fuel-history-action="details" data-source-kind="${sourceKind}" data-source-id="${sourceId}">Ver detalhes</button>`,
+    `<button type="button" class="fuel-history-action-menu__item" data-fuel-history-action="details" data-source-kind="${sourceKind}" data-source-id="${sourceId}" role="menuitem">Ver detalhes</button>`,
   ];
 
   if (item.status !== "CANCELLED") {
     buttons.push(
-      `<button type="button" class="ghost-button" data-fuel-history-action="edit" data-source-kind="${sourceKind}" data-source-id="${sourceId}">Editar</button>`,
-      `<button type="button" class="ghost-button" data-fuel-history-action="correct" data-source-kind="${sourceKind}" data-source-id="${sourceId}">Corrigir</button>`,
-      `<button type="button" class="ghost-button" data-fuel-history-action="cancel" data-source-kind="${sourceKind}" data-source-id="${sourceId}">Cancelar</button>`
+      `<button type="button" class="fuel-history-action-menu__item" data-fuel-history-action="edit" data-source-kind="${sourceKind}" data-source-id="${sourceId}" role="menuitem">Editar lançamento</button>`,
+      `<button type="button" class="fuel-history-action-menu__item" data-fuel-history-action="correct" data-source-kind="${sourceKind}" data-source-id="${sourceId}" role="menuitem">Corrigir lançamento</button>`,
+      `<button type="button" class="fuel-history-action-menu__item fuel-history-action-menu__item--danger" data-fuel-history-action="cancel" data-source-kind="${sourceKind}" data-source-id="${sourceId}" role="menuitem">Cancelar lançamento</button>`
     );
   }
 
-  return `<div class="fuel-history-row-actions">${buttons.join("")}</div>`;
+  return `
+    <div class="fuel-history-action-shell">
+      <button
+        type="button"
+        class="ghost-button fuel-history-menu-button"
+        data-fuel-history-action="toggle-menu"
+        data-source-kind="${sourceKind}"
+        data-source-id="${sourceId}"
+        aria-haspopup="menu"
+        aria-expanded="${historyState.actionMenuKey === rowKey ? "true" : "false"}"
+        title="Ações do lançamento"
+      >
+        <span aria-hidden="true">⋮</span>
+      </button>
+      ${
+        historyState.actionMenuKey === rowKey
+          ? `<div class="fuel-history-action-menu" role="menu">${buttons.join("")}</div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function buildFuelHistoryRowActions(item) {
+  const historyState = getFuelHistoryState();
+  const rowKey = getFuelHistorySelectedKey(item.sourceKind, item.sourceId);
+  const sourceKind = escapeHtml(item.sourceKind);
+  const sourceId = escapeHtml(String(item.sourceId));
+  const menuId = `fuel-history-menu-${String(item.sourceKind || "").toLowerCase()}-${Number(item.sourceId || 0)}`;
+  const buttons = [
+    `<button type="button" class="fuel-history-action-menu__item" data-fuel-history-action="details" data-source-kind="${sourceKind}" data-source-id="${sourceId}" role="menuitem">Ver detalhes</button>`,
+  ];
+
+  if (item.status !== "CANCELLED") {
+    buttons.push(
+      `<button type="button" class="fuel-history-action-menu__item" data-fuel-history-action="edit" data-source-kind="${sourceKind}" data-source-id="${sourceId}" role="menuitem">Editar lancamento</button>`,
+      `<button type="button" class="fuel-history-action-menu__item" data-fuel-history-action="correct" data-source-kind="${sourceKind}" data-source-id="${sourceId}" role="menuitem">Corrigir lancamento</button>`,
+      `<button type="button" class="fuel-history-action-menu__item fuel-history-action-menu__item--danger" data-fuel-history-action="cancel" data-source-kind="${sourceKind}" data-source-id="${sourceId}" role="menuitem">Cancelar lancamento</button>`
+    );
+  }
+
+  return `
+    <div class="fuel-history-action-shell">
+      <button
+        type="button"
+        class="ghost-button fuel-history-menu-button"
+        data-fuel-history-action="toggle-menu"
+        data-source-kind="${sourceKind}"
+        data-source-id="${sourceId}"
+        aria-haspopup="menu"
+        aria-expanded="${historyState.actionMenuKey === rowKey ? "true" : "false"}"
+        aria-label="Abrir acoes do lancamento"
+        aria-controls="${menuId}"
+        title="Abrir acoes"
+      >
+        <span aria-hidden="true">&#8942;</span>
+      </button>
+      ${
+        historyState.actionMenuKey === rowKey
+          ? `<div class="fuel-history-action-menu" id="${menuId}" role="menu" aria-label="Acoes do lancamento">${buttons.join("")}</div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function buildFuelHistoryExpandedSummary(item, mode) {
+  return `
+    <div class="fuel-history-expansion-header">
+      <div class="fuel-history-expansion-copy">
+        <span class="eyebrow">${
+          mode === "cancel"
+            ? "Cancelamento"
+            : mode === "edit" || mode === "correct"
+              ? "Correção segura"
+              : "Detalhes do lançamento"
+        }</span>
+        <h4>${escapeHtml(formatFuelKindLabel(item.fuelKind || ""))} • ${escapeHtml(item.plate || item.storageName || "Movimentação")}</h4>
+        <p class="fuel-history-detail-hint">${escapeHtml(
+          `${formatDateTime(item.occurredAt)} • ${item.storageName || "Sem estoque"} • ${statusMeta[item.movementKind]?.label || item.movementKind || "-"}`
+        )}</p>
+      </div>
+      <div class="fuel-history-expansion-tools">
+        <div class="fuel-history-inline-badges">${buildFuelHistoryBadges(item)}</div>
+        <button type="button" class="ghost-button compact-button" data-fuel-history-action="close">Fechar</button>
+      </div>
+    </div>
+  `;
+}
+
+function buildFuelHistoryExpandedDetails(item, historyState) {
+  const mode = historyState.panelMode || "details";
+  const header = buildFuelHistoryExpandedSummary(item, mode);
+
+  if (historyState.isLoading) {
+    return `${header}<div class="fuel-history-empty"><strong>Carregando dados do lançamento...</strong></div>`;
+  }
+
+  if (mode === "cancel") {
+    return `${header}${buildFuelHistoryCancelForm(item)}`;
+  }
+
+  if (mode === "edit" || mode === "correct") {
+    return `${header}${buildFuelHistoryEditForm(item, mode)}`;
+  }
+
+  return `
+    ${header}
+    <div class="fuel-history-detail-sections">
+      <div class="fuel-history-detail-grid">
+        ${buildFuelHistoryDetailCard("Combustível", `${formatFuelKindLabel(item.fuelKind || "")} | ${item.storageName || "-"}`)}
+        ${buildFuelHistoryDetailCard("Tipo", statusMeta[item.movementKind]?.label || item.movementKind || "-")}
+        ${buildFuelHistoryDetailCard("Placa / veículo", [item.plate || "-", item.vehicleLabel || ""].filter(Boolean).join(" | "))}
+        ${buildFuelHistoryDetailCard("KM", item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}
+        ${buildFuelHistoryDetailCard("Documento / origem", [item.document || "-", item.originLabel || "-"].filter(Boolean).join(" | "))}
+        ${buildFuelHistoryDetailCard("Usuário", item.userName || "-")}
+        ${buildFuelHistoryDetailCard("Observação", item.notes || "-")}
+      </div>
+      <div class="fuel-history-impact-grid">
+        ${buildFuelHistoryImpactCard("Litros", `${formatNumber(item.quantity || 0, 2, 2)} L`, item.suspicious ? "danger" : "")}
+        ${buildFuelHistoryImpactCard("Valor unitário", formatCurrency(item.unitCost || 0))}
+        ${buildFuelHistoryImpactCard("Valor total", formatCurrency(item.totalCost || 0))}
+        ${buildFuelHistoryImpactCard("Saldo antes", `${formatNumber(item.balanceBefore || 0, 2, 2)} L`)}
+        ${buildFuelHistoryImpactCard("Saldo depois", `${formatNumber(item.balanceAfter || 0, 2, 2)} L`)}
+        ${buildFuelHistoryImpactCard("Status", item.status === "CANCELLED" ? "Cancelado" : item.corrected ? "Corrigido" : "Ativo")}
+      </div>
+      ${
+        item.cancelReason
+          ? `<div class="fuel-history-detail-card"><strong>Motivo do cancelamento</strong><span>${escapeHtml(item.cancelReason)}</span></div>`
+          : ""
+      }
+      ${
+        item.suspicious && Array.isArray(item.suspiciousReasons) && item.suspiciousReasons.length
+          ? `<div class="fuel-history-detail-card"><strong>Motivos de suspeita</strong><span>${escapeHtml(item.suspiciousReasons.join(" | "))}</span></div>`
+          : ""
+      }
+      ${buildFuelHistoryAuditSection(historyState.audits)}
+      ${buildFuelHistoryPayloadSection(item)}
+    </div>
+  `;
+}
+
+function buildFuelHistoryExpandedRow(item, historyState) {
+  const rowKey = getFuelHistorySelectedKey(item.sourceKind, item.sourceId);
+  const activeItem =
+    historyState.activeItem &&
+    getFuelHistorySelectedKey(historyState.activeItem.sourceKind, historyState.activeItem.sourceId) === rowKey
+      ? historyState.activeItem
+      : item;
+
+  return `
+    <tr class="fuel-history-row-details" data-fuel-history-expanded-for="${escapeHtml(rowKey)}">
+      <td colspan="6">
+        <div class="fuel-history-row-expansion">
+          ${buildFuelHistoryExpandedDetails(activeItem, historyState)}
+        </div>
+      </td>
+    </tr>
+  `;
 }
 
 function renderFuelHistoryTable() {
@@ -5613,7 +6037,7 @@ function renderFuelHistoryTable() {
   }
 
   if (historyState.isLoading && !historyState.items.length) {
-    refs.fuelHistoryTableBody.innerHTML = emptyRow("Carregando historico operacional...", 13);
+    refs.fuelHistoryTableBody.innerHTML = emptyRow("Carregando historico operacional...", 6);
     renderFuelHistoryPagination();
     renderFuelHistoryDetailPanel();
     return;
@@ -5622,27 +6046,40 @@ function renderFuelHistoryTable() {
   refs.fuelHistoryTableBody.innerHTML = historyState.items.length
     ? historyState.items
         .map((item) => {
+          const rowKey = getFuelHistorySelectedKey(item.sourceKind, item.sourceId);
+          const isSelected = historyState.selectedHistoryId === rowKey;
           const rowClasses = [
             "fuel-history-row",
-            historyState.selectedHistoryId === getFuelHistorySelectedKey(item.sourceKind, item.sourceId) ? "fuel-history-row--selected" : "",
+            isSelected ? "fuel-history-row--selected" : "",
             item.status === "CANCELLED" ? "fuel-history-row--cancelled" : "",
             item.suspicious ? "fuel-history-row--suspicious" : "",
           ]
             .filter(Boolean)
             .join(" ");
-          const vehicleSummary = [item.plate || "-", item.vehicleLabel || ""].filter(Boolean).join(" | ");
-          const documentSummary = [item.document || "-", item.originLabel || ""].filter(Boolean).join(" | ");
 
-          return `
-            <tr class="${rowClasses}">
-              <td>${escapeHtml(formatDateTime(item.occurredAt))}</td>
+          const mainRow = `
+            <tr
+              class="${rowClasses}"
+              data-fuel-history-row="true"
+              data-source-kind="${escapeHtml(item.sourceKind)}"
+              data-source-id="${escapeHtml(String(item.sourceId))}"
+              data-row-key="${escapeHtml(rowKey)}"
+              tabindex="0"
+            >
               <td>
                 <div class="fuel-history-row-main">
-                  <strong>${escapeHtml(formatFuelKindLabel(item.fuelKind || ""))}</strong>
-                  <span class="fuel-history-row-subtitle">${escapeHtml(item.storageName || "-")}</span>
+                  <strong>${escapeHtml(formatDateTime(item.occurredAt))}</strong>
                 </div>
               </td>
-              <td>${buildFuelHistoryBadges(item)}</td>
+              <td>
+                <div class="fuel-history-row-stack">
+                  <div class="fuel-history-row-main">
+                    <strong>${escapeHtml(formatFuelKindLabel(item.fuelKind || ""))}</strong>
+                    <span class="fuel-history-row-subtitle">${escapeHtml(item.storageName || "-")}</span>
+                  </div>
+                  ${buildFuelHistoryBadges(item)}
+                </div>
+              </td>
               <td>
                 <div class="fuel-history-row-main">
                   <strong>${escapeHtml(item.plate || "-")}</strong>
@@ -5650,24 +6087,15 @@ function renderFuelHistoryTable() {
                 </div>
               </td>
               <td>${escapeHtml(item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}</td>
-              <td>${escapeHtml(`${formatNumber(item.quantity || 0, 2, 2)} L`)}</td>
-              <td>${escapeHtml(formatCurrency(item.unitCost || 0))}</td>
-              <td>${escapeHtml(formatCurrency(item.totalCost || 0))}</td>
-              <td>${escapeHtml(`${formatNumber(item.balanceBefore || 0, 2, 2)} L`)}</td>
-              <td>${escapeHtml(`${formatNumber(item.balanceAfter || 0, 2, 2)} L`)}</td>
-              <td>
-                <div class="fuel-history-row-main">
-                  <strong>${escapeHtml(item.document || "-")}</strong>
-                  <span class="fuel-history-row-subtitle">${escapeHtml(item.originLabel || "-")}</span>
-                </div>
-              </td>
-              <td>${escapeHtml(item.userName || "-")}</td>
-              <td>${buildFuelHistoryRowActions(item)}</td>
+              <td><strong>${escapeHtml(`${formatNumber(item.quantity || 0, 2, 2)} L`)}</strong></td>
+              <td class="fuel-history-cell--actions">${buildFuelHistoryRowActions(item)}</td>
             </tr>
           `;
+
+          return isSelected ? `${mainRow}${buildFuelHistoryExpandedRow(item, historyState)}` : mainRow;
         })
         .join("")
-    : emptyRow("Nenhuma movimentacao encontrada para os filtros informados.", 13);
+    : emptyRow("Nenhuma movimentacao encontrada para os filtros informados.", 6);
 
   renderFuelHistoryPagination();
   renderFuelHistoryDetailPanel();
@@ -5696,93 +6124,10 @@ function renderFuelHistoryPagination() {
 }
 
 function renderFuelHistoryDetailPanel() {
-  if (!refs.fuelHistoryDetailPanel || !refs.fuelHistoryDetailContent || !refs.fuelHistoryDetailTitle) {
-    return;
-  }
-
-  const historyState = getFuelHistoryState();
-  const item = historyState.activeItem;
-  if (!item) {
-    refs.fuelHistoryDetailPanel.classList.add("hidden");
+  refs.fuelHistoryDetailPanel?.classList.add("hidden");
+  if (refs.fuelHistoryDetailContent) {
     refs.fuelHistoryDetailContent.innerHTML = "";
-    return;
   }
-
-  const mode = historyState.panelMode || "details";
-  refs.fuelHistoryDetailPanel.classList.remove("hidden");
-  refs.fuelHistoryDetailTitle.textContent =
-    mode === "cancel"
-      ? "Cancelar lancamento"
-      : mode === "edit" || mode === "correct"
-        ? "Correcao segura do lancamento"
-        : "Detalhes do lancamento";
-
-  if (historyState.isLoading) {
-    refs.fuelHistoryDetailContent.innerHTML = `<div class="fuel-history-empty"><strong>Carregando dados do lancamento...</strong></div>`;
-    return;
-  }
-
-  const panelActions = `
-    <div class="fuel-history-panel-actions">
-      <div class="fuel-history-inline-badges">${buildFuelHistoryBadges(item)}</div>
-      <div class="fuel-history-row-actions">
-        <button type="button" class="ghost-button" data-fuel-history-action="details" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(String(item.sourceId))}">Ver detalhes</button>
-        ${
-          item.status !== "CANCELLED"
-            ? `
-              <button type="button" class="ghost-button" data-fuel-history-action="edit" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(String(item.sourceId))}">Editar</button>
-              <button type="button" class="ghost-button" data-fuel-history-action="correct" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(String(item.sourceId))}">Corrigir</button>
-              <button type="button" class="ghost-button" data-fuel-history-action="cancel" data-source-kind="${escapeHtml(item.sourceKind)}" data-source-id="${escapeHtml(String(item.sourceId))}">Cancelar</button>
-            `
-            : ""
-        }
-        <button type="button" class="ghost-button" data-fuel-history-action="close">Fechar</button>
-      </div>
-    </div>
-  `;
-
-  const detailsSection = `
-    <div class="fuel-history-detail-sections">
-      ${panelActions}
-      <div class="fuel-history-detail-grid">
-        ${buildFuelHistoryDetailCard("Data/hora", formatDateTime(item.occurredAt))}
-        ${buildFuelHistoryDetailCard("Combustivel", `${formatFuelKindLabel(item.fuelKind || "")} | ${item.storageName || "-"}`)}
-        ${buildFuelHistoryDetailCard("Placa / veiculo", [item.plate || "-", item.vehicleLabel || ""].filter(Boolean).join(" | "))}
-        ${buildFuelHistoryDetailCard("KM", item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}
-        ${buildFuelHistoryDetailCard("Documento", item.document || "-")}
-        ${buildFuelHistoryDetailCard("Origem", item.originLabel || "-")}
-        ${buildFuelHistoryDetailCard("Usuario", item.userName || "-")}
-        ${buildFuelHistoryDetailCard("Observacao", item.notes || "-")}
-      </div>
-      <div class="fuel-history-impact-grid">
-        ${buildFuelHistoryImpactCard("Litros", `${formatNumber(item.quantity || 0, 2, 2)} L`, item.suspicious ? "danger" : "")}
-        ${buildFuelHistoryImpactCard("Valor unitario", formatCurrency(item.unitCost || 0))}
-        ${buildFuelHistoryImpactCard("Valor total", formatCurrency(item.totalCost || 0))}
-        ${buildFuelHistoryImpactCard("Saldo antes", `${formatNumber(item.balanceBefore || 0, 2, 2)} L`)}
-        ${buildFuelHistoryImpactCard("Saldo depois", `${formatNumber(item.balanceAfter || 0, 2, 2)} L`)}
-        ${buildFuelHistoryImpactCard("Status", item.status === "CANCELLED" ? "Cancelado" : item.corrected ? "Corrigido" : "Ativo")}
-      </div>
-      ${
-        item.cancelReason
-          ? `<div class="fuel-history-detail-card"><strong>Motivo do cancelamento</strong><span>${escapeHtml(item.cancelReason)}</span></div>`
-          : ""
-      }
-      ${
-        item.suspicious && Array.isArray(item.suspiciousReasons) && item.suspiciousReasons.length
-          ? `<div class="fuel-history-detail-card"><strong>Motivos de suspeita</strong><span>${escapeHtml(item.suspiciousReasons.join(" | "))}</span></div>`
-          : ""
-      }
-      ${buildFuelHistoryAuditSection(historyState.audits)}
-      ${buildFuelHistoryPayloadSection(item)}
-    </div>
-  `;
-
-  refs.fuelHistoryDetailContent.innerHTML =
-    mode === "cancel"
-      ? `${panelActions}${buildFuelHistoryCancelForm(item)}`
-      : mode === "edit" || mode === "correct"
-        ? `${panelActions}${buildFuelHistoryEditForm(item, mode)}`
-        : detailsSection;
 }
 
 function buildFuelHistoryDetailCard(label, value) {
@@ -6020,6 +6365,7 @@ async function openFuelHistoryItem(sourceKind, sourceId, mode = "details") {
   const historyState = getFuelHistoryState();
   historyState.selectedHistoryId = getFuelHistorySelectedKey(sourceKind, sourceId);
   historyState.panelMode = mode;
+  historyState.actionMenuKey = "";
   historyState.isLoading = true;
   renderFuelHistoryTable();
 
@@ -6031,7 +6377,12 @@ async function openFuelHistoryItem(sourceKind, sourceId, mode = "details") {
     : historyState.selectedHistoryId;
   historyState.isLoading = false;
   renderFuelHistoryTable();
-  scrollToElement(refs.fuelHistoryDetailPanel);
+  const expandedRow = document.querySelector(
+    `[data-fuel-history-expanded-for="${historyState.selectedHistoryId.replace(/"/g, '\\"')}"]`
+  );
+  if (expandedRow) {
+    scrollToElement(expandedRow, "nearest");
+  }
 }
 
 function closeFuelHistoryPanel() {
@@ -6040,31 +6391,109 @@ function closeFuelHistoryPanel() {
   historyState.audits = [];
   historyState.panelMode = "details";
   historyState.selectedHistoryId = "";
+  historyState.actionMenuKey = "";
   historyState.isLoading = false;
   renderFuelHistoryTable();
 }
 
 function handleFuelHistoryActionClick(event) {
   const actionButton = event.target.closest("[data-fuel-history-action]");
-  if (!actionButton) {
+  if (actionButton) {
+    const action = actionButton.dataset.fuelHistoryAction;
+    if (action === "close") {
+      closeFuelHistoryPanel();
+      return;
+    }
+
+    const sourceKind = actionButton.dataset.sourceKind;
+    const sourceId = actionButton.dataset.sourceId;
+    if (!sourceKind || !sourceId) {
+      return;
+    }
+
+    const historyState = getFuelHistoryState();
+    const rowKey = getFuelHistorySelectedKey(sourceKind, sourceId);
+    if (action === "toggle-menu") {
+      historyState.actionMenuKey = historyState.actionMenuKey === rowKey ? "" : rowKey;
+      renderFuelHistoryTable();
+      return;
+    }
+
+    historyState.actionMenuKey = "";
+    const nextMode =
+      action === "edit" ? "edit" : action === "correct" ? "correct" : action === "cancel" ? "cancel" : "details";
+    openFuelHistoryItem(sourceKind, sourceId, nextMode).catch((error) => showToast(error.message, "error"));
     return;
   }
 
-  const action = actionButton.dataset.fuelHistoryAction;
-  if (action === "close") {
+  const row = event.target.closest("[data-fuel-history-row='true']");
+  if (!row || event.target.closest("button, input, select, textarea, a, label")) {
+    return;
+  }
+
+  const sourceKind = row.dataset.sourceKind;
+  const sourceId = row.dataset.sourceId;
+  const rowKey = row.dataset.rowKey || getFuelHistorySelectedKey(sourceKind, sourceId);
+  const historyState = getFuelHistoryState();
+
+  if (historyState.selectedHistoryId === rowKey && historyState.panelMode === "details" && !historyState.isLoading) {
     closeFuelHistoryPanel();
     return;
   }
 
-  const sourceKind = actionButton.dataset.sourceKind;
-  const sourceId = actionButton.dataset.sourceId;
-  if (!sourceKind || !sourceId) {
+  openFuelHistoryItem(sourceKind, sourceId, "details").catch((error) => showToast(error.message, "error"));
+}
+
+function handleFuelHistoryDocumentClick(event) {
+  if (event.target.closest(".fuel-history-action-shell")) {
     return;
   }
 
-  const nextMode =
-    action === "edit" ? "edit" : action === "correct" ? "correct" : action === "cancel" ? "cancel" : "details";
-  openFuelHistoryItem(sourceKind, sourceId, nextMode).catch((error) => showToast(error.message, "error"));
+  const historyState = getFuelHistoryState();
+  if (!historyState.actionMenuKey) {
+    return;
+  }
+
+  historyState.actionMenuKey = "";
+  renderFuelHistoryTable();
+}
+
+function handleFuelHistoryDocumentKeydown(event) {
+  if (event.key !== "Escape") {
+    return;
+  }
+
+  const historyState = getFuelHistoryState();
+  if (!historyState.actionMenuKey) {
+    return;
+  }
+
+  historyState.actionMenuKey = "";
+  renderFuelHistoryTable();
+}
+
+function handleFuelHistoryRowKeydown(event) {
+  const row = event.target.closest("[data-fuel-history-row='true']");
+  if (!row || event.target.closest("button, input, select, textarea, a, label")) {
+    return;
+  }
+
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+
+  event.preventDefault();
+  const sourceKind = row.dataset.sourceKind;
+  const sourceId = row.dataset.sourceId;
+  const rowKey = row.dataset.rowKey || getFuelHistorySelectedKey(sourceKind, sourceId);
+  const historyState = getFuelHistoryState();
+
+  if (historyState.selectedHistoryId === rowKey && historyState.panelMode === "details" && !historyState.isLoading) {
+    closeFuelHistoryPanel();
+    return;
+  }
+
+  openFuelHistoryItem(sourceKind, sourceId, "details").catch((error) => showToast(error.message, "error"));
 }
 
 function handleFuelHistoryPaginationClick(event) {
@@ -6189,13 +6618,14 @@ async function finalizeFuelHistoryMutation(item) {
 }
 
 async function refreshFuel() {
+  const appliedFilters = getFuelHistoryAppliedFilters();
   const query = new URLSearchParams();
-  if (refs.fuelFilterStorage?.value) query.set("storageId", refs.fuelFilterStorage.value);
-  if (refs.fuelFilterFrom?.value) query.set("from", toIsoDateTime(refs.fuelFilterFrom.value));
-  if (refs.fuelFilterTo?.value) query.set("to", toIsoDateTime(refs.fuelFilterTo.value));
+  if (appliedFilters.storageId) query.set("storageId", appliedFilters.storageId);
+  if (appliedFilters.from) query.set("from", toIsoDateTime(appliedFilters.from));
+  if (appliedFilters.to) query.set("to", toIsoDateTime(appliedFilters.to));
 
   const fuelSuffix = query.toString() ? `?${query.toString()}` : "";
-  const historySuffix = buildFuelHistoryQueryString();
+  const historySuffix = buildFuelHistoryQueryString({ filters: appliedFilters });
 
   const [response, historyResponse] = await Promise.all([
     api(`/api/fuel${fuelSuffix}`),
@@ -9022,7 +9452,7 @@ function handleInteractivePanels(event) {
       startDate.setDate(startDate.getDate() - 6);
       refs.fuelFilterFrom.value = toLocalDateTimeInput(startDate.toISOString()).slice(0, 16);
       refs.fuelFilterTo.value = end;
-      refreshFuel();
+      applyFuelHistoryFilters().catch((error) => showToast(error.message, "error"));
     }
 
     if (action === "today") {
@@ -9030,11 +9460,11 @@ function handleInteractivePanels(event) {
       const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       refs.fuelFilterFrom.value = toLocalDateTimeInput(start.toISOString()).slice(0, 16);
       refs.fuelFilterTo.value = currentLocalDateTime();
-      refreshFuel();
+      applyFuelHistoryFilters().catch((error) => showToast(error.message, "error"));
     }
 
     if (action === "clear") {
-      clearFuelHistoryFilters();
+      clearFuelHistoryFilters().catch((error) => showToast(error.message, "error"));
     }
     return;
   }
@@ -11190,6 +11620,49 @@ async function handleFuelSubmit(event) {
   }
 }
 
+function buildFuelClientDebugContext(payload = {}) {
+  const storage = payload.storageId
+    ? state.fuelStorages.find((item) => String(item.id) === String(payload.storageId))
+    : null;
+  const product = payload.productId
+    ? state.products.find((item) => String(item.id) === String(payload.productId))
+    : null;
+  const vehicle = payload.vehicleId
+    ? state.vehicles.find((item) => String(item.id) === String(payload.vehicleId))
+    : null;
+
+  return {
+    userId: state.user?.id || null,
+    userName: state.user?.name || "",
+    productId: payload.productId || "",
+    productName: product?.name || "",
+    storageId: payload.storageId || "",
+    storageName: storage?.name || "",
+    fuelKind: payload.fuelKind || storage?.fuelKind || "",
+    type: payload.type || "",
+    operationKind: payload.operationKind || "",
+    adjustmentKind: payload.adjustmentKind || "",
+    vehicleId: payload.vehicleId || "",
+    plate: payload.plate || vehicle?.plate || "",
+    quantity: payload.quantity ?? "",
+    odometerKm: payload.odometerKm ?? "",
+    unitCost: payload.unitCost ?? "",
+    document: payload.document || "",
+    supplierName: payload.supplierName || "",
+    branchName: payload.branchName || "",
+    occurredAt: payload.occurredAt || "",
+    entryOrigin: payload.entryOrigin || "",
+  };
+}
+
+function resolveFuelMutationErrorMessage(error, fallbackMessage) {
+  const message = String(error?.message || "").trim();
+  if (!message || error?.status >= 500 || /erro interno do servidor/i.test(message)) {
+    return fallbackMessage;
+  }
+  return message;
+}
+
 const fuelHistoryRenderOverride = function () {
   const analytics = buildFuelPageAnalytics(state.fuelRecords);
   const currentPlate = refs.fuelFilterPlate?.value || "";
@@ -11376,12 +11849,17 @@ const fuelHistorySubmitOverride = async function (event) {
     };
 
     try {
+      console.info("[HORIZON][fuel-entry:submit]", buildFuelClientDebugContext(payload));
       await api("/api/inventory/movements", { method: "POST", body: payload });
       resetFuelForm();
       await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshFuel(), refreshDashboard()]);
       showToast("Entrada de combustivel registrada.");
     } catch (error) {
-      showToast(error.message, "error");
+      console.error("[HORIZON][fuel-entry:error]", buildFuelClientDebugContext(payload), error);
+      showToast(
+        resolveFuelMutationErrorMessage(error, "Falha ao salvar entrada de combustivel. Verifique os campos obrigatorios."),
+        "error"
+      );
     }
     return;
   }
@@ -11447,6 +11925,7 @@ const fuelHistorySubmitOverride = async function (event) {
   };
 
   try {
+    console.info("[HORIZON][fuel-submit]", buildFuelClientDebugContext(payload));
     await api("/api/fuel", { method: "POST", body: payload });
     resetFuelForm();
     await Promise.all([refreshFuel(), refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
@@ -11461,7 +11940,16 @@ const fuelHistorySubmitOverride = async function (event) {
 
     showToast(isAdjustment ? "Ajuste de saldo registrado." : "Abastecimento registrado.");
   } catch (error) {
-    showToast(error.message, "error");
+    console.error("[HORIZON][fuel-submit:error]", buildFuelClientDebugContext(payload), error);
+    showToast(
+      resolveFuelMutationErrorMessage(
+        error,
+        isAdjustment
+          ? "Falha ao salvar ajuste de saldo. Verifique os campos obrigatorios."
+          : "Falha ao salvar abastecimento. Verifique os campos obrigatorios."
+      ),
+      "error"
+    );
   }
 };
 
@@ -11539,6 +12027,7 @@ async function prepareNewProductFromBarcode(barcode) {
   resetProductForm();
   refs.productForm.elements.stockType.value = "COMMON";
   refs.productForm.elements.barcode.value = barcode;
+  setInventoryProductPanelOpen(true, { focusField: true, scrollPanel: true });
   refs.productForm.elements.name.focus();
   showToast("Codigo lido. Produto nao encontrado; preencha o cadastro para criar um novo item.", "error");
 }
@@ -12818,7 +13307,7 @@ function handleInteractivePanels(event) {
       startDate.setDate(startDate.getDate() - 6);
       refs.fuelFilterFrom.value = toLocalDateTimeInput(startDate.toISOString()).slice(0, 16);
       refs.fuelFilterTo.value = end;
-      refreshFuel();
+      applyFuelHistoryFilters().catch((error) => showToast(error.message, "error"));
     }
 
     if (action === "today") {
@@ -12826,11 +13315,11 @@ function handleInteractivePanels(event) {
       const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       refs.fuelFilterFrom.value = toLocalDateTimeInput(start.toISOString()).slice(0, 16);
       refs.fuelFilterTo.value = currentLocalDateTime();
-      refreshFuel();
+      applyFuelHistoryFilters().catch((error) => showToast(error.message, "error"));
     }
 
     if (action === "clear") {
-      clearFuelHistoryFilters();
+      clearFuelHistoryFilters().catch((error) => showToast(error.message, "error"));
     }
     return;
   }
@@ -13793,6 +14282,7 @@ function editProduct(id) {
   refs.productForm.elements.initialStock.disabled = true;
   syncProductFormState();
   setSection("inventory");
+  setInventoryProductPanelOpen(true, { focusField: true, scrollPanel: true });
 }
 
 async function handleProductSubmit(event) {
@@ -13832,20 +14322,33 @@ async function handleProductSubmit(event) {
   };
 
   try {
-    await api(id ? `/api/products/${id}` : "/api/products", {
+    const response = await api(id ? `/api/products/${id}` : "/api/products", {
       method: id ? "PUT" : "POST",
       body: payload,
     });
+    const nextMovementProductId =
+      response?.item && normalizeClientStockType(response.item.stockType || payload.stockType, "COMMON") === "COMMON"
+        ? String(response.item.id)
+        : "";
     resetProductForm();
     await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshFuel(), refreshDashboard()]);
-    showToast(id ? "Produto atualizado." : "Produto cadastrado.");
+    if (nextMovementProductId && refs.movementProductSelect) {
+      refs.movementProductSelect.value = nextMovementProductId;
+    }
+    setInventoryProductPanelOpen(false, { focusToggle: true });
+    showToast(id ? "Produto atualizado com sucesso." : "Produto cadastrado com sucesso.");
   } catch (error) {
-    showToast(error.message, "error");
+    showToast(resolveInventoryMutationErrorMessage(error, "Falha ao salvar produto. Verifique os campos obrigatorios."), "error");
   }
 }
 
 async function handleMovementSubmit(event) {
   event.preventDefault();
+
+  if (!refs.movementForm.elements.productId.value) {
+    showToast("Produto obrigatorio.", "error");
+    return;
+  }
 
   let quantity = 0;
   let unitCost = null;
@@ -13885,9 +14388,15 @@ async function handleMovementSubmit(event) {
     refs.movementBarcodeInput.value = "";
     updateMovementProductSelect();
     await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshDashboard()]);
-    showToast("Movimentacao do almoxarifado registrada.");
+    showToast("Movimentacao registrada com sucesso.");
   } catch (error) {
-    showToast(error.message, "error");
+    showToast(
+      resolveInventoryMutationErrorMessage(
+        error,
+        "Falha ao registrar movimentacao. Verifique produto, quantidade e estoque disponivel."
+      ),
+      "error"
+    );
   }
 }
 
@@ -13940,12 +14449,17 @@ async function handleFuelStockMovementSubmit(event) {
   };
 
   try {
+    console.info("[HORIZON][fuel-stock:submit]", buildFuelClientDebugContext(payload));
     await api("/api/inventory/movements", { method: "POST", body: payload });
     resetFuelStockForm();
     await Promise.all([refreshProducts(), refreshInventoryMovements(), refreshFuel(), refreshDashboard()]);
     showToast("Movimentacao de combustivel registrada.");
   } catch (error) {
-    showToast(error.message, "error");
+    console.error("[HORIZON][fuel-stock:error]", buildFuelClientDebugContext(payload), error);
+    showToast(
+      resolveFuelMutationErrorMessage(error, "Falha ao salvar movimentacao de combustivel. Verifique os campos obrigatorios."),
+      "error"
+    );
   }
 }
 
@@ -13963,6 +14477,10 @@ async function lookupProductByBarcode() {
     refs.movementProductSelect.value = String(response.item.id);
     showToast(`Produto encontrado: ${response.item.name}`);
   } catch (error) {
+    if (isBarcodeNotFoundError(error)) {
+      await prepareNewProductFromBarcode(barcode);
+      return;
+    }
     showToast(error.message, "error");
   }
 }

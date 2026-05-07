@@ -1070,6 +1070,33 @@ function sendError(res, status, message) {
   return res.status(status).json({ error: message });
 }
 
+function buildFuelDebugContext(req, extra = {}) {
+  const body = req?.body || {};
+  return {
+    method: req?.method || "",
+    path: req?.originalUrl || req?.url || "",
+    userId: req?.user?.id || null,
+    userName: req?.user?.name || "",
+    productId: body.productId || "",
+    storageId: body.storageId || "",
+    stockType: body.stockType || "",
+    type: body.type || "",
+    operationKind: body.operationKind || "",
+    adjustmentKind: body.adjustmentKind || body.adjustmentType || "",
+    vehicleId: body.vehicleId || "",
+    plate: body.plate || "",
+    quantity: body.quantity ?? "",
+    odometerKm: body.odometerKm ?? "",
+    unitCost: body.unitCost ?? "",
+    document: body.document || "",
+    supplierName: body.supplierName || "",
+    branchName: body.branchName || "",
+    occurredAt: body.occurredAt || "",
+    entryOrigin: body.entryOrigin || "",
+    ...extra,
+  };
+}
+
 function logAction(user, action, entityType, entityId, details = null) {
   insert(
     `
@@ -4269,7 +4296,11 @@ function createInventoryMovementRecord(payload = {}) {
         unit_cost, total_cost, notes, source_type, source_id, status, cancel_reason, canceled_at, canceled_by,
         corrected_at, corrected_by, updated_at, occurred_at, created_by, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?
+      )
     `,
     [
       Number(payload.productId),
@@ -4829,7 +4860,12 @@ function persistFuelRecord(payload = {}) {
         raw_payload, normalized_payload, status, cancel_reason, canceled_at, canceled_by,
         corrected_at, corrected_by, updated_at, notes, occurred_at, created_by, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?
+      )
     `,
     [
       Number(storage.id),
@@ -6235,7 +6271,7 @@ async function start() {
     }
   });
 
-  app.post("/api/inventory/movements", requireAuth, (req, res) => {
+  app.post("/api/inventory/movements", requireAuth, (req, res, next) => {
     const productId = Number(req.body.productId);
     const type = normalizeInventoryMovement(req.body.type, "IN");
     const requestedStockType = normalizeStockType(req.body.stockType || req.body.category || req.body.inventoryType, "");
@@ -6286,59 +6322,82 @@ async function start() {
     let movementId = 0;
     const timestamp = nowIso();
 
-    transaction(() => {
-      movementId = createInventoryMovementRecord({
-        productId,
-        type,
-        quantity,
-        balanceBefore: currentStock,
-        balanceAfter: nextStock,
-        document,
-        branchName,
-        supplierName,
-        fuelKind,
-        unitCost: effectiveUnitCost,
-        totalCost,
-        notes,
-        occurredAt,
-        createdBy: req.user.id,
-        createdAt: timestamp,
-      });
+    try {
+      transaction(() => {
+        movementId = createInventoryMovementRecord({
+          productId,
+          type,
+          quantity,
+          balanceBefore: currentStock,
+          balanceAfter: nextStock,
+          document,
+          branchName,
+          supplierName,
+          fuelKind,
+          unitCost: effectiveUnitCost,
+          totalCost,
+          notes,
+          occurredAt,
+          createdBy: req.user.id,
+          createdAt: timestamp,
+        });
 
-      write(
-        `
-          UPDATE inventory_products
-          SET current_stock = ?, default_cost = ?, updated_at = ?
-          WHERE id = ?
-        `,
-        [nextStock, type === "IN" && effectiveUnitCost > 0 ? effectiveUnitCost : Number(product.default_cost || 0), timestamp, productId]
-      );
-
-      if (linkedFuelStorage) {
         write(
           `
-            UPDATE fuel_storages
-            SET current_balance = ?, updated_at = ?
+            UPDATE inventory_products
+            SET current_stock = ?, default_cost = ?, updated_at = ?
             WHERE id = ?
           `,
-          [nextStock, timestamp, linkedFuelStorage.id]
+          [nextStock, type === "IN" && effectiveUnitCost > 0 ? effectiveUnitCost : Number(product.default_cost || 0), timestamp, productId]
         );
-      }
 
-      logAction(req.user, "CREATE_INVENTORY_MOVEMENT", "INVENTORY", movementId, {
-        productId,
-        stockType: productStockType,
-        type,
-        quantity,
-        document,
-        branchName,
-        supplierName,
-        fuelKind,
-        unitCost: effectiveUnitCost,
-        totalCost,
-        balanceAfter: nextStock,
+        if (linkedFuelStorage) {
+          write(
+            `
+              UPDATE fuel_storages
+              SET current_balance = ?, updated_at = ?
+              WHERE id = ?
+            `,
+            [nextStock, timestamp, linkedFuelStorage.id]
+          );
+        }
+
+        logAction(req.user, "CREATE_INVENTORY_MOVEMENT", "INVENTORY", movementId, {
+          productId,
+          stockType: productStockType,
+          type,
+          quantity,
+          document,
+          branchName,
+          supplierName,
+          fuelKind,
+          unitCost: effectiveUnitCost,
+          totalCost,
+          balanceAfter: nextStock,
+        });
       });
-    });
+    } catch (error) {
+      error.horizonLogged = true;
+      console.error(
+        "[HORIZON][inventory-movement:error]",
+        buildFuelDebugContext(req, {
+          productName: product.name,
+          productCurrentStock: currentStock,
+          productNextStock: nextStock,
+          productStockType,
+          fuelKind,
+          linkedFuelStorageId: linkedFuelStorage ? Number(linkedFuelStorage.id) : null,
+          linkedFuelStorageName: linkedFuelStorage?.name || "",
+          linkedFuelStorageBalance: linkedFuelStorage ? Number(linkedFuelStorage.current_balance || 0) : null,
+          parsedQuantity: quantity,
+          parsedUnitCost: unitCost,
+          effectiveUnitCost,
+          totalCost,
+        }),
+        error
+      );
+      return next(error);
+    }
 
     return res.status(201).json({
       item: queryInventoryMovements({ productId, stockType: productStockType }).find((item) => item.id === movementId),
@@ -6353,7 +6412,7 @@ async function start() {
     });
   });
 
-  app.post("/api/fuel", requireAuth, (req, res) => {
+  app.post("/api/fuel", requireAuth, (req, res, next) => {
     const storageId = Number(req.body.storageId);
     const type = normalizeFuelType(req.body.type, "ENTRY");
     const operationKind = normalizeFuelOperationKind(
@@ -6404,51 +6463,72 @@ async function start() {
 
     let recordId = 0;
 
-    transaction(() => {
-      const created = persistFuelRecord({
-        storage,
-        vehicle,
-        plate: req.body.plate,
-        type,
-        quantity,
-        odometerKm,
-        notes,
-        occurredAt,
-        createdBy: req.user.id,
-        createdAt: nowIso(),
-        user: req.user,
-        entryOrigin: req.body.entryOrigin,
-        operationKind,
-        adjustmentKind,
-        rawPayload:
-          req.body.rawPayload || {
-            storageId,
-            type,
-            vehicleId: req.body.vehicleId || "",
-            plate: normalizeText(req.body.plate),
-            quantity: rawQuantity,
-            odometerKm: rawOdometer,
-            notes,
-            occurredAt,
-          },
-        normalizedPayload:
-          req.body.normalizedPayload || {
-            storageId: Number(storage.id),
-            storageName: storage.name,
-            fuelKind: storage.fuel_kind,
-            vehicleId: vehicle ? Number(vehicle.id || 0) : null,
-            plate: vehicle ? normalizePlate(vehicle.plate) : normalizePlate(req.body.plate),
-            type,
-            quantity,
-            odometerKm,
-            occurredAt,
-            entryOrigin: normalizeFuelEntryOrigin(req.body.entryOrigin, "MANUAL"),
-            operationKind,
-            adjustmentKind: operationKind === "ADJUSTMENT" ? adjustmentKind : "",
-          },
+    try {
+      transaction(() => {
+        const created = persistFuelRecord({
+          storage,
+          vehicle,
+          plate: req.body.plate,
+          type,
+          quantity,
+          odometerKm,
+          document: req.body.document,
+          notes,
+          occurredAt,
+          createdBy: req.user.id,
+          createdAt: nowIso(),
+          user: req.user,
+          entryOrigin: req.body.entryOrigin,
+          operationKind,
+          adjustmentKind,
+          rawPayload:
+            req.body.rawPayload || {
+              storageId,
+              type,
+              vehicleId: req.body.vehicleId || "",
+              plate: normalizeText(req.body.plate),
+              quantity: rawQuantity,
+              odometerKm: rawOdometer,
+              document: normalizeText(req.body.document),
+              notes,
+              occurredAt,
+            },
+          normalizedPayload:
+            req.body.normalizedPayload || {
+              storageId: Number(storage.id),
+              storageName: storage.name,
+              fuelKind: storage.fuel_kind,
+              vehicleId: vehicle ? Number(vehicle.id || 0) : null,
+              plate: vehicle ? normalizePlate(vehicle.plate) : normalizePlate(req.body.plate),
+              type,
+              quantity,
+              odometerKm,
+              document: normalizeText(req.body.document),
+              occurredAt,
+              entryOrigin: normalizeFuelEntryOrigin(req.body.entryOrigin, "MANUAL"),
+              operationKind,
+              adjustmentKind: operationKind === "ADJUSTMENT" ? adjustmentKind : "",
+            },
+        });
+        recordId = created.recordId;
       });
-      recordId = created.recordId;
-    });
+    } catch (error) {
+      error.horizonLogged = true;
+      console.error(
+        "[HORIZON][fuel-record:error]",
+        buildFuelDebugContext(req, {
+          storageName: storage.name,
+          storageFuelKind: storage.fuel_kind,
+          storageCurrentBalance: Number(storage.current_balance || 0),
+          vehiclePlate: vehicle?.plate || "",
+          vehicleFuelProfile: vehicle?.fuel_profile || "",
+          parsedQuantity: quantity,
+          parsedOdometerKm: odometerKm,
+        }),
+        error
+      );
+      return next(error);
+    }
 
     return res.status(201).json({
       item: queryFuelRecords().find((item) => item.id === recordId),
@@ -7541,7 +7621,18 @@ async function start() {
   });
 
   app.use((error, req, res, next) => {
-    console.error(error);
+    if (!error?.horizonLogged) {
+      console.error(
+        "[HORIZON][server-error]",
+        {
+          method: req?.method || "",
+          path: req?.originalUrl || req?.url || "",
+          userId: req?.user?.id || null,
+          userName: req?.user?.name || "",
+        },
+        error
+      );
+    }
     return sendError(res, 500, "Erro interno do servidor.");
   });
 

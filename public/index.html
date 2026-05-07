@@ -497,14 +497,26 @@
             </div>
           </div>
 
-          <div class="schedule-workspace-grid">
-            <form id="product-form" class="panel form-card">
+          <div class="inventory-command-bar panel">
+            <div class="inventory-command-bar__copy">
+              <span class="eyebrow">Cadastro auxiliar</span>
+              <h3>Movimentacao rapida do almoxarifado</h3>
+              <p class="muted">O cadastro de produto fica recolhido para manter a tela principal focada em entradas e saidas.</p>
+            </div>
+            <div class="inventory-command-bar__actions">
+              <button id="inventory-product-toggle-button" type="button" class="secondary-button" aria-expanded="false" aria-controls="product-form">+ Produto</button>
+            </div>
+          </div>
+
+          <div id="inventory-top-grid" class="schedule-workspace-grid inventory-top-grid">
+            <form id="product-form" class="panel form-card inventory-product-panel hidden" aria-hidden="true">
               <input type="hidden" name="id" />
               <div class="card-title">
                 <span class="eyebrow">Produto</span>
-                <h3>Cadastro</h3>
+                <h3>Cadastrar produto</h3>
+                <p class="muted">Cadastre ou ajuste itens sem ocupar a area principal de movimentacao.</p>
               </div>
-              <div class="schedule-meta-grid">
+              <div class="schedule-meta-grid inventory-product-grid">
                 <label>
                   <span>Produto</span>
                   <input type="text" name="name" required />
@@ -520,16 +532,14 @@
                     <option value="FUEL">Combustivel</option>
                   </select>
                 </label>
-                <label>
-                  <span>Código de barras</span>
-                  <div class="inline-input">
+                <label class="full-width inventory-product-grid__barcode">
+                  <span>Codigo de barras</span>
+                  <div class="inline-input inventory-barcode-strip">
                     <input id="product-barcode-input" type="text" name="barcode" />
-                    <button type="button" class="ghost-button compact-button" data-scan-target="product-barcode-input">
-                      Câmera
-                    </button>
-                    <button type="button" class="ghost-button compact-button" data-scan-image-target="product-barcode-input">
-                      Imagem
-                    </button>
+                    <div class="inventory-barcode-strip__actions">
+                      <button type="button" class="ghost-button compact-button" data-scan-target="product-barcode-input">Camera</button>
+                      <button type="button" class="ghost-button compact-button" data-scan-image-target="product-barcode-input">Imagem</button>
+                    </div>
                   </div>
                 </label>
                 <label>
@@ -547,76 +557,75 @@
               </div>
               <div class="form-actions">
                 <button type="submit" class="primary-button">Salvar produto</button>
-                <button type="button" id="product-reset-button" class="ghost-button">Limpar</button>
+                <button type="button" id="product-reset-button" class="ghost-button">Cancelar</button>
               </div>
             </form>
 
-            <form id="inventory-movement-form" class="panel form-card">
+            <form id="inventory-movement-form" class="panel form-card inventory-movement-panel">
               <div class="card-title">
-                <span class="eyebrow">Movimentação comum</span>
-                <h3>Entrada e saída do almoxarifado</h3>
+                <span class="eyebrow">Movimentacao comum</span>
+                <h3>Entrada e saida do almoxarifado</h3>
+                <p class="muted">Selecione o produto, informe a quantidade e registre a movimentacao sem excesso visual.</p>
               </div>
               <div class="form-grid inventory-movement-grid">
-                <label class="full-width">
-                  <span>Buscar por código de barras</span>
-                  <div class="inline-input">
+                <label class="full-width inventory-movement-grid__barcode">
+                  <span>Buscar por codigo de barras</span>
+                  <div class="inline-input inventory-barcode-strip">
                     <input id="movement-barcode-input" type="text" placeholder="Leitura rápida" />
-                    <button type="button" class="ghost-button compact-button" data-scan-target="movement-barcode-input">
-                      Câmera
-                    </button>
-                    <button type="button" class="ghost-button compact-button" data-scan-image-target="movement-barcode-input">
-                      Imagem
-                    </button>
-                    <button id="lookup-barcode-button" type="button" class="ghost-button compact-button">Buscar</button>
+                    <div class="inventory-barcode-strip__actions">
+                      <button type="button" class="ghost-button compact-button" data-scan-target="movement-barcode-input">Camera</button>
+                      <button type="button" class="ghost-button compact-button" data-scan-image-target="movement-barcode-input">Imagem</button>
+                      <button id="lookup-barcode-button" type="button" class="ghost-button compact-button">Buscar</button>
+                    </div>
                   </div>
                 </label>
-                <label class="inventory-movement-grid__primary">
+                <label class="inventory-movement-grid__product">
                   <span>Produto</span>
                   <select id="movement-product-select" name="productId"></select>
                 </label>
-                <label>
+                <label class="inventory-movement-grid__type">
                   <span>Tipo</span>
                   <select name="type">
                     <option value="IN">Entrada</option>
-                    <option value="OUT">Saída</option>
+                    <option value="OUT">Saida</option>
                   </select>
                 </label>
-                <label>
+                <label class="inventory-movement-grid__quantity">
                   <span>Quantidade</span>
                   <input type="text" name="quantity" inputmode="decimal" placeholder="0,00" required />
                 </label>
-                <label>
-                  <span>Valor unitário</span>
+                <label class="inventory-movement-grid__unit-cost">
+                  <span>Valor unitario</span>
                   <input type="text" name="unitCost" inputmode="decimal" placeholder="0,00" />
                 </label>
-                <label>
+                <label class="inventory-movement-grid__document">
                   <span>Documento</span>
                   <input type="text" name="document" placeholder="NF, romaneio ou recibo" />
                 </label>
-                <label>
+                <label class="inventory-movement-grid__supplier">
                   <span>Fornecedor</span>
                   <input type="text" name="supplierName" placeholder="Opcional" />
                 </label>
-                <label>
+                <label class="inventory-movement-grid__branch">
                   <span>Filial / unidade</span>
                   <input type="text" name="branchName" placeholder="Opcional" />
                 </label>
-                <label>
+                <label class="inventory-movement-grid__occurred-at">
                   <span>Data e hora</span>
                   <input type="datetime-local" name="occurredAt" />
                 </label>
-                <label class="full-width">
-                  <span>Observação</span>
+                <label class="full-width inventory-movement-grid__notes">
+                  <span>Observacao</span>
                   <textarea name="notes" rows="3" placeholder="Observacoes do movimento"></textarea>
                 </label>
               </div>
               <div class="form-actions">
-                <button type="submit" class="primary-button">Registrar movimentação</button>
+                <button type="submit" class="primary-button">Registrar movimentacao</button>
               </div>
             </form>
           </div>
 
-          <div class="schedule-workspace-grid">
+          <div class="schedule-workspace-grid inventory-tables-grid">
             <div class="panel table-panel">
               <div class="card-title">
                 <span class="eyebrow">Produtos</span>
@@ -1039,7 +1048,23 @@
               <h3>Histórico de movimentações de combustível</h3>
             </div>
             <p class="muted fuel-history-description">Uma única tabela para entradas, abastecimentos, ajustes, saldo inicial, correções e cancelamentos com rastreabilidade completa.</p>
-            <div class="form-grid fuel-history-filter-grid">
+            <div class="fuel-history-filter-shell">
+              <div class="fuel-history-filter-bar">
+                <div class="fuel-history-filter-copy">
+                  <div class="fuel-history-filter-heading">
+                    <span class="eyebrow">Filtros</span>
+                    <span id="fuel-history-filter-active-badge" class="status-badge" hidden>Filtros ativos</span>
+                  </div>
+                  <div id="fuel-history-filter-summary" class="fuel-history-filter-summary muted">Nenhum filtro aplicado.</div>
+                </div>
+                <div class="fuel-history-filter-bar-actions">
+                  <button id="fuel-history-filter-quick-clear" type="button" class="ghost-button" hidden>Limpar</button>
+                  <button id="fuel-history-filter-toggle-button" type="button" class="secondary-button" aria-expanded="false" aria-controls="fuel-history-filter-panel">Abrir filtros</button>
+                </div>
+              </div>
+              <div id="fuel-history-filter-panel" class="fuel-history-filter-panel" aria-hidden="true">
+                <div class="fuel-history-filter-panel__inner">
+                  <div class="form-grid fuel-history-filter-grid">
               <label>
                 <span>Período inicial</span>
                 <input id="fuel-filter-from" type="datetime-local" />
@@ -1094,29 +1119,27 @@
                 <input id="fuel-history-search" type="search" placeholder="Buscar por placa, observação, usuário, documento ou origem" />
               </label>
             </div>
+                  <div class="form-actions fuel-history-filter-actions">
+                    <p class="muted fuel-history-filter-note">Preencha os campos e aplique quando quiser atualizar a tabela.</p>
+                    <button id="fuel-history-apply-button" type="button" class="secondary-button">Aplicar filtros</button>
+                    <button id="fuel-history-clear-button" type="button" class="ghost-button">Limpar filtros</button>
+                    <button id="fuel-history-filter-close-button" type="button" class="ghost-button">Fechar filtros</button>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div class="fuel-history-toolbar">
               <p id="fuel-history-summary" class="muted fuel-history-summary">Carregando histórico de combustível...</p>
-              <div class="form-actions fuel-history-toolbar-actions">
-                <button id="fuel-history-apply-button" type="button" class="secondary-button">Atualizar</button>
-                <button id="fuel-history-clear-button" type="button" class="ghost-button">Limpar filtros</button>
-              </div>
             </div>
             <div class="table-wrapper fuel-history-table-wrapper">
               <table class="fuel-history-table">
                 <thead>
                   <tr>
                     <th>Data/hora</th>
-                    <th>Combustível</th>
-                    <th>Tipo</th>
+                    <th>Movimentação</th>
                     <th>Placa / veículo</th>
                     <th>KM</th>
                     <th>Litros</th>
-                    <th>Valor unitário</th>
-                    <th>Valor total</th>
-                    <th>Saldo antes</th>
-                    <th>Saldo depois</th>
-                    <th>Documento / origem</th>
-                    <th>Usuário</th>
                     <th>Ações</th>
                   </tr>
                 </thead>

@@ -5593,6 +5593,35 @@
 
       throw new ApiError(404, "Rota nao encontrada no modo navegador.");
     } catch (error) {
+      if (path.startsWith("/api/fuel") || path === "/api/inventory/movements") {
+        console.error(
+          "[HORIZON][local-api:error]",
+          {
+            method,
+            path,
+            userId: user?.id || null,
+            userName: user?.name || "",
+            productId: body.productId || "",
+            storageId: body.storageId || "",
+            stockType: body.stockType || "",
+            type: body.type || "",
+            operationKind: body.operationKind || "",
+            adjustmentKind: body.adjustmentKind || body.adjustmentType || "",
+            vehicleId: body.vehicleId || "",
+            plate: body.plate || "",
+            quantity: body.quantity ?? "",
+            odometerKm: body.odometerKm ?? "",
+            unitCost: body.unitCost ?? "",
+            document: body.document || "",
+            supplierName: body.supplierName || "",
+            branchName: body.branchName || "",
+            occurredAt: body.occurredAt || "",
+            entryOrigin: body.entryOrigin || "",
+          },
+          error
+        );
+      }
+
       if (error instanceof ApiError) {
         throw error;
       }

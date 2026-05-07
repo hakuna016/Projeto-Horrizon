@@ -1,7 +1,24 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const { parseBrazilianNumber, calculateBalanceAfter, calculateTotalCost } = require("../src/helpers");
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function readInsertStats(marker) {
+  const source = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const pattern = new RegExp(`${escapeRegex(marker)}\\s*\\(([^)]*)\\)\\s*VALUES\\s*\\(([^)]*)\\)`, "s");
+  const match = source.match(pattern);
+  assert.ok(match, `Nao encontrou o INSERT esperado: ${marker}`);
+  return {
+    columns: match[1].split(",").length,
+    placeholders: (match[2].match(/\?/g) || []).length,
+  };
+}
 
 test("parseBrazilianNumber aceita padrao brasileiro", () => {
   assert.equal(parseBrazilianNumber("70,3"), 70.3);
@@ -36,4 +53,12 @@ test("calcula saldo sequencial com decimais brasileiros", () => {
   assert.equal(Number(afterFirstExit.toFixed(2)), 2929.7);
   assert.equal(afterSecondExit, 2854.5);
   assert.equal(Number(afterSecondExit.toFixed(2)), 2854.5);
+});
+
+test("mantem alinhados placeholders SQL das gravacoes de combustivel", () => {
+  const inventoryInsert = readInsertStats("INSERT INTO inventory_movements");
+  const fuelInsert = readInsertStats("INSERT INTO fuel_records");
+
+  assert.equal(inventoryInsert.columns, inventoryInsert.placeholders);
+  assert.equal(fuelInsert.columns, fuelInsert.placeholders);
 });
