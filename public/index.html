@@ -22,10 +22,16 @@
         </div>
         <div class="app-loading__copy">
           <span class="eyebrow">Inicializando sistema</span>
-          <h2>Preparando a operação HORIZON</h2>
-          <p class="muted">Carregando módulos, indicadores e identidade visual.</p>
+          <h2 id="app-loading-title">Preparando a operação HORIZON</h2>
+          <p id="app-loading-subtitle" class="muted">Carregando módulos, indicadores e identidade visual.</p>
         </div>
+        <p id="app-loading-status" class="app-loading__status" aria-live="polite"></p>
+        <p id="app-loading-error" class="app-loading__error hidden" aria-live="assertive"></p>
         <div class="app-loading__bar"><span></span></div>
+        <div id="app-loading-actions" class="app-loading__actions hidden">
+          <button id="app-loading-retry-button" type="button" class="secondary-button">Tentar novamente</button>
+          <button id="app-loading-login-button" type="button" class="ghost-button">Ir para login</button>
+        </div>
       </div>
     </div>
     <div class="theme-switcher" role="group" aria-label="Tema do site">

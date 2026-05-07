@@ -3055,6 +3055,21 @@ body[data-theme="dark"] .sidebar-brand {
   color: #f5f7fb;
 }
 
+.app-loading__status,
+.app-loading__error {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.app-loading__status {
+  color: rgba(255, 255, 255, 0.76);
+}
+
+.app-loading__error {
+  color: #ffd2d2;
+}
+
 .app-loading__bar {
   position: relative;
   overflow: hidden;
@@ -3071,6 +3086,24 @@ body[data-theme="dark"] .sidebar-brand {
   background: linear-gradient(90deg, rgba(196, 0, 0, 0.2), #c40000, rgba(255, 120, 120, 0.9));
   box-shadow: 0 0 24px rgba(196, 0, 0, 0.36);
   animation: loading-sweep 1.2s ease-in-out infinite;
+}
+
+.app-loading.is-error .app-loading__bar {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.app-loading.is-error .app-loading__bar span {
+  width: 100%;
+  transform: translateX(0);
+  animation: none;
+  opacity: 0.4;
+}
+
+.app-loading__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: flex-end;
 }
 
 @keyframes loading-sweep {
@@ -3387,6 +3420,11 @@ body[data-theme="dark"] .role-chip {
   .app-loading__shell {
     padding: 1rem;
     border-radius: 24px;
+  }
+
+  .app-loading__actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .brand-mark {

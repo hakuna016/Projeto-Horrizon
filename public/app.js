@@ -13,6 +13,10 @@ const SIDEBAR_STORAGE_KEY = "horizon-sidebar-mode";
 const DASHBOARD_FILTERS_STORAGE_KEY = "horizon-dashboard-filters-v2";
 const SIDEBAR_MOBILE_MAX_WIDTH = 780;
 const SIDEBAR_TABLET_MAX_WIDTH = 1100;
+const STARTUP_STEP_TIMEOUT_MS = 10000;
+const API_MODE_PROBE_TIMEOUT_MS = 4000;
+const APP_LOADING_DEFAULT_TITLE = "Preparando a operacao HORIZON";
+const APP_LOADING_DEFAULT_SUBTITLE = "Carregando modulos, indicadores e identidade visual.";
 const runtimeState = {
   apiMode: null,
   apiProbe: null,
@@ -588,6 +592,13 @@ const refs = {
   siteFavicon: $("site-favicon"),
   toastRoot: $("toast-root"),
   appLoading: $("app-loading"),
+  appLoadingTitle: $("app-loading-title"),
+  appLoadingSubtitle: $("app-loading-subtitle"),
+  appLoadingStatus: $("app-loading-status"),
+  appLoadingError: $("app-loading-error"),
+  appLoadingActions: $("app-loading-actions"),
+  appLoadingRetryButton: $("app-loading-retry-button"),
+  appLoadingLoginButton: $("app-loading-login-button"),
 };
 
 Object.assign(refs, {
@@ -614,28 +625,203 @@ Object.assign(refs, {
 
 document.addEventListener("DOMContentLoaded", initialize);
 
-async function initialize() {
-  applyTheme(resolveInitialTheme());
-  syncThemeSwitcherPlacement();
-  decorateStaticInterface();
-  updateTopbarContext();
-  bindEvents();
-  syncSidebarLayout();
-  switchAuthMode("login");
-  applyDefaultFormValues();
-  await maybeShowBrowserModeNotice();
+function isDomEventPayload(value) {
+  return Boolean(value && typeof value === "object" && typeof value.preventDefault === "function" && typeof value.stopPropagation === "function");
+}
 
+function logStartup(message, level = "info", error = null) {
+  const method = typeof console[level] === "function" ? level : "info";
+  if (error) {
+    console[method](`[HORIZON][startup] ${message}`, error);
+    return;
+  }
+  console[method](`[HORIZON][startup] ${message}`);
+}
+
+function createTimeoutError(label, timeoutMs) {
+  const error = new Error(`${label} nao respondeu em ${Math.ceil(timeoutMs / 1000)} segundos.`);
+  error.code = "HORIZON_TIMEOUT";
+  error.status = 408;
+  return error;
+}
+
+function withTimeout(task, { timeoutMs = 0, label = "A operacao", onTimeout = null } = {}) {
+  if (!(timeoutMs > 0)) {
+    return Promise.resolve().then(task);
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        onTimeout?.();
+      } catch (timeoutError) {
+        console.warn("[HORIZON][startup] falha ao abortar operacao em timeout", timeoutError);
+      }
+      reject(createTimeoutError(label, timeoutMs));
+    }, timeoutMs);
+
+    Promise.resolve()
+      .then(task)
+      .then(
+        (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          window.clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          window.clearTimeout(timer);
+          reject(error);
+        }
+      );
+  });
+}
+
+function updateAppLoadingStatus(message = "") {
+  if (!refs.appLoadingStatus) {
+    return;
+  }
+  refs.appLoadingStatus.textContent = String(message || "").trim();
+}
+
+function resetAppLoadingState() {
+  refs.appLoading?.classList.remove("is-hidden", "is-error");
+  refs.appLoading?.setAttribute("aria-hidden", "false");
+  if (refs.appLoadingTitle) {
+    refs.appLoadingTitle.textContent = APP_LOADING_DEFAULT_TITLE;
+  }
+  if (refs.appLoadingSubtitle) {
+    refs.appLoadingSubtitle.textContent = APP_LOADING_DEFAULT_SUBTITLE;
+  }
+  updateAppLoadingStatus("");
+  if (refs.appLoadingError) {
+    refs.appLoadingError.textContent = "";
+    refs.appLoadingError.classList.add("hidden");
+  }
+  refs.appLoadingActions?.classList.add("hidden");
+}
+
+function showAppLoadingFailure(message) {
+  if (!refs.appLoading) {
+    return;
+  }
+
+  refs.appLoading.classList.remove("is-hidden");
+  refs.appLoading.classList.add("is-error");
+  refs.appLoading.setAttribute("aria-hidden", "false");
+  if (refs.appLoadingTitle) {
+    refs.appLoadingTitle.textContent = "Nao foi possivel carregar o sistema.";
+  }
+  if (refs.appLoadingSubtitle) {
+    refs.appLoadingSubtitle.textContent = "Tente atualizar a pagina ou siga para o login.";
+  }
+  updateAppLoadingStatus("A inicializacao foi interrompida antes de concluir.");
+  if (refs.appLoadingError) {
+    refs.appLoadingError.textContent = message || "Falha inesperada na inicializacao.";
+    refs.appLoadingError.classList.remove("hidden");
+  }
+  refs.appLoadingActions?.classList.remove("hidden");
+}
+
+function handleAppLoadingRetry() {
+  window.location.reload();
+}
+
+function handleAppLoadingGoToLogin() {
+  setUser(null);
+  switchAuthMode("login");
+  resetAppLoadingState();
+  hideAppLoading();
+}
+
+function resolveStartupErrorMessage(error) {
+  const message = String(error?.message || "").trim();
+  if (!message) {
+    return "Nao foi possivel carregar o sistema. Tente atualizar a pagina.";
+  }
+  if (error?.code === "HORIZON_TIMEOUT" || error?.status === 408) {
+    return "Nao foi possivel carregar o sistema agora. A resposta demorou demais.";
+  }
+  if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    return "Nao foi possivel carregar o sistema agora. Verifique a conexao e tente novamente.";
+  }
+  return message;
+}
+
+async function initialize() {
+  let coreUiReady = false;
+  let keepLoadingVisible = false;
+  resetAppLoadingState();
+  updateAppLoadingStatus("Inicializando interface...");
   try {
-    const response = await api("/api/auth/me", { suppressAuthRedirect: true });
+    logStartup("iniciando interface");
+    applyTheme(resolveInitialTheme());
+    syncThemeSwitcherPlacement();
+    decorateStaticInterface();
+    updateTopbarContext();
+    bindEvents();
+    syncSidebarLayout();
+    switchAuthMode("login");
+    applyDefaultFormValues();
+    coreUiReady = true;
+    logStartup("interface ok");
+
+    try {
+      updateAppLoadingStatus("Verificando modo de operacao...");
+      await maybeShowBrowserModeNotice();
+    } catch (error) {
+      logStartup("aviso de modo local ignorado", "warn", error);
+    }
+
+    updateAppLoadingStatus("Verificando sessao...");
+    logStartup("iniciando auth");
+    const response = await withTimeout(() => api("/api/auth/me", { suppressAuthRedirect: true }), {
+      timeoutMs: STARTUP_STEP_TIMEOUT_MS,
+      label: "A validacao da sessao inicial",
+    });
+    logStartup("auth ok");
     setUser(response.user || null);
 
     if (response.user) {
-      await refreshAll();
+      updateAppLoadingStatus("Carregando modulos principais...");
+      const failedModules = await refreshAll({
+        startup: true,
+        timeoutMs: STARTUP_STEP_TIMEOUT_MS,
+        silent: true,
+        onProgress: updateAppLoadingStatus,
+      });
+      if (failedModules.length) {
+        showToast(buildRefreshFailureMessage(failedModules, true), "error");
+      }
     }
   } catch (error) {
-    showToast(error.message, "error");
+    logStartup("falha na inicializacao", "error", error);
+    if (!coreUiReady) {
+      keepLoadingVisible = true;
+      showAppLoadingFailure(resolveStartupErrorMessage(error));
+      return;
+    }
+
+    setUser(null);
+    switchAuthMode("login");
+    showToast(resolveStartupErrorMessage(error), "error");
   } finally {
-    hideAppLoading();
+    if (!keepLoadingVisible) {
+      updateAppLoadingStatus("Finalizando carregamento...");
+      logStartup("finalizando loading");
+      hideAppLoading();
+    }
   }
 }
 
@@ -683,118 +869,138 @@ async function resolveApiMode() {
   }
 
   if (!runtimeState.apiProbe) {
-    runtimeState.apiProbe = (async () => {
-      try {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    runtimeState.apiProbe = withTimeout(
+      async () => {
         const healthUrl = new URL("api/health", window.location.href);
         const response = await fetch(healthUrl, {
           method: "GET",
           headers: { Accept: "application/json" },
+          signal: controller?.signal,
         });
         return response.ok ? "server" : "browser";
-      } catch (error) {
-        return "browser";
+      },
+      {
+        timeoutMs: API_MODE_PROBE_TIMEOUT_MS,
+        label: "A verificacao inicial do servidor",
+        onTimeout: () => controller?.abort?.(),
       }
-    })().then((mode) => {
-      runtimeState.apiMode = mode;
-      return mode;
-    });
+    )
+      .catch((error) => {
+        logStartup("falha ao detectar modo de API, seguindo com fallback local", "warn", error);
+        return "browser";
+      })
+      .then((mode) => {
+        runtimeState.apiMode = mode;
+        return mode;
+      });
   }
 
   return runtimeState.apiProbe;
 }
 
 function bindEvents() {
-  refs.loginForm.addEventListener("submit", handleLoginSubmit);
-  refs.activationForm.addEventListener("submit", handleActivationSubmit);
-  refs.showActivationButton?.addEventListener("click", () => switchAuthMode("activation"));
-  refs.showLoginButton?.addEventListener("click", () => switchAuthMode("login"));
-  refs.logoutButton.addEventListener("click", handleLogout);
-  refs.refreshAllButton.addEventListener("click", refreshAll);
-  refs.topbarSearchButton?.addEventListener("click", handleTopbarSearch);
-  refs.topbarThemeButton?.addEventListener("click", toggleTheme);
-  refs.sidebarToggleButton?.addEventListener("click", toggleSidebar);
-  refs.sidebarBackdrop?.addEventListener("click", closeSidebarOverlay);
-  refs.dashboardViewSwitcher?.addEventListener("click", handleDashboardViewSwitch);
-  refs.dashboardPlateFilter?.addEventListener("change", handleDashboardPlateFilterChange);
-  refs.dashboardPeriodFilter?.addEventListener("change", handleDashboardQuickPeriodChange);
-  refs.dashboardDataFilter?.addEventListener("change", handleDashboardDataFilterChange);
-  refs.dashboardPeriodApplyButton?.addEventListener("click", handleDashboardPeriodApply);
-  refs.dashboardPeriodResetButton?.addEventListener("click", handleDashboardPeriodReset);
-  refs.noteForm.addEventListener("submit", handleNoteSubmit);
-  refs.noteResetButton.addEventListener("click", () => resetNoteForm());
-  refs.xmlImportButton.addEventListener("click", handleXmlImport);
-  refs.spreadsheetImportButton.addEventListener("click", handleSpreadsheetImport);
-  refs.notesSearch.addEventListener("input", debounce(refreshNotes, 250));
-  refs.notesWorkflowFilter?.addEventListener("change", () => {
+  const on = (target, type, handler, options) => {
+    if (!target || typeof target.addEventListener !== "function") {
+      console.warn("[HORIZON][startup] listener ignorado por elemento ausente", { type });
+      return;
+    }
+    target.addEventListener(type, handler, options);
+  };
+
+  on(refs.loginForm, "submit", handleLoginSubmit);
+  on(refs.activationForm, "submit", handleActivationSubmit);
+  on(refs.showActivationButton, "click", () => switchAuthMode("activation"));
+  on(refs.showLoginButton, "click", () => switchAuthMode("login"));
+  on(refs.logoutButton, "click", handleLogout);
+  on(refs.refreshAllButton, "click", refreshAll);
+  on(refs.topbarSearchButton, "click", handleTopbarSearch);
+  on(refs.topbarThemeButton, "click", toggleTheme);
+  on(refs.sidebarToggleButton, "click", toggleSidebar);
+  on(refs.sidebarBackdrop, "click", closeSidebarOverlay);
+  on(refs.dashboardViewSwitcher, "click", handleDashboardViewSwitch);
+  on(refs.dashboardPlateFilter, "change", handleDashboardPlateFilterChange);
+  on(refs.dashboardPeriodFilter, "change", handleDashboardQuickPeriodChange);
+  on(refs.dashboardDataFilter, "change", handleDashboardDataFilterChange);
+  on(refs.dashboardPeriodApplyButton, "click", handleDashboardPeriodApply);
+  on(refs.dashboardPeriodResetButton, "click", handleDashboardPeriodReset);
+  on(refs.noteForm, "submit", handleNoteSubmit);
+  on(refs.noteResetButton, "click", () => resetNoteForm());
+  on(refs.xmlImportButton, "click", handleXmlImport);
+  on(refs.spreadsheetImportButton, "click", handleSpreadsheetImport);
+  on(refs.notesSearch, "input", debounce(refreshNotes, 250));
+  on(refs.notesWorkflowFilter, "change", () => {
     state.notesUi.workflow = refs.notesWorkflowFilter.value || "ACTIVE";
     refreshNotes();
   });
-  refs.notesStatusFilter.addEventListener("change", refreshNotes);
-  refs.notesCategoryFilter.addEventListener("change", refreshNotes);
-  refs.productForm.addEventListener("submit", handleProductSubmit);
-  refs.productForm.elements.stockType?.addEventListener("change", syncProductFormState);
-  refs.inventoryProductToggleButton?.addEventListener("click", toggleInventoryProductPanel);
-  refs.productResetButton.addEventListener("click", handleInventoryProductCancel);
-  refs.vehicleForm.addEventListener("submit", handleVehicleSubmit);
-  refs.vehicleResetButton.addEventListener("click", resetVehicleForm);
-  refs.movementForm.addEventListener("submit", handleMovementSubmit);
-  refs.lookupBarcodeButton.addEventListener("click", lookupProductByBarcode);
-  refs.fuelStockForm?.addEventListener("submit", handleFuelStockMovementSubmit);
-  refs.fuelForm?.addEventListener("submit", handleFuelSubmit);
-  refs.fuelForm?.elements?.type?.addEventListener("change", syncFuelFormState);
-  refs.fuelStorageSelect?.addEventListener("change", syncFuelFormState);
-  refs.fuelVehicleInput?.addEventListener("input", handleFuelVehicleInputChange);
-  refs.fuelVehicleInput?.addEventListener("change", handleFuelVehicleInputChange);
-  refs.fuelComposerModeButtons?.addEventListener("click", handleFuelComposerModeClick);
-  refs.fuelBatchAddRowButton?.addEventListener("click", () => addFuelBatchRow());
-  refs.fuelBatchClearButton?.addEventListener("click", () => resetFuelBatchComposer(true));
-  refs.fuelBatchSaveButton?.addEventListener("click", handleFuelBatchSubmit);
-  refs.fuelBatchRowsBody?.addEventListener("input", handleFuelBatchRowInput);
-  refs.fuelBatchRowsBody?.addEventListener("keydown", handleFuelBatchRowKeydown);
-  refs.fuelBatchRowsBody?.addEventListener("click", handleFuelBatchRowClick);
-  refs.fuelBatchTableWrapper?.addEventListener("paste", handleFuelBatchPaste);
-  refs.fuelPrintSheetButton?.addEventListener("click", handleFuelDailySheetPrint);
-  refs.fuelFilterStorage.addEventListener("change", refreshFuel);
-  refs.fuelFilterFrom.addEventListener("change", refreshFuel);
-  refs.fuelFilterTo.addEventListener("change", refreshFuel);
-  refs.fuelFilterPlate?.addEventListener("change", renderFuel);
-  refs.scheduleForm.addEventListener("submit", handleScheduleSubmit);
-  refs.scheduleResetButton.addEventListener("click", resetScheduleForm);
-  refs.scheduleForm.elements.scheduledDate?.addEventListener("change", refreshSchedules);
-  refs.scheduleAddLineButton?.addEventListener("click", () => addScheduleDraftLine());
-  refs.scheduleDuplicatePreviousButton?.addEventListener("click", handleScheduleDuplicatePrevious);
-  refs.scheduleExportExcelButton?.addEventListener("click", handleScheduleExportExcel);
-  refs.scheduleExportPdfButton?.addEventListener("click", () => handleSchedulePrint("pdf"));
-  refs.scheduleGenerateDocumentButton?.addEventListener("click", handleScheduleGenerateDocument);
-  refs.schedulePrintButton?.addEventListener("click", () => handleSchedulePrint("print"));
-  refs.scheduleHistoryDate?.addEventListener("change", refreshSchedules);
-  refs.scheduleHistoryPlate?.addEventListener("input", debounce(refreshSchedules, 250));
-  refs.scheduleHistoryDriver?.addEventListener("input", debounce(refreshSchedules, 250));
-  refs.scheduleHistoryClearButton?.addEventListener("click", clearScheduleHistoryFilters);
-  refs.fineForm.addEventListener("submit", handleFineSubmit);
-  refs.fineResetButton.addEventListener("click", resetFineForm);
-  refs.checklistForm.addEventListener("submit", handleChecklistSubmit);
-  refs.checklistResetButton.addEventListener("click", resetChecklistForm);
-  refs.checklistMarkAllOkButton?.addEventListener("click", markChecklistDraftAsOk);
-  refs.checklistAddTemporaryItemButton?.addEventListener("click", addTemporaryChecklistItem);
-  refs.kardexForm?.addEventListener("submit", handleKardexView);
-  refs.kardexStockType?.addEventListener("change", syncKardexFormState);
-  refs.kardexForm?.elements.fuelKind?.addEventListener("change", updateKardexProductSelect);
-  refs.kardexPdfButton?.addEventListener("click", () => handleKardexPrint("pdf"));
-  refs.kardexPrintButton?.addEventListener("click", () => handleKardexPrint("print"));
-  refs.emailForm.addEventListener("submit", handleEmailSubmit);
-  refs.adminUserForm.addEventListener("submit", handleAdminUserSubmit);
-  refs.adminUserResetButton?.addEventListener("click", resetAdminUserForm);
-  refs.adminCompanyForm?.addEventListener("submit", handleCompanySettingsSubmit);
-  refs.adminCompanyLogoInput?.addEventListener("change", handleCompanyLogoInputChange);
-  refs.adminCompanyClearLogoButton?.addEventListener("click", clearCompanyLogoSelection);
-  refs.checklistTemplateForm?.addEventListener("submit", handleChecklistTemplateSubmit);
-  refs.checklistTemplateResetButton?.addEventListener("click", resetChecklistTemplateForm);
-  refs.scannerCloseButton.addEventListener("click", closeScanner);
-  refs.themeLightButton.addEventListener("click", () => applyTheme("light"));
-  refs.themeDarkButton.addEventListener("click", () => applyTheme("dark"));
-  window.addEventListener("resize", syncSidebarLayout);
-  document.addEventListener("keydown", handleGlobalKeydown);
+  on(refs.notesStatusFilter, "change", refreshNotes);
+  on(refs.notesCategoryFilter, "change", refreshNotes);
+  on(refs.productForm, "submit", handleProductSubmit);
+  on(refs.productForm?.elements?.stockType, "change", syncProductFormState);
+  on(refs.inventoryProductToggleButton, "click", toggleInventoryProductPanel);
+  on(refs.productResetButton, "click", handleInventoryProductCancel);
+  on(refs.vehicleForm, "submit", handleVehicleSubmit);
+  on(refs.vehicleResetButton, "click", resetVehicleForm);
+  on(refs.movementForm, "submit", handleMovementSubmit);
+  on(refs.lookupBarcodeButton, "click", lookupProductByBarcode);
+  on(refs.fuelStockForm, "submit", handleFuelStockMovementSubmit);
+  on(refs.fuelForm, "submit", handleFuelSubmit);
+  on(refs.fuelForm?.elements?.type, "change", syncFuelFormState);
+  on(refs.fuelStorageSelect, "change", syncFuelFormState);
+  on(refs.fuelVehicleInput, "input", handleFuelVehicleInputChange);
+  on(refs.fuelVehicleInput, "change", handleFuelVehicleInputChange);
+  on(refs.fuelComposerModeButtons, "click", handleFuelComposerModeClick);
+  on(refs.fuelBatchAddRowButton, "click", () => addFuelBatchRow());
+  on(refs.fuelBatchClearButton, "click", () => resetFuelBatchComposer(true));
+  on(refs.fuelBatchSaveButton, "click", handleFuelBatchSubmit);
+  on(refs.fuelBatchRowsBody, "input", handleFuelBatchRowInput);
+  on(refs.fuelBatchRowsBody, "keydown", handleFuelBatchRowKeydown);
+  on(refs.fuelBatchRowsBody, "click", handleFuelBatchRowClick);
+  on(refs.fuelBatchTableWrapper, "paste", handleFuelBatchPaste);
+  on(refs.fuelPrintSheetButton, "click", handleFuelDailySheetPrint);
+  on(refs.fuelFilterStorage, "change", refreshFuel);
+  on(refs.fuelFilterFrom, "change", refreshFuel);
+  on(refs.fuelFilterTo, "change", refreshFuel);
+  on(refs.fuelFilterPlate, "change", renderFuel);
+  on(refs.scheduleForm, "submit", handleScheduleSubmit);
+  on(refs.scheduleResetButton, "click", resetScheduleForm);
+  on(refs.scheduleForm?.elements?.scheduledDate, "change", refreshSchedules);
+  on(refs.scheduleAddLineButton, "click", () => addScheduleDraftLine());
+  on(refs.scheduleDuplicatePreviousButton, "click", handleScheduleDuplicatePrevious);
+  on(refs.scheduleExportExcelButton, "click", handleScheduleExportExcel);
+  on(refs.scheduleExportPdfButton, "click", () => handleSchedulePrint("pdf"));
+  on(refs.scheduleGenerateDocumentButton, "click", handleScheduleGenerateDocument);
+  on(refs.schedulePrintButton, "click", () => handleSchedulePrint("print"));
+  on(refs.scheduleHistoryDate, "change", refreshSchedules);
+  on(refs.scheduleHistoryPlate, "input", debounce(refreshSchedules, 250));
+  on(refs.scheduleHistoryDriver, "input", debounce(refreshSchedules, 250));
+  on(refs.scheduleHistoryClearButton, "click", clearScheduleHistoryFilters);
+  on(refs.fineForm, "submit", handleFineSubmit);
+  on(refs.fineResetButton, "click", resetFineForm);
+  on(refs.checklistForm, "submit", handleChecklistSubmit);
+  on(refs.checklistResetButton, "click", resetChecklistForm);
+  on(refs.checklistMarkAllOkButton, "click", markChecklistDraftAsOk);
+  on(refs.checklistAddTemporaryItemButton, "click", addTemporaryChecklistItem);
+  on(refs.kardexForm, "submit", handleKardexView);
+  on(refs.kardexStockType, "change", syncKardexFormState);
+  on(refs.kardexForm?.elements?.fuelKind, "change", updateKardexProductSelect);
+  on(refs.kardexPdfButton, "click", () => handleKardexPrint("pdf"));
+  on(refs.kardexPrintButton, "click", () => handleKardexPrint("print"));
+  on(refs.emailForm, "submit", handleEmailSubmit);
+  on(refs.adminUserForm, "submit", handleAdminUserSubmit);
+  on(refs.adminUserResetButton, "click", resetAdminUserForm);
+  on(refs.adminCompanyForm, "submit", handleCompanySettingsSubmit);
+  on(refs.adminCompanyLogoInput, "change", handleCompanyLogoInputChange);
+  on(refs.adminCompanyClearLogoButton, "click", clearCompanyLogoSelection);
+  on(refs.checklistTemplateForm, "submit", handleChecklistTemplateSubmit);
+  on(refs.checklistTemplateResetButton, "click", resetChecklistTemplateForm);
+  on(refs.scannerCloseButton, "click", closeScanner);
+  on(refs.themeLightButton, "click", () => applyTheme("light"));
+  on(refs.themeDarkButton, "click", () => applyTheme("dark"));
+  on(refs.appLoadingRetryButton, "click", handleAppLoadingRetry);
+  on(refs.appLoadingLoginButton, "click", handleAppLoadingGoToLogin);
+  on(window, "resize", syncSidebarLayout);
+  on(document, "keydown", handleGlobalKeydown);
 
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => setSection(button.dataset.section));
@@ -811,7 +1017,7 @@ function bindEvents() {
   document.querySelectorAll("[data-scan-image-target]").forEach((button) => {
     button.addEventListener("click", () => openBarcodeImagePicker(button.dataset.scanImageTarget));
   });
-  refs.barcodeImageInput?.addEventListener("change", handleBarcodeImageSelection);
+  on(refs.barcodeImageInput, "change", handleBarcodeImageSelection);
   bindFuelHistoryEvents();
 }
 
@@ -831,10 +1037,10 @@ function applyTheme(theme) {
   document.documentElement.style.colorScheme = nextTheme;
   window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
 
-  refs.themeLightButton.classList.toggle("is-active", nextTheme === "light");
-  refs.themeDarkButton.classList.toggle("is-active", nextTheme === "dark");
-  refs.themeLightButton.setAttribute("aria-pressed", nextTheme === "light" ? "true" : "false");
-  refs.themeDarkButton.setAttribute("aria-pressed", nextTheme === "dark" ? "true" : "false");
+  refs.themeLightButton?.classList.toggle("is-active", nextTheme === "light");
+  refs.themeDarkButton?.classList.toggle("is-active", nextTheme === "dark");
+  refs.themeLightButton?.setAttribute("aria-pressed", nextTheme === "light" ? "true" : "false");
+  refs.themeDarkButton?.setAttribute("aria-pressed", nextTheme === "dark" ? "true" : "false");
   syncTopbarThemeButton();
 
   const metaTheme = document.querySelector('meta[name="theme-color"]');
@@ -1896,9 +2102,9 @@ function setUser(user) {
     runtimeState.sidebarOpen = false;
   }
 
-  refs.authScreen.classList.toggle("hidden", Boolean(user));
-  refs.appShell.classList.toggle("hidden", !user);
-  refs.adminNavButton.classList.toggle("hidden", !canAccessAdmin);
+  refs.authScreen?.classList.toggle("hidden", Boolean(user));
+  refs.appShell?.classList.toggle("hidden", !user);
+  refs.adminNavButton?.classList.toggle("hidden", !canAccessAdmin);
   syncThemeSwitcherPlacement();
   syncSidebarLayout();
 
@@ -2009,27 +2215,43 @@ function applyDefaultFormValues() {
   if (refs.dashboardDateFrom) {
     refs.dashboardDateFrom.value = state.dashboard.filters.dateFrom;
   }
-  refs.noteForm.elements.status.value = "NEW";
-  refs.noteForm.elements.category.value = "LOGISTICS";
-  refs.noteForm.elements.issueDate.value = currentLocalDateTime();
-  refs.productForm.elements.stockType.value = "COMMON";
-  refs.fuelForm.elements.occurredAt.value = currentLocalDateTime();
-  refs.fuelForm.elements.type.value = "EXIT";
+  if (refs.noteForm?.elements) {
+    refs.noteForm.elements.status.value = "NEW";
+    refs.noteForm.elements.category.value = "LOGISTICS";
+    refs.noteForm.elements.issueDate.value = currentLocalDateTime();
+  }
+  if (refs.productForm?.elements) {
+    refs.productForm.elements.stockType.value = "COMMON";
+  }
+  if (refs.fuelForm?.elements) {
+    refs.fuelForm.elements.occurredAt.value = currentLocalDateTime();
+    refs.fuelForm.elements.type.value = "EXIT";
+  }
   syncInventoryProductPanel();
   if (refs.fuelStockForm) {
     refs.fuelStockForm.elements.type.value = "IN";
     refs.fuelStockForm.elements.occurredAt.value = currentLocalDateTime();
   }
-  refs.movementForm.elements.occurredAt.value = currentLocalDateTime();
-  refs.scheduleForm.elements.scheduledDate.value = currentLocalDate();
-  refs.scheduleForm.elements.responsibleName.value = state.user?.name || "";
-  refs.fineForm.elements.fineDate.value = currentLocalDate();
-  refs.checklistForm.elements.checklistDate.value = currentLocalDateTime();
-  refs.checklistForm.elements.checklistType.value = "PRE_USE";
-  if (refs.checklistForm.elements.temporaryIssue) {
+  if (refs.movementForm?.elements) {
+    refs.movementForm.elements.occurredAt.value = currentLocalDateTime();
+  }
+  if (refs.scheduleForm?.elements) {
+    refs.scheduleForm.elements.scheduledDate.value = currentLocalDate();
+    refs.scheduleForm.elements.responsibleName.value = state.user?.name || "";
+  }
+  if (refs.fineForm?.elements) {
+    refs.fineForm.elements.fineDate.value = currentLocalDate();
+  }
+  if (refs.checklistForm?.elements) {
+    refs.checklistForm.elements.checklistDate.value = currentLocalDateTime();
+    refs.checklistForm.elements.checklistType.value = "PRE_USE";
+  }
+  if (refs.checklistForm?.elements?.temporaryIssue) {
     refs.checklistForm.elements.temporaryIssue.value = "";
   }
-  refs.emailForm.elements.receivedAt.value = currentLocalDateTime();
+  if (refs.emailForm?.elements) {
+    refs.emailForm.elements.receivedAt.value = currentLocalDateTime();
+  }
   if (refs.kardexForm) {
     refs.kardexForm.elements.stockType.value = "COMMON";
     refs.kardexForm.elements.from.value = currentLocalDate().slice(0, 8) + "01";
@@ -2045,40 +2267,86 @@ function applyDefaultFormValues() {
   syncKardexFormState();
 }
 
-async function refreshAll() {
-  if (!state.user) {
-    return;
+function buildRefreshFailureMessage(failures = [], startup = false) {
+  if (!failures.length) {
+    return "";
   }
 
-  await Promise.all([refreshCompanySettings(), refreshChecklistTemplate()]);
+  const labels = failures
+    .map((item) => item.label)
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(", ");
+  const prefix = startup
+    ? "Alguns modulos nao responderam na inicializacao"
+    : "Alguns modulos nao responderam na atualizacao";
+
+  return failures.length === 1
+    ? `${prefix}: ${labels}. O sistema continuou com recursos parciais.`
+    : `${prefix}: ${labels}${failures.length > 3 ? " e outros." : "."}`;
+}
+
+async function refreshAll(options = {}) {
+  const normalizedOptions = isDomEventPayload(options) ? {} : options || {};
+  const { startup = false, timeoutMs = 0, onProgress = null, silent = false } = normalizedOptions;
+  if (!state.user) {
+    return [];
+  }
 
   const tasks = [
-    refreshDashboard(),
-    refreshNotes(),
-    refreshProducts(),
-    refreshVehicles(),
-    refreshFuel(),
-    refreshSchedules(),
-    refreshFines(),
-    refreshChecklists(),
-    refreshEmails(),
+    { label: "empresa", loadMessage: "Carregando configuracao da empresa...", run: () => refreshCompanySettings() },
+    { label: "checklist", loadMessage: "Carregando modelo de checklist...", run: () => refreshChecklistTemplate() },
+    { label: "dashboard", loadMessage: "Carregando dashboard...", run: () => refreshDashboard() },
+    { label: "notas", loadMessage: "Carregando notas fiscais...", run: () => refreshNotes() },
+    { label: "produtos", loadMessage: "Carregando produtos...", run: () => refreshProducts() },
+    { label: "veiculos", loadMessage: "Carregando veiculos...", run: () => refreshVehicles() },
+    { label: "combustivel", loadMessage: "Carregando combustivel...", run: () => refreshFuel() },
+    { label: "estoque", loadMessage: "Carregando movimentacoes de estoque...", run: () => refreshInventoryMovements() },
+    { label: "escalas", loadMessage: "Carregando escalas...", run: () => refreshSchedules() },
+    { label: "multas", loadMessage: "Carregando multas...", run: () => refreshFines() },
+    { label: "checklists", loadMessage: "Carregando checklists...", run: () => refreshChecklists() },
+    { label: "emails", loadMessage: "Carregando central de emails...", run: () => refreshEmails() },
   ];
 
   if (state.user.role === "ADMIN") {
-    tasks.push(refreshAdmin());
+    tasks.push({ label: "administracao", loadMessage: "Carregando administracao...", run: () => refreshAdmin() });
   }
 
-  const results = await Promise.allSettled(tasks);
-  try {
-    await refreshInventoryMovements();
-  } catch (error) {
-    showToast(error.message, "error");
+  const results = await Promise.allSettled(
+    tasks.map((task) =>
+      withTimeout(
+        async () => {
+          onProgress?.(task.loadMessage);
+          logStartup(`carregando ${task.label}`);
+          await task.run();
+          logStartup(`${task.label} ok`);
+        },
+        {
+          timeoutMs,
+          label: `O modulo ${task.label}`,
+        }
+      )
+    )
+  );
+
+  const failures = results
+    .map((result, index) => {
+      if (result.status !== "rejected") {
+        return null;
+      }
+      logStartup(`${tasks[index].label} falhou`, "error", result.reason);
+      return {
+        label: tasks[index].label,
+        error: result.reason,
+      };
+    })
+    .filter(Boolean);
+
+  if (failures.length && !silent) {
+    showToast(buildRefreshFailureMessage(failures, startup), "error");
   }
 
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    showToast(failed.reason.message, "error");
-  }
+  return failures;
 }
 
 function buildDashboardCacheKey() {
@@ -5206,7 +5474,8 @@ function renderFuel() {
     refs.fuelFilterPlate.value = analytics.plates.includes(currentPlate) ? currentPlate : "";
   }
 
-  refs.fuelKpiGrid.innerHTML = [
+  if (refs.fuelKpiGrid) {
+    refs.fuelKpiGrid.innerHTML = [
     {
       label: "Abastecimentos",
       value: formatNumber(analytics.monthExitRecords.length),
@@ -14806,84 +15075,95 @@ function renderFuel() {
       })
     )
     .join("");
+  }
 
-  refs.fuelStocksGrid.innerHTML = state.fuelStorages.length
-    ? state.fuelStorages
-        .map((storage) => {
-          const isEmpty = Number(storage.currentBalance || 0) <= 0;
-          const isLow =
-            !isEmpty &&
-            Number(storage.minBalance || 0) > 0 &&
-            Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0);
-          const statusLabel = isEmpty ? "Sem saldo" : isLow ? "Abaixo do minimo" : "Operacional";
-          const toneClass = isEmpty ? "is-empty" : isLow ? "is-low" : "is-ok";
+  if (refs.fuelStocksGrid) {
+    refs.fuelStocksGrid.innerHTML = state.fuelStorages.length
+      ? state.fuelStorages
+          .map((storage) => {
+            const isEmpty = Number(storage.currentBalance || 0) <= 0;
+            const isLow =
+              !isEmpty &&
+              Number(storage.minBalance || 0) > 0 &&
+              Number(storage.currentBalance || 0) <= Number(storage.minBalance || 0);
+            const statusLabel = isEmpty ? "Sem saldo" : isLow ? "Abaixo do minimo" : "Operacional";
+            const toneClass = isEmpty ? "is-empty" : isLow ? "is-low" : "is-ok";
 
-          return `
-            <article class="fuel-stock-card ${toneClass}">
-              <div class="fuel-stock-card__top">
-                <span class="fuel-stock-card__kind">${escapeHtml(formatFuelKindLabel(storage.fuelKind))}</span>
-                <span class="fuel-stock-card__status">${escapeHtml(statusLabel)}</span>
-              </div>
-              <div class="fuel-stock-card__value-row">
-                <strong class="fuel-stock-card__value">${escapeHtml(formatLiters(storage.currentBalance))}</strong>
-                <span class="fuel-stock-card__unit">L</span>
-              </div>
-              <div class="fuel-stock-card__footer">
-                <strong>${escapeHtml(storage.name)}</strong>
-                <span>Saldo disponivel agora</span>
-              </div>
-            </article>
-          `;
-        })
-        .join("")
-    : `<div class="stack-item"><strong>Nenhum estoque configurado</strong><p class="muted">Cadastre ou revise os estoques principais de combustivel.</p></div>`;
+            return `
+              <article class="fuel-stock-card ${toneClass}">
+                <div class="fuel-stock-card__top">
+                  <span class="fuel-stock-card__kind">${escapeHtml(formatFuelKindLabel(storage.fuelKind))}</span>
+                  <span class="fuel-stock-card__status">${escapeHtml(statusLabel)}</span>
+                </div>
+                <div class="fuel-stock-card__value-row">
+                  <strong class="fuel-stock-card__value">${escapeHtml(formatLiters(storage.currentBalance))}</strong>
+                  <span class="fuel-stock-card__unit">L</span>
+                </div>
+                <div class="fuel-stock-card__footer">
+                  <strong>${escapeHtml(storage.name)}</strong>
+                  <span>Saldo disponivel agora</span>
+                </div>
+              </article>
+            `;
+          })
+          .join("")
+      : `<div class="stack-item"><strong>Nenhum estoque configurado</strong><p class="muted">Cadastre ou revise os estoques principais de combustivel.</p></div>`;
+  }
 
   renderFuelInventoryMovements();
 
-  refs.fuelTableBody.innerHTML = visibleRecords.length
-    ? visibleRecords
-        .map(
-          (item) => `
-            <tr>
-              <td>${escapeHtml(item.storageName || "-")}</td>
-              <td>${escapeHtml(formatFuelKindLabel(item.fuelKind))}</td>
-              <td>${statusBadge(item.type)}</td>
-              <td>${escapeHtml(item.vehicleId ? [item.vehicleBrand, item.vehicleModel].filter(Boolean).join(" / ") || "Veiculo cadastrado" : "-")}</td>
-              <td>${escapeHtml(item.plate || "-")}</td>
-              <td>${escapeHtml(formatNumber(item.quantity || 0, 2, 2))} L</td>
-              <td>${escapeHtml(item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}</td>
-              <td>${escapeHtml(formatNumber(item.balanceBefore || 0, 2, 2))} L</td>
-              <td>${escapeHtml(formatNumber(item.balanceAfter || 0, 2, 2))} L</td>
-              <td>${escapeHtml(item.userName || "-")}</td>
-              <td>${escapeHtml(formatDateTime(item.occurredAt))}</td>
-            </tr>
-          `
-        )
-        .join("")
-    : emptyRow("Nenhum abastecimento registrado.", 11);
+  if (refs.fuelTableBody) {
+    refs.fuelTableBody.innerHTML = visibleRecords.length
+      ? visibleRecords
+          .map(
+            (item) => `
+              <tr>
+                <td>${escapeHtml(item.storageName || "-")}</td>
+                <td>${escapeHtml(formatFuelKindLabel(item.fuelKind))}</td>
+                <td>${statusBadge(item.type)}</td>
+                <td>${escapeHtml(item.vehicleId ? [item.vehicleBrand, item.vehicleModel].filter(Boolean).join(" / ") || "Veiculo cadastrado" : "-")}</td>
+                <td>${escapeHtml(item.plate || "-")}</td>
+                <td>${escapeHtml(formatNumber(item.quantity || 0, 2, 2))} L</td>
+                <td>${escapeHtml(item.odometerKm === null || item.odometerKm === undefined ? "-" : formatDistance(item.odometerKm))}</td>
+                <td>${escapeHtml(formatNumber(item.balanceBefore || 0, 2, 2))} L</td>
+                <td>${escapeHtml(formatNumber(item.balanceAfter || 0, 2, 2))} L</td>
+                <td>${escapeHtml(item.userName || "-")}</td>
+                <td>${escapeHtml(formatDateTime(item.occurredAt))}</td>
+              </tr>
+            `
+          )
+          .join("")
+      : emptyRow("Nenhum abastecimento registrado.", 11);
+  }
 
-  refs.fuelConsumptionChart.innerHTML = renderConsumptionChart({
-    consumptionSeries: analytics.consumptionSeries,
-    totalConsumptionLiters: analytics.consumptionSeries.reduce((total, item) => total + item.total, 0),
-    peakConsumption: analytics.peakConsumption,
-    fuelMix: analytics.fuelMix,
-  });
+  if (refs.fuelConsumptionChart) {
+    refs.fuelConsumptionChart.innerHTML = renderConsumptionChart({
+      consumptionSeries: analytics.consumptionSeries,
+      totalConsumptionLiters: analytics.consumptionSeries.reduce((total, item) => total + item.total, 0),
+      peakConsumption: analytics.peakConsumption,
+      fuelMix: analytics.fuelMix,
+    });
+  }
 
-  refs.fuelTopVehicles.innerHTML = renderMeterList(
-    analytics.topVehicles.map((item) => ({
-      label: item.plate,
-      value: item.liters,
-      count: item.count,
-    })),
-    {
-      emptyTitle: "Sem consumo no periodo",
-      emptyDescription: "Assim que houver saidas registradas, os veiculos de maior consumo aparecem aqui.",
-      valueFormatter: (value) => `${formatLiters(value)} L`,
-      secondaryFormatter: (item) => `${item.count} lancamento(s)`,
-    }
-  );
+  if (refs.fuelTopVehicles) {
+    refs.fuelTopVehicles.innerHTML = renderMeterList(
+      analytics.topVehicles.map((item) => ({
+        label: item.plate,
+        value: item.liters,
+        count: item.count,
+      })),
+      {
+        emptyTitle: "Sem consumo no periodo",
+        emptyDescription: "Assim que houver saidas registradas, os veiculos de maior consumo aparecem aqui.",
+        valueFormatter: (value) => `${formatLiters(value)} L`,
+        secondaryFormatter: (item) => `${item.count} lancamento(s)`,
+      }
+    );
+  }
 
-  refs.fuelSideInsights.innerHTML = buildFuelSideInsights(analytics);
+  if (refs.fuelSideInsights) {
+    refs.fuelSideInsights.innerHTML = buildFuelSideInsights(analytics);
+  }
   syncResponsiveTableLabels();
 }
 
